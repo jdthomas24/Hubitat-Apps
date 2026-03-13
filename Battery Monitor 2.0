@@ -319,3 +319,4 @@ def runSummaryNow(){
     if(enablePush && notifyDevices) notifyDevices.each{ it.deviceNotification(report) }
     return report
 }
+
