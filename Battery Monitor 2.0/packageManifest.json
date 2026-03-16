@@ -1,36 +1,19 @@
 {
   "packageName": "Battery Monitor 2.0",
+  "packageVersion": "2.8.4",
   "packageNamespace": "jdthomas24",
-  "packageVersion": "2.0",
-  "author": "Jdthomas24",
-  "description": "Advanced Hubitat battery monitoring with analytics, trends, and replacement tracking. Auto-discover devices, monitor battery health, track replacements, and receive daily reports.",
+  "sourceUrl": "https://raw.githubusercontent.com/jdthomas24/Hubitat-Apps/main/Battery%20Monitor%202.0/Raw%20Code/BatteryMonitor.groovy",
+  "author": "Jason Thomas",
+  "description": "Battery Monitor 2.0 for Hubitat — auto-discover battery devices, daily notifications, trends, and replacement history.",
   "category": "Convenience",
-  "iconUrl": "https://raw.githubusercontent.com/hubitat/HubitatPublic/master/examples/icons/battery.png",
-  "iconX2Url": "https://raw.githubusercontent.com/hubitat/HubitatPublic/master/examples/icons/battery@2x.png",
-  "iconX3Url": "https://raw.githubusercontent.com/hubitat/HubitatPublic/master/examples/icons/battery@2x.png",
-  "appFiles": [
-    {
-      "type": "app",
-      "name": "Battery Monitor 2.0",
-      "sourceUrl": "https://raw.githubusercontent.com/jdthomas24/Hubitat-Apps/refs/heads/main/Battery%20Monitor%202.0/Raw%20Code",
-      "requiredCapabilities": ["Battery", "Notification"]
-    }
-  ],
-  "pages": [
-    "mainPage",
-    "summaryPage",
-    "trendsPage",
-    "historyPage"
-  ],
-  "requiredCapabilities": [
-    "Battery",
-    "Notification"
-  ],
-  "notes": [
-    "**⚠ Auto discovery only:** select which battery devices to monitor.",
-    "Battery trends may be overestimated until the device reports at least 5 battery events.",
-    "Daily report sorts devices by Critical, Good, and Full categories.",
-    "Manual battery replacement is supported via the Replacement page.",
-    "📢 Release Note: Monitor all your Hubitat battery devices with ease. Auto-discover devices, track battery health, drain, and estimated days remaining, receive daily summary reports sorted by Critical, Good, and Full charge, view battery trends, and log replacements. Simple setup with push/device notifications."
+  "documentationUrl": "https://github.com/jdthomas24/Hubitat-Apps/tree/main/Battery%20Monitor%202.0#readme",
+  "iconUrl": "https://raw.githubusercontent.com/jdthomas24/Hubitat-Apps/main/Battery%20Monitor%202.0/icon.png",
+  "iconX2Url": "https://raw.githubusercontent.com/jdthomas24/Hubitat-Apps/main/Battery%20Monitor%202.0/icon@2x.png",
+  "tags": [
+    "battery",
+    "monitor",
+    "Hubitat",
+    "auto-discovery",
+    "notification"
   ]
 }
