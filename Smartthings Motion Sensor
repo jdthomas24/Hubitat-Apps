@@ -1,6 +1,6 @@
 /*
 SmartThings Motion Sensor Enhanced
-Version: 1.6.1
+Version: 1.6.2
 Author: jdthomas24
 Namespace: jdthomas24
 
@@ -16,6 +16,7 @@ Enhancements:
 - Motion auto reset
 - Optional temperature reporting (enableTemp)
 - Battery curve calibration & smoothing
+- Battery reporting interval clarified (minutes vs seconds)
 - Zigbee mesh & route health monitoring
 - Temperature cluster disable optimization
 - Presence logging level control (All / Info Only / None)
@@ -24,7 +25,7 @@ Enhancements:
 import hubitat.zigbee.clusters.iaszone.ZoneStatus
 import hubitat.zigbee.zcl.DataType
 
-def driverVersion() { return "1.6.1" }
+def driverVersion() { return "1.6.2" }
 
 metadata {
     definition(
@@ -65,7 +66,8 @@ metadata {
         input name:"enablePresence", type:"bool", title:"Enable Presence Detection", defaultValue:true
         input name:"tempAdj", type:"decimal", title:"Temperature Offset", defaultValue:0
         input name:"batteryReportMinutes", type:"enum",
-            title:"Battery Reporting Interval",
+            title:"Battery Reporting Interval (minutes)",
+            description:"Select how often the battery reports. Driver converts to seconds for Zigbee reporting",
             options:["30","60","120","240","360"],
             defaultValue:"60"
         input name:"infoLogging", type:"bool", title:"Enable Info Logging", defaultValue:true
@@ -80,7 +82,9 @@ def initialize(){ runIn(5,refresh) }
 def updated(){ configure() }
 
 def configure(){
-    def battInterval=batteryReportMinutes.toInteger()*60
+    // Convert user-selected minutes to seconds for Zigbee reporting
+    def battInterval=batteryReportMinutes.toInteger()*60  
+
     def cmds=[]
     cmds += zigbee.batteryConfig()
     cmds += zigbee.configureReporting(0x0500,0x0002,DataType.BITMAP16,30,3600,null)
