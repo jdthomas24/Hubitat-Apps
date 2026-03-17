@@ -3,6 +3,10 @@
   "packageNamespace": "jdthomas24",
   "author": "Jason Thomas",
   "version": "2.8.4",
+  "dateReleased": "2026-03-16",
+  "minimumHEVersion": "2.2.0",
+  "category": "Convenience",
+  "documentationLink": "https://github.com/jdthomas24/Hubitat-Apps-Drivers/tree/main/Battery%20Monitor%202.0",
   "apps": [
     {
       "id": "battery-monitor-2",
