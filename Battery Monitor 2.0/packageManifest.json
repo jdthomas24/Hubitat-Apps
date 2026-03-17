@@ -1,13 +1,8 @@
 {
   "packageName": "Battery Monitor 2.0",
-  "packageVersion": "2.8.4",
   "packageNamespace": "jdthomas24",
   "author": "Jason Thomas",
-  "location": "https://github.com/jdthomas24/Hubitat-Apps-Drivers",
-  "dateReleased": "2026-03-16",
-  "category": "Convenience",
-  "description": "Battery Monitor 2.0 for Hubitat. Auto-discovers battery devices, provides daily notifications grouped by battery level (Critical, Good, Full), battery trends, estimated days remaining, and battery replacement tracking.",
-  "documentationLink": "https://github.com/jdthomas24/Hubitat-Apps-Drivers/tree/main/Battery%20Monitor%202.0",
+  "version": "2.8.4",
   "apps": [
     {
       "id": "battery-monitor-2",
