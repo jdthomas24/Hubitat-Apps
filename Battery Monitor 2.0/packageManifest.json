@@ -13,7 +13,7 @@
       "id": "battery-monitor-2",
       "name": "Battery Monitor 2.0",
       "namespace": "jdthomas24",
-      "location": "https://raw.githubusercontent.com/jdthomas24/Hubitat-Apps-Drivers/main/Battery%20Monitor%202.0/Raw%20Code/BatteryMonitor.groovy",
+     "location": "https://raw.githubusercontent.com/jdthomas24/Hubitat-Apps-Drivers/main/Battery%20Monitor%202.0/Raw%20Code/BatteryMonitor.groovy"
       "required": true
     }
   ],
