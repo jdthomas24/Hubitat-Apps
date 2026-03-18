@@ -280,6 +280,9 @@ def historyPage(){
     }
 }
 
+// =====================
+// REPLACEMENT PAGES
+// =====================
 def replacementPage(){
     dynamicPage(name:"replacementPage",title:"Battery Replacement",install:false){
         section("Manual Replacement"){
@@ -287,20 +290,26 @@ def replacementPage(){
             href "manualReplacementPage", title:"Register Manual Battery Replacement"
         }
         section("Replacement History"){
-            state.replacements.reverse().each{ paragraph "${it.date} — ${it.device}" }
+            def reps = state.replacements ?: []
+            if(reps.size()==0){ 
+                paragraph "No battery replacements detected." 
+            } else { 
+                reps.reverse().each{ paragraph "${it.date} — ${it.device}" } 
+            }
         }
     }
 }
 
-// =====================
-// MANUAL REPLACEMENT PAGES
-// =====================
+// Manual replacement page (multi-select)
 def manualReplacementPage() {
+    if(state.replacements == null) state.replacements = []
+
     dynamicPage(name:"manualReplacementPage", title:"Manual Battery Replacement", install:false){
-        section("Select Device"){
-            input "replaceDeviceManual","enum",
-                  title:"Select Device",
+        section("Select Devices"){
+            input "replaceDevicesManual","enum",
+                  title:"Select Devices (can choose multiple)",
                   options:autoDevices.collectEntries{[(it.id):it.displayName]},
+                  multiple:true,
                   required:true
         }
         section("Confirm Replacement"){
@@ -314,20 +323,27 @@ def manualReplacementPage() {
     }
 }
 
+// Manual replacement confirm page
 def manualReplacementConfirmPage() {
+    if(state.replacements == null) state.replacements = []
+
     dynamicPage(name:"manualReplacementConfirmPage", title:"Confirm Replacement", install:false){
         section("Replacement Registered"){
-            if(replaceDeviceManual && replaceConfirmManual){
-                def device = autoDevices.find{ it.id == replaceDeviceManual }
-                state.replacements << [
-                    device: device.displayName,
-                    date: new Date().format("yyyy-MM-dd HH:mm", location.timeZone)
-                ]
-                state.history[device.id].drain = 0.3
-                state.trend[device.id] = "Stable"
-                paragraph "Battery replacement for '${device.displayName}' has been recorded."
+            if(replaceDevicesManual && replaceConfirmManual){
+                replaceDevicesManual.each { deviceId ->
+                    def device = autoDevices.find{ it.id == deviceId }
+                    if(device){
+                        state.replacements << [
+                            device: device.displayName,
+                            date: new Date().format("yyyy-MM-dd HH:mm", location.timeZone)
+                        ]
+                        state.history[device.id].drain = 0.3
+                        state.trend[device.id] = "Stable"
+                    }
+                }
+                paragraph "Battery replacement for ${replaceDevicesManual.size()} device(s) has been recorded."
             } else {
-                paragraph "Please select a device and confirm replacement."
+                paragraph "Please select device(s) and confirm replacement."
             }
         }
         section(){
