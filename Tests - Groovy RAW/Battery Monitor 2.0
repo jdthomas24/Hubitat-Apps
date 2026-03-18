@@ -72,7 +72,16 @@ def mainPage(){
 // CORE LOGIC (UNCHANGED)
 // =====================
 def installed(){ initialize() }
-def updated(){ unsubscribe(); unschedule(); initialize() }
+def updated(){
+    unsubscribe()
+    unschedule()
+    initialize()
+
+    // ✅ Fix: Update Hubitat app instance label if customAppName is set
+    if(settings?.customAppName){
+        app.updateLabel(settings.customAppName)
+    }
+}
 
 def initialize(){
     if(!state.history) state.history=[:]
@@ -273,21 +282,12 @@ def historyPage(){
     }
 }
 
-// =====================
-// UPDATED Manual Replacement Note
-// =====================
 def replacementPage(){
     dynamicPage(name:"replacementPage",title:"Battery Replacement",install:false){
         section("Manual Replacement"){
-            paragraph "**Note:** Use this to log batteries replaced that did not meet the automated detection threshold (under ~40%). This updates the history and trend without affecting automated calculations."
-            
-            input "replaceDevice","enum",
-                  title:"Select Device",
-                  options:autoDevices.collectEntries{[(it.id):it.displayName]},
-                  required:false
-            input "replaceConfirm","bool",
-                  title:"Confirm Battery Replaced",
-                  required:false
+            paragraph "Note: Only batteries replaced at ≤40% are automatically registered in the app. Manual replacement outside this threshold will not appear in replacement analytics."
+            input "replaceDevice","enum",title:"Select Device",options:autoDevices.collectEntries{[(it.id):it.displayName]},required:false
+            input "replaceConfirm","bool",title:"Confirm Battery Replaced",required:false
         }
         section("Replacement History"){
             state.replacements.reverse().each{ paragraph "${it.date} — ${it.device}" }
@@ -343,4 +343,3 @@ def scheduledSummary(){
         }
     }
 }
-
