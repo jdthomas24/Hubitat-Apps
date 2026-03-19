@@ -18,7 +18,7 @@
       "id": "smartthings-motion-driver",
       "name": "SmartThings Motion Sensor Driver",
       "category": "Drivers",
-      "location": "https://raw.githubusercontent.com/jdthomas24/Hubitat-Apps-Drivers/refs/heads/main/SmartThings%20Motion%20Sensor/packageManifest.json",
+      "location": "https://github.com/jdthomas24/Hubitat-Apps-Drivers/blob/main/SmartThings%20Motion%20Sensor/packagemanifest.json",
       "description": "Custom Hubitat driver for SmartThings Zigbee motion sensors with local processing and battery reporting.",
       "tags": [
         "zigbee",
