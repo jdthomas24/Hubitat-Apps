@@ -7,7 +7,7 @@ definition(
     iconUrl: "https://raw.githubusercontent.com/hubitat/HubitatPublic/master/examples/icons/battery.png",
     iconX2Url: "https://raw.githubusercontent.com/hubitat/HubitatPublic/master/examples/icons/battery@2x.png",
     iconX3Url: "https://raw.githubusercontent.com/hubitat/HubitatPublic/master/examples/icons/battery@2x.png",
-    version: "1.0.3"  // <-- Added version for Package Manager
+    version: "2.1.1"  // <-- Added version for Package Manager
 )
 
 preferences {
