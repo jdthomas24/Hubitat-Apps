@@ -4,7 +4,7 @@
   "version": "1.0.0",
   "category": "Drivers",
   "description": "Custom Hubitat driver for SmartThings Zigbee motion sensors with local processing and battery reporting.",
-  "dateReleased": "3-19-26",
+  "dateReleased": "3/19/26",
   "minimumHEVersion": "",
   "drivers": [
     {
