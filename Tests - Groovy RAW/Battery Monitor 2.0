@@ -370,39 +370,61 @@ def historyPage(){
     }
 }
 
-// --- Replacement Page ---
+// --- Replacement Page (Manual Battery) ---
 def replacementPage(){
-    dynamicPage(name:"replacementPage",title:"Battery Replacement",install:false){
+    dynamicPage(name:"replacementPage", title:"Battery Replacement", install:false){
         section("Manual Replacement"){
-            paragraph "Note: Only batteries replaced at ≤40% are automatically registered in the app. Manual replacement outside this threshold will not appear in replacement analytics."
+            // Bold the note
+            paragraph "**Note: Only batteries replaced at ≤40% are automatically registered in the app. Manual replacement outside this threshold will not appear in replacement analytics.**"
             href "manualReplacementPage", title:"Register Manual Battery Replacement"
         }
-
-        // Removed Replacement History table completely
-        // You can keep the section for layout or remove it entirely
-        // section("Replacement History"){
-        //     paragraph "Battery replacement history is available in the History tab."
-        // }
     }
 }
 
 // --- Manual Replacement Page ---
 def manualReplacementPage(){
     dynamicPage(name:"manualReplacementPage", title:"Register Manual Battery Replacement", install:false){
-        section("Select Devices for Manual Replacement"){
-            input "replaceDevicesManual","enum",
-                  title:"Select devices",
-                  multiple:true,
-                  required:false,
-                  options:autoDevices.collectEntries{ [(it.id):it.displayName] }
-
-            input "replaceConfirmManual","bool",
-                  title:"Confirm manual replacement",
-                  required:true
+        section("Select Devices"){
+            input "replaceDevicesManual", "enum",
+                  title: "Select devices to mark as replaced",
+                  options: autoDevices.collect{ it.displayName },
+                  multiple: true,
+                  required: true
         }
 
-        section("Instructions"){
-            paragraph "Only batteries replaced at ≤40% are automatically registered. Use this page to manually register other replacements."
+        section("Confirm Replacement"){
+            input "replaceConfirmManual", "bool",
+                  title: "Confirm replacement",
+                  required: true
+        }
+
+        section("") {
+            paragraph "After pressing Submit, the app will record these replacements and return to the main page."
+        }
+
+        // Submit button logic
+        if(replaceConfirmManual && replaceDevicesManual){
+            replaceDevicesManual.each{ name ->
+                def dev = autoDevices.find{ it.displayName == name }
+                if(dev){
+                    state.replacements << [
+                        device: dev.displayName,
+                        level: dev.currentValue("battery")?.toInteger() ?: 100,
+                        date: new Date().format("yyyy-MM-dd HH:mm", location.timeZone),
+                        manual: true
+                    ]
+                    state.history[dev.id]?.drain = 0.3
+                    state.trend[dev.id] = "Stable"
+                    state.history[dev.id]?.lastLevel = dev.currentValue("battery")?.toInteger() ?: 100
+                    state.history[dev.id]?.lastDate = now()
+                    state.history[dev.id]?.justReplaced = true
+                }
+            }
+            // Clear selections after submitting
+            app?.updateSetting("replaceDevicesManual",[value:[], type:"enum"])
+            app?.updateSetting("replaceConfirmManual",[value:false, type:"bool"])
+            // Return to main page
+            mainPage()
         }
     }
 }
