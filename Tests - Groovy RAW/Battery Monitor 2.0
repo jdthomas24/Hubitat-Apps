@@ -349,34 +349,39 @@ def historyPage(){
                 return
             }
 
-            // Sort replacements alphabetically by device name
-            replacements = replacements.sort{ a, b -> a.device <=> b.device }
+            // Keep only latest replacement per device
+            def latestReps = replacements.groupBy{ it.device }.collect{ k,v ->
+                v.max{ new Date().parse("yyyy-MM-dd HH:mm", it.date) }  // pick latest
+            }
+
+            // Sort alphabetically by device name
+            latestReps = latestReps.sort{ a,b -> a.device <=> b.device }
 
             // Create HTML table
             def table = "<table style='width:100%; border-collapse: collapse;'>"
             table += "<tr style='font-weight:bold; border-bottom:1px solid #000;'><td>Date</td><td>Device</td><td>Level</td><td>Type</td></tr>"
 
-            // Display replacements
-            replacements.each{ r ->
+            latestReps.each{ r ->
                 def deviceObj = autoDevices.find{ it.displayName == r.device }
                 def level = r.level ?: deviceObj?.currentValue("battery") ?: "N/A"
 
-                // Determine replacement type: Auto = green A, Manual = blue M
-                def typeCode = r.manual ? "<span style='color:blue;font-weight:bold'>M</span>" 
-                                         : "<span style='color:green;font-weight:bold'>A</span>"
+                // Determine type code with color
+                def typeCode = r.manual ? "<span style='color:blue;font-weight:bold;'>M</span>" 
+                                        : "<span style='color:green;font-weight:bold;'>A</span>"
+
+                // Format date only
+                def dateOnly = r.date.split(" ")[0]
 
                 table += "<tr>"
-                table += "<td>${r.date.split(' ')[0]}</td>"  // only show date
+                table += "<td>${dateOnly}</td>"
                 table += "<td>${r.device}</td>"
                 table += "<td>${level}%</td>"
                 table += "<td>${typeCode}</td>"
                 table += "</tr>"
             }
 
-            // Add notes row
-            table += "<tr><td colspan='4' style='padding-top:8px; font-size:small;'>"
-            table += "<b>Notes:</b> A = Auto-detected replacement (≤40% → ≥95%), M = Manual replacement"
-            table += "</td></tr>"
+            // Add notes for Type column
+            table += "<tr><td colspan='4' style='font-size:small;color:#555;padding-top:5px;'>A = Auto replacement &nbsp;&nbsp; M = Manual replacement</td></tr>"
 
             table += "</table>"
 
@@ -384,7 +389,6 @@ def historyPage(){
         }
     }
 }
-
 def replacementPage(){
     dynamicPage(name:"replacementPage",title:"Battery Replacement",install:false){
         section("Manual Replacement"){
