@@ -395,37 +395,32 @@ def replacementPage(){
 def manualReplacementPage() {
     dynamicPage(name:"manualReplacementPage", title:"Manual Battery Replacement", install:false){
         // Device selection
-        section("Select Devices"){
+        section("Select Devices for Manual Replacement"){
             input "replaceDevicesManual","enum",
                   title:"Select Devices (can choose multiple)",
                   options:autoDevices.collectEntries{[(it.id):it.displayName]}.sort { a,b -> a.value <=> b.value },
                   multiple:true,
-                  required:false
+                  required:true
         }
 
         // Confirm replacement
         section("Confirm Replacement"){
             input "replaceConfirmManual","bool",
                   title:"Confirm Battery Replaced",
-                  required:false,
-                  defaultValue:true // ✅ Automatically "checked" by default
+                  required:true,
+                  defaultValue:false
         }
 
-        // Submit navigation
+        // Submit section: single action, returns to main page
         section(){
-            href "manualReplacementConfirmPage", title:"Submit Replacement"
-        }
-
-        // Back link
-        section(){
-            href "replacementPage", title:"Back to Replacement Page"
+            href "manualReplacementConfirmPage", title:"Register and Return to Main", description:"Once submitted, you will return to the main page."
         }
     }
 }
 
 // --- Manual Replacement Confirm Page ---
 def manualReplacementConfirmPage(){
-    dynamicPage(name:"manualReplacementConfirmPage", title:"Confirm Manual Replacement", install:false){
+    dynamicPage(name:"manualReplacementConfirmPage", title:"Processing Manual Replacement", install:false){
         section("Processing Manual Replacement"){
             if(replaceConfirmManual && replaceDevicesManual){
                 replaceDevicesManual.each{ id ->
@@ -444,11 +439,22 @@ def manualReplacementConfirmPage(){
                         state.history[dev.id]?.justReplaced = true
                     }
                 }
-                paragraph "Manual battery replacement registered successfully!"
+                // Instead of showing Done, navigate directly to mainPage
+                redirectToMainPage()
             } else {
-                paragraph "No devices selected or confirmation missing."
+                paragraph "No devices selected or confirmation missing. Please go back and try again."
             }
         }
+    }
+}
+
+// Helper function: redirect back to main page
+def redirectToMainPage(){
+    app?.updateSetting("replaceDevicesManual",[value:[],type:"enum"])
+    app?.updateSetting("replaceConfirmManual",[value:false,type:"bool"])
+    // Return to mainPage immediately
+    mainPage()
+}
 
         section(){
             href "manualReplacementPage", title:"Back to Manual Replacement"
