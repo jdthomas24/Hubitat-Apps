@@ -238,22 +238,20 @@ def getBatteryLevelDisplay(level, device=null){
     else if(level<=70) label = "🟠 ${level}%"
     else label = "🟢 ${level}%"
 
-    def data = state.history?.get(device.id)
+    def data = device ? state.history?.get(device.id) : null
     def showTag = data?.justReplaced
     def replacedTime = data?.replacedTime
 
     if(showTag && replacedTime){
-    def hours = (now() - replacedTime) / (1000*60*60)
-    if(hours >= 24){
-        state.history[device.id].justReplaced = false
-        showTag = false
+        def hours = (now() - replacedTime) / (1000*60*60)
+        if(hours >= 24){
+            state.history[device.id].justReplaced = false
+            showTag = false
+        }
     }
-}
 
-if(device && showTag){
-    label += " (Recently Replaced)"
-}
-
+    if(device && showTag){
+        label += " (Recently Replaced)"
     }
 
     return label
