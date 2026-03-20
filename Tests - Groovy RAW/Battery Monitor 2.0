@@ -1,5 +1,5 @@
 definition(
-    name: "Battery Monitor 2.0", // DO NOT CHANGE (HPM SAFE)
+    name: "Battery Monitor 2.3", // DO NOT CHANGE (HPM SAFE)
     namespace: "jdthomas24",
     author: "Jdthomas24",
     description: "Advanced Hubitat battery monitoring with analytics, trends and replacement tracking.",
