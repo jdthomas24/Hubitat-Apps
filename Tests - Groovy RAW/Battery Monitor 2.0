@@ -344,8 +344,38 @@ def historyPage(){
     dynamicPage(name:"historyPage",title:"Battery Replacement History",install:false){
         section("Replacement Log"){
             def replacements = state.replacements ?: []
-            if(replacements.size()==0){ paragraph "No battery replacements detected." }
-            else{ replacements.reverse().each{ paragraph "${it.device} - ${it.level}% - ${it.date}" } }
+            if(replacements.size() == 0){
+                paragraph "No battery replacements detected."
+                return
+            }
+
+            // Create HTML table
+            def table = "<table style='width:100%; border-collapse: collapse;'>"
+            table += "<tr style='font-weight:bold; border-bottom:1px solid #000;'><td>Date</td><td>Device</td><td>Level</td><td>Type</td><td>Code</td></tr>"
+
+            // Display latest first
+            replacements.reverse().each{ r ->
+                def deviceObj = autoDevices.find{ it.displayName == r.device }
+                def level = r.level ?: deviceObj?.currentValue("battery") ?: "N/A"
+
+                // Determine replacement type: Auto or Manual
+                def type = r.manual ? "Manual" : "Auto"
+
+                // Optional code for tracking (use device id)
+                def code = deviceObj?.id ?: "N/A"
+
+                table += "<tr>"
+                table += "<td>${r.date}</td>"
+                table += "<td>${r.device}</td>"
+                table += "<td>${level}%</td>"
+                table += "<td>${type}</td>"
+                table += "<td>${code}</td>"
+                table += "</tr>"
+            }
+
+            table += "</table>"
+
+            paragraph table
         }
     }
 }
@@ -419,11 +449,12 @@ def manualReplacementConfirmPage() {
                             state.trend[device.id] = "Stable"
                         }
 
-                        state.replacements << [
-                            device: device.displayName,
-                            level: level,
-                            date: new Date().format("yyyy-MM-dd HH:mm", location.timeZone)
-                        ]
+                    state.replacements << [
+                       device: device.displayName,
+                       level: level,
+                       date: new Date().format("yyyy-MM-dd HH:mm", location.timeZone),
+                       manual: true
+                          ]
 
                         // Update history after manual replacement
                         state.history[device.id].drain = 0.3
