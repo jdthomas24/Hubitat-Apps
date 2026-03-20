@@ -469,6 +469,10 @@ def manualReplacementConfirmPage() {
     if(state.replacements == null) state.replacements = []
 
     dynamicPage(name:"manualReplacementConfirmPage", title:"Confirm Replacement", install:false){
+        section("Note"){
+            paragraph "<b style='color:blue;'>⚠ Battery replacement history is displayed in the Battery Replacement tab.</b>"
+        }
+
         section("Replacement Registered"){
             if(replaceDevicesManual && replaceConfirmManual){
                 replaceDevicesManual.each { deviceId ->
@@ -488,14 +492,15 @@ def manualReplacementConfirmPage() {
                             state.trend[device.id] = "Stable"
                         }
 
-                    state.replacements << [
-                       device: device.displayName,
-                       level: level,
-                       date: new Date().format("yyyy-MM-dd HH:mm", location.timeZone),
-                       manual: true
-                          ]
+                        // Register manual replacement
+                        state.replacements << [
+                            device: device.displayName,
+                            level: level,
+                            date: new Date().format("yyyy-MM-dd HH:mm", location.timeZone),
+                            manual: true
+                        ]
 
-                        // Update history after manual replacement
+                        // Update device history after replacement
                         state.history[device.id].drain = 0.3
                         state.trend[device.id] = "Stable"
                         state.history[device.id].lastLevel = level
@@ -508,12 +513,12 @@ def manualReplacementConfirmPage() {
                 paragraph "Please select device(s) and confirm replacement or use the Back button to cancel."
             }
         }
+
         section(){
             href "replacementPage", title:"Back to Replacement Page"
         }
     }
 }
-
 def scheduledSummary(){
     def devices = autoDevices.collect{ d -> [device: d, level: d.currentValue("battery")?.toInteger()] }.findAll{ it.level != null }
     devices = devices.sort{ it.level }
