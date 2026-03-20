@@ -395,9 +395,8 @@ def manualReplacementPage(){
                   title:"Select devices manually replaced",
                   multiple:true,
                   required:false,
-                  options: autoDevices.collect{ it.displayName }
-
-            submitOnChange(true)
+                  options: autoDevices.collect{ it.displayName },
+                  submitOnChange:true   // <-- moved correctly inside the input
         }
 
         // Always allow returning to main page even if no devices selected
