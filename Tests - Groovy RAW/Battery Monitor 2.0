@@ -351,25 +351,22 @@ def historyPage(){
 
             // Create HTML table
             def table = "<table style='width:100%; border-collapse: collapse;'>"
-            table += "<tr style='font-weight:bold; border-bottom:1px solid #000;'><td>Date</td><td>Device</td><td>Level</td><td>Type</td><td>Code</td></tr>"
+            table += "<tr style='font-weight:bold; border-bottom:1px solid #000;'><td>Date</td><td>Device</td><td>Level</td><td>Type</td></tr>"
 
             // Display latest first
             replacements.reverse().each{ r ->
                 def deviceObj = autoDevices.find{ it.displayName == r.device }
                 def level = r.level ?: deviceObj?.currentValue("battery") ?: "N/A"
 
-                // Determine replacement type: Auto or Manual
-                def type = r.manual ? "Manual" : "Auto"
-
-                // Optional code for tracking (use device id)
-                def code = deviceObj?.id ?: "N/A"
+                // Determine replacement type: Auto = green A, Manual = blue M
+                def typeCode = r.manual ? "<span style='color:blue;font-weight:bold'>M</span>" 
+                                         : "<span style='color:green;font-weight:bold'>A</span>"
 
                 table += "<tr>"
-                table += "<td>${r.date}</td>"
+                table += "<td>${r.date.split(' ')[0]}</td>"  // show only the date
                 table += "<td>${r.device}</td>"
                 table += "<td>${level}%</td>"
-                table += "<td>${type}</td>"
-                table += "<td>${code}</td>"
+                table += "<td>${typeCode}</td>"
                 table += "</tr>"
             }
 
