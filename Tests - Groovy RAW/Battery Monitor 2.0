@@ -140,7 +140,7 @@ def batteryHandler(evt){
     }
 }
 
-def updateBattery(device,level){
+def updateBattery(device, level){
     def data = state.history[device.id]
     if(!data){
         // Initialize history if missing
@@ -148,30 +148,37 @@ def updateBattery(device,level){
             lastLevel: level ?: 100,
             lastDate: now(),
             drain: 0.3,
-            samples: []
+            samples: [],
+            justReplaced: false
         ]
         state.trend[device.id] = "Stable"
         data = state.history[device.id]
     }
 
-    detectReplacement(device,level,data.lastLevel)
+    detectReplacement(device, level, data.lastLevel)
 
-    def days=(now()-data.lastDate)/(1000*60*60*24)
-    if(days>0 && !data.justReplaced){
-        def drain=(data.lastLevel-level)/days
-        if(drain>0){
+    // Only calculate drain if device wasn't just replaced
+    def days = (now() - data.lastDate) / (1000*60*60*24)
+    if(days > 0 && !data.justReplaced){
+        def drain = (data.lastLevel - level)/days
+        if(drain > 0){
             data.samples << drain
-            if(data.samples.size()>5){
+            if(data.samples.size() > 5){
                 data.samples.remove(0)
             }
-            data.drain=data.samples.sum()/data.samples.size()
-            updateTrend(device,data.drain)
+            data.drain = data.samples.sum() / data.samples.size()
+            updateTrend(device, data.drain)
         }
     }
 
-    data.lastLevel=level
-    data.lastDate=now()
-    data.justReplaced = false
+    // Update lastLevel and lastDate
+    data.lastLevel = level
+    data.lastDate = now()
+
+    // ✅ Clear justReplaced after first real report
+    if(data.justReplaced){
+        data.justReplaced = false
+    }
 }
 
 // =====================
