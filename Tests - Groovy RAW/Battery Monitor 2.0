@@ -393,15 +393,42 @@ def replacementPage(){
         }
         section("Replacement History"){
             def reps = state.replacements ?: []
-            if(reps.size()==0){ 
+            if(reps.size() == 0){ 
                 paragraph "No battery replacements detected." 
-            } else { 
-                reps.reverse().each{ r ->
-                    def deviceObj = autoDevices.find{ it.displayName == r.device }
-                    def level = r.level ?: deviceObj?.currentValue("battery") ?: "N/A"
-                    paragraph "${r.date} — ${r.device} — ${level}%"
-                } 
+                return
             }
+
+            // Sort alphabetically by device name
+            reps = reps.sort{ a, b -> a.device <=> b.device }
+
+            // Build table
+            def table = "<table style='width:100%; border-collapse: collapse;'>"
+            table += "<tr style='font-weight:bold; border-bottom:1px solid #000;'><td>Date</td><td>Device</td><td>Level</td><td>Type</td></tr>"
+
+            reps.each{ r ->
+                def deviceObj = autoDevices.find{ it.displayName == r.device }
+                def level = r.level ?: deviceObj?.currentValue("battery") ?: "N/A"
+
+                // Colored type code: A = Auto, M = Manual
+                def typeCode = r.manual ? "<span style='color:blue;font-weight:bold'>M</span>" 
+                                         : "<span style='color:green;font-weight:bold'>A</span>"
+
+                table += "<tr>"
+                table += "<td>${r.date.split(' ')[0]}</td>"  // show only date
+                table += "<td>${r.device}</td>"
+                table += "<td>${level}%</td>"
+                table += "<td>${typeCode}</td>"
+                table += "</tr>"
+            }
+
+            // Add notes row
+            table += "<tr><td colspan='4' style='padding-top:8px; font-size:small;'>"
+            table += "<b>Notes:</b> A = Auto-detected replacement (≤40% → ≥95%), M = Manual replacement"
+            table += "</td></tr>"
+
+            table += "</table>"
+
+            paragraph table
         }
     }
 }
