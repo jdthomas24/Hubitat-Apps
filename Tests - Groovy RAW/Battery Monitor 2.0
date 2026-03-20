@@ -507,3 +507,4 @@ def infoPage(Map params = [:]){
             paragraph "• Devices with consistent low drain are healthy\n" +
                       "• Sudden spikes usually indicate a problem\n" +
                       "• Compare similar devices to identify outliers\n"
+}
