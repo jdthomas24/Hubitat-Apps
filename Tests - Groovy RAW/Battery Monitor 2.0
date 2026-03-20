@@ -321,7 +321,7 @@ def summaryPage(){
 def trendsPage(){
     dynamicPage(name:"trendsPage",title:"Battery Trends",install:false){
         section("Battery Trend Analysis"){
-            paragraph "⚠ Note: Trends may be overestimated until the device reports at least 5 battery events. Trend accuracy improves as more data is collected over time."
+            paragraph "⚠ Note: Trends may be overestimated until the device reports at least 5 battery events. Trend accuracy improves as more data is collected over time. Devices with "Recently Replaced" tag will clear when devcie starts reporting."
             
             def devs = autoDevices.findAll{ it.currentValue("battery") != null }.sort{ a,b -> a.displayName <=> b.displayName }
             if(!devs){ paragraph "No battery devices."; return }
