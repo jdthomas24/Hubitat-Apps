@@ -112,6 +112,13 @@ def initialize(){
     scheduleReportFrequency()
 
     autoDevices.each{ device ->
+// ✅ CLEAN UP BAD HISTORICAL DRAIN VALUES
+state.history.each{ id, data ->
+    if(data?.drain > 5){
+        data.drain = 0.3
+        data.samples = []
+    }
+}
         if(!state.history[device.id]){
             def level=device.currentValue("battery")?.toInteger() ?:100
             state.history[device.id]=[
@@ -190,6 +197,7 @@ def batteryHandler(evt){
 
 def updateBattery(device, level){
     def data = state.history[device.id]
+
     if(!data){
         state.history[device.id] = [
             lastLevel: level ?: 100,
@@ -204,10 +212,34 @@ def updateBattery(device, level){
 
     detectReplacement(device, level, data.lastLevel)
 
-   // Auto-clear recently replaced after 24h using replacedTime
-def replacedAt = data.replacedTime ?: now()
-if(data.justReplaced && (now() - replacedAt) > 1000*60*60*24){
-    data.justReplaced = false
+    def replacedAt = data.replacedTime ?: now()
+    if(data.justReplaced && (now() - replacedAt) > 1000*60*60*24){
+        data.justReplaced = false
+    }
+
+    def days = (now() - data.lastDate) / (1000*60*60*24)
+
+    if(days > 0 && !data.justReplaced){
+        def drain = (data.lastLevel - level) / days
+
+        if(drain > 0 && drain < 5){
+            data.samples << drain
+            if(data.samples.size() > 5) data.samples.remove(0)
+        }
+
+        if(data.samples && data.samples.size() > 0){
+            def avg = data.samples.sum() / data.samples.size()
+            data.drain = Math.min(avg, 1.5)
+            updateTrend(device, data.drain)
+        }
+    }
+
+    data.lastLevel = level
+    data.lastDate = now()
+
+    if(reportFrequency == "critical" && level <= 25){
+        sendCriticalReport(device, level)
+    }
 }
 
     def days = (now() - data.lastDate) / (1000*60*60*24)
@@ -250,10 +282,6 @@ def detectReplacement(device, newLevel, oldLevel){
 
     def data = state.history[device.id]
 
-    // Look at recent samples to detect prior low battery
-    def recentLow = data.samples?.any { it < 0.5 }  // indirect indicator of decline
-
-    // Detect large jump OR classic threshold
     def largeJump = (newLevel - oldLevel) >= 40
 
     if((newLevel >= 95 && oldLevel <= 40) || (newLevel >= 95 && largeJump)){
@@ -265,6 +293,7 @@ def detectReplacement(device, newLevel, oldLevel){
         ]
 
         data.drain = 0.3
+        data.samples = []
         state.trend[device.id] = "Stable"
         data.lastLevel = newLevel
         data.lastDate = now()
