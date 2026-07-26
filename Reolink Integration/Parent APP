@@ -23,6 +23,7 @@ definition(
     author: "Jason",
     description: "Discovers and manages Reolink cameras, doorbells, NVRs, and Home Hubs",
     category: "Convenience",
+    menu: "Integrations", // groups this app under the "Integrations" section of Add User App
     iconUrl: "",
     iconX2Url: "",
     singleThreaded: true
