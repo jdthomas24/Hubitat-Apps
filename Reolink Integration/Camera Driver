@@ -1,0 +1,63 @@
+/**
+ * Reolink Camera (Component Driver)
+ * Thin device: no HTTP of its own. Everything delegates to the parent app via
+ * parent.componentX(this, ...). The app knows which source/channel this device
+ * maps to (stored as data values sourceId/channel) and does the actual API call.
+ */
+metadata {
+    definition(name: "Reolink Camera", namespace: "jdthomas24", author: "Jason", component: true) {
+        capability "Motion Sensor"
+        capability "Refresh"
+        capability "Sensor"
+
+        attribute "person", "enum", ["active", "inactive"]
+        attribute "vehicle", "enum", ["active", "inactive"]
+        attribute "pet", "enum", ["active", "inactive"]
+        attribute "package", "enum", ["active", "inactive"]
+        attribute "snapshotUrl", "string"
+        attribute "batteryMode", "enum", ["wired", "battery", "unknown"]
+
+        command "takeSnapshot"
+        command "ptz", [[name: "direction", type: "ENUM",
+            constraints: ["Left", "Right", "Up", "Down", "ZoomInc", "ZoomDec", "Stop"]]]
+        command "setPollInterval", [[name: "seconds", type: "NUMBER"]]
+    }
+    preferences {
+        input name: "pollIntervalSec", type: "number", title: "Poll interval (sec)", defaultValue: 30
+    }
+}
+
+def refresh() {
+    parent?.componentRefresh(this)
+}
+
+def takeSnapshot() {
+    parent?.componentTakeSnapshot(this)
+}
+
+def ptz(direction) {
+    parent?.componentPtz(this, direction)
+}
+
+def setPollInterval(seconds) {
+    parent?.componentSetPollInterval(this, seconds as Integer)
+}
+
+/** Called by the app after it polls GetAiState/GetMdState for this channel. */
+def parseReolinkState(aiState, mdState) {
+    // TODO map real field names once GetAiState/GetMdState payloads are confirmed
+    def motionActive = mdState?.state == 1
+    sendEvent(name: "motion", value: motionActive ? "active" : "inactive")
+
+    ["people", "vehicle", "dog_cat"].each { key ->
+        def attr = key == "people" ? "person" : (key == "dog_cat" ? "pet" : key)
+        def active = aiState?.getAt(key)?.alarm_state == 1
+        sendEvent(name: attr, value: active ? "active" : "inactive")
+    }
+    def pkgActive = aiState?.package?.alarm_state == 1
+    sendEvent(name: "package", value: pkgActive ? "active" : "inactive")
+}
+
+def receiveSnapshotUrl(url) {
+    sendEvent(name: "snapshotUrl", value: url)
+}
