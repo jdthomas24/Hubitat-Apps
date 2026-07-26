@@ -1,1 +1,41 @@
-
+{
+    "packageName": "Reolink Integration",
+    "releaseNotes": "v0.1.0   Initial scaffold: source-list app, camera + doorbell component drivers.",
+    "documentationLink": "https://community.hubitat.com/",
+    "communityLink": "https://community.hubitat.com/",
+    "author": "jdthomas24",
+    "version": "0.1.0",
+    "minimumHEVersion": "2.3.4",
+    "dateReleased": "2026-07-26",
+    "category": "Integrations",
+    "tags": "Cameras & Video",
+    "apps": [
+        {
+            "id": "65694031-b2ec-487e-abfc-9ad90435fb4b",
+            "name": "Reolink Integration",
+            "namespace": "jdthomas24",
+            "location": "https://raw.githubusercontent.com/jdthomas24/hubitat-reolink/main/apps/reolink-integration-app.groovy",
+            "required": true,
+            "oauth": false,
+            "description": "Manages Reolink sources (standalone cameras, NVRs, Home Hubs) and creates camera/doorbell child devices."
+        }
+    ],
+    "drivers": [
+        {
+            "id": "57f47553-5071-4936-aefd-1cb3b4560f0a",
+            "name": "Reolink Camera",
+            "namespace": "jdthomas24",
+            "location": "https://raw.githubusercontent.com/jdthomas24/hubitat-reolink/main/drivers/reolink-camera-driver.groovy",
+            "required": true,
+            "description": "Component driver for a standard Reolink camera channel."
+        },
+        {
+            "id": "45e79695-73b0-4f6d-84bb-45b8aee58b17",
+            "name": "Reolink Doorbell",
+            "namespace": "jdthomas24",
+            "location": "https://raw.githubusercontent.com/jdthomas24/hubitat-reolink/main/drivers/reolink-doorbell-driver.groovy",
+            "required": true,
+            "description": "Component driver for a Reolink doorbell channel, adds button-press (visitor) event."
+        }
+    ]
+}
