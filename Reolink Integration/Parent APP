@@ -1,0 +1,303 @@
+/**
+ * Reolink Integration (Parent App)
+ *
+ * Design notes (from planning discussion):
+ *  - A "source" is anything that answers the Reolink HTTP/JSON API: a standalone
+ *    camera, a PoE NVR, or a network Home Hub. Each source has its own IP + creds.
+ *  - A source with N paired channels (NVR/Home Hub) reports channels 0..N-1.
+ *    A standalone camera is a degenerate source with exactly one channel: 0.
+ *  - Every child device is tagged with (sourceId, channel). Children never talk
+ *    HTTP directly -- they call parent.componentX() and this app does the call.
+ *  - Poll interval is per-child, not global, because wired-mode doorbells/cams
+ *    can be polled tight (2-5s) while battery-mode devices should be polled
+ *    looser (or event-driven later) to avoid hammering a sleeping device.
+ *
+ * TODO markers throughout mark spots that need exact command/param names
+ * verified against your firmware's API guide (GetMdState / GetAiState /
+ * GetChannelstatus / Snap / PtzCtrl / Login field names can drift by version).
+ */
+
+definition(
+    name: "Reolink Integration",
+    namespace: "jdthomas24",
+    author: "Jason",
+    description: "Discovers and manages Reolink cameras, doorbells, NVRs, and Home Hubs",
+    category: "Convenience",
+    iconUrl: "",
+    iconX2Url: "",
+    singleThreaded: true
+)
+
+preferences {
+    page(name: "mainPage")
+    page(name: "addSourcePage")
+    page(name: "discoverPage")
+}
+
+def mainPage() {
+    dynamicPage(name: "mainPage", title: "Reolink Integration", install: true, uninstall: true) {
+        section("Sources") {
+            paragraph "A source is one camera, one NVR, or one Home Hub -- anything with its own IP/login."
+            (state.sources ?: []).each { src ->
+                href name: "src_${src.id}", title: "${src.label} (${src.host})",
+                    description: "${src.isHub ? 'Hub/NVR' : 'Standalone'} · ${childrenForSource(src.id).size()} device(s)",
+                    page: "discoverPage", params: [sourceId: src.id]
+            }
+            href name: "addSource", title: "Add a source...", page: "addSourcePage"
+        }
+        section("Polling") {
+            input "defaultWiredPoll", "number", title: "Default poll interval (sec) - wired/plugged-in devices", defaultValue: 3
+            input "defaultBatteryPoll", "number", title: "Default poll interval (sec) - battery devices", defaultValue: 30
+        }
+        section("Logging") {
+            input "debugLogging", "bool", title: "Enable debug logging", defaultValue: false
+        }
+    }
+}
+
+def addSourcePage() {
+    dynamicPage(name: "addSourcePage", title: "Add a Reolink Source", nextPage: "mainPage") {
+        section {
+            input "newLabel", "text", title: "Label (e.g. 'Front Door Hub', 'Garage Cam')", required: true
+            input "newHost", "text", title: "IP address", required: true
+            input "newPort", "number", title: "HTTPS port", defaultValue: 443
+            input "newUser", "text", title: "Username", required: true
+            input "newPass", "password", title: "Password", required: true
+            input "newIsHub", "bool", title: "This is an NVR or Home Hub (multiple channels)", defaultValue: false
+            input "confirmAdd", "bool", title: "Save this source", defaultValue: false, submitOnChange: true
+        }
+    }
+    if (confirmAdd) {
+        addSource()
+        app.updateSetting("confirmAdd", [type: "bool", value: false])
+    }
+}
+
+def discoverPage(params) {
+    def sourceId = params?.sourceId ?: state.currentDiscoverySourceId
+    state.currentDiscoverySourceId = sourceId
+    def src = getSource(sourceId)
+
+    dynamicPage(name: "discoverPage", title: "Discover Channels - ${src?.label}", nextPage: "mainPage") {
+        section {
+            href name: "runDiscovery", title: "Run discovery now",
+                description: "Calls the source and lists available channels",
+                page: "discoverPage", params: [sourceId: sourceId, run: true]
+
+            if (params?.run) {
+                def channels = discoverChannels(sourceId)
+                state.lastDiscovery = channels
+            }
+
+            (state.lastDiscovery ?: []).each { ch ->
+                def dni = childDni(sourceId, ch.channel)
+                def exists = getChildDevice(dni) != null
+                input "create_${ch.channel}", "bool",
+                    title: "Ch ${ch.channel}: ${ch.name} (${ch.deviceType})${exists ? ' [already added]' : ''}",
+                    defaultValue: exists, submitOnChange: true
+            }
+
+            input "confirmCreate", "bool", title: "Create selected devices", defaultValue: false, submitOnChange: true
+        }
+    }
+    if (confirmCreate) {
+        createSelectedChildren(sourceId)
+        app.updateSetting("confirmCreate", [type: "bool", value: false])
+    }
+}
+
+// ---------- Source management ----------
+
+def addSource() {
+    state.sources = state.sources ?: []
+    def id = (state.sources*.id.max() ?: 0) + 1
+    state.sources << [
+        id: id, label: newLabel, host: newHost, port: newPort ?: 443,
+        username: newUser, password: newPass, isHub: newIsHub ?: false,
+        token: null, tokenExpires: 0
+    ]
+    logDebug "Added source ${id}: ${newLabel} (${newHost})"
+}
+
+def getSource(id) {
+    (state.sources ?: []).find { it.id == (id as Integer) }
+}
+
+def childrenForSource(sourceId) {
+    getChildDevices().findAll { it.getDataValue("sourceId") as Integer == sourceId }
+}
+
+// ---------- Auth ----------
+
+private String reolinkLogin(sourceId) {
+    def src = getSource(sourceId)
+    if (src.token && now() < src.tokenExpires) return src.token
+
+    // TODO verify exact Login command body/response shape against your firmware's API guide
+    def body = [[cmd: "Login", param: [User: [userName: src.username, password: src.password]]]]
+    def resp = reolinkRawPost(src, body)
+    def token = resp?.getAt(0)?.value?.Token?.name
+    def leaseSec = (resp?.getAt(0)?.value?.Token?.leaseTime ?: 3600) as Integer
+
+    src.token = token
+    src.tokenExpires = now() + (leaseSec * 1000L) - 30000L // refresh 30s early
+    return token
+}
+
+private reolinkRawPost(src, bodyList) {
+    def uri = "https://${src.host}:${src.port}/cgi-bin/api.cgi"
+    def params = [uri: uri, ignoreSSLIssues: true, requestContentType: "application/json",
+                  body: groovy.json.JsonOutput.toJson(bodyList), timeout: 10]
+    def result = null
+    try {
+        httpPost(params) { resp -> result = resp.data }
+    } catch (e) {
+        log.warn "Reolink POST failed for source ${src.id} (${src.host}): ${e.message}"
+    }
+    return result
+}
+
+/** Generic authenticated call. channel may be null for source-level commands (e.g. GetChannelstatus). */
+def reolinkApiCall(sourceId, String cmd, Map param = [:], Integer channel = null) {
+    def src = getSource(sourceId)
+    def token = reolinkLogin(sourceId)
+    if (!token) return null
+
+    def p = channel != null ? param + [channel: channel] : param
+    def uri = "https://${src.host}:${src.port}/cgi-bin/api.cgi?cmd=${cmd}&token=${token}"
+    def body = [[cmd: cmd, action: 0, param: p]]
+    def result = null
+    try {
+        httpPost([uri: uri, ignoreSSLIssues: true, requestContentType: "application/json",
+                  body: groovy.json.JsonOutput.toJson(body), timeout: 10]) { resp -> result = resp.data }
+    } catch (e) {
+        log.warn "Reolink cmd ${cmd} failed for source ${sourceId} ch ${channel}: ${e.message}"
+    }
+    return result?.getAt(0)?.value
+}
+
+// ---------- Discovery ----------
+
+def discoverChannels(sourceId) {
+    def src = getSource(sourceId)
+    def channels = []
+    if (!src.isHub) {
+        // TODO confirm GetDevInfo response field for a friendly camera name
+        def info = reolinkApiCall(sourceId, "GetDevInfo")
+        channels << [channel: 0, name: info?.DevInfo?.name ?: src.label, deviceType: guessDeviceType(info)]
+    } else {
+        // TODO confirm GetChannelstatus response shape for hub/NVR channel enumeration
+        def status = reolinkApiCall(sourceId, "GetChannelstatus")
+        status?.status?.each { ch ->
+            if (ch.online) {
+                channels << [channel: ch.channel, name: ch.name ?: "Channel ${ch.channel}", deviceType: guessDeviceType(ch)]
+            }
+        }
+    }
+    return channels
+}
+
+private String guessDeviceType(info) {
+    // TODO refine once real GetDevInfo/GetChannelstatus payloads are in hand
+    def model = (info?.DevInfo?.model ?: info?.model ?: "").toLowerCase()
+    return model.contains("doorbell") ? "doorbell" : "camera"
+}
+
+// ---------- Child creation ----------
+
+private String childDni(sourceId, channel) {
+    "reolink-${sourceId}-${channel}"
+}
+
+def createSelectedChildren(sourceId) {
+    (state.lastDiscovery ?: []).each { ch ->
+        def wantIt = settings["create_${ch.channel}"]
+        def dni = childDni(sourceId, ch.channel)
+        def existing = getChildDevice(dni)
+        if (wantIt && !existing) {
+            def driverName = ch.deviceType == "doorbell" ? "Reolink Doorbell" : "Reolink Camera"
+            def child = addChildDevice("jdthomas24", driverName, dni, [
+                name: ch.name, label: ch.name, isComponent: true
+            ])
+            child.updateDataValue("sourceId", "${sourceId}")
+            child.updateDataValue("channel", "${ch.channel}")
+            child.updateSetting("pollIntervalSec", [type: "number",
+                value: defaultBatteryPoll ?: 30]) // user adjusts per-device after wired/battery mode is known
+            logDebug "Created child ${dni} (${driverName})"
+        } else if (!wantIt && existing) {
+            deleteChildDevice(dni)
+        }
+    }
+    initializePolling()
+}
+
+// ---------- Polling ----------
+
+def installed() { initialize() }
+def updated() { initialize() }
+
+def initialize() {
+    unschedule()
+    initializePolling()
+}
+
+def initializePolling() {
+    // Simple approach: each child schedules its own refresh via a short runIn loop,
+    // driven from the app so we control concurrency and can centrally back off a
+    // source that's timing out instead of every child retrying independently.
+    getChildDevices().each { child ->
+        scheduleChildPoll(child)
+    }
+}
+
+def scheduleChildPoll(child) {
+    def interval = (child.getSetting("pollIntervalSec") ?: 30) as Integer
+    runIn(interval, "pollChild", [data: [dni: child.deviceNetworkId], overwrite: false])
+}
+
+def pollChild(data) {
+    def child = getChildDevice(data.dni)
+    if (!child) return
+    def sourceId = child.getDataValue("sourceId") as Integer
+    def channel = child.getDataValue("channel") as Integer
+
+    // TODO confirm GetAiState / GetMdState response field names for your firmware
+    def aiState = reolinkApiCall(sourceId, "GetAiState", [:], channel)
+    def mdState = reolinkApiCall(sourceId, "GetMdState", [:], channel)
+    child.parseReolinkState(aiState, mdState)
+
+    scheduleChildPoll(child)
+}
+
+// ---------- Component callbacks (children call these via parent.X()) ----------
+
+def componentRefresh(child) {
+    pollChild([dni: child.deviceNetworkId])
+}
+
+def componentTakeSnapshot(child) {
+    def sourceId = child.getDataValue("sourceId") as Integer
+    def channel = child.getDataValue("channel") as Integer
+    def src = getSource(sourceId)
+    def token = reolinkLogin(sourceId)
+    def url = "https://${src.host}:${src.port}/cgi-bin/api.cgi?cmd=Snap&channel=${channel}&token=${token}"
+    child.receiveSnapshotUrl(url)
+}
+
+def componentPtz(child, String direction) {
+    def sourceId = child.getDataValue("sourceId") as Integer
+    def channel = child.getDataValue("channel") as Integer
+    // TODO confirm PtzCtrl param names (op: Left/Right/Up/Down/ZoomInc/ZoomDec/Stop, speed, etc.)
+    reolinkApiCall(sourceId, "PtzCtrl", [op: direction, speed: 32], channel)
+}
+
+def componentSetPollInterval(child, Integer seconds) {
+    child.updateSetting("pollIntervalSec", [type: "number", value: seconds])
+    logDebug "Set poll interval for ${child.deviceNetworkId} to ${seconds}s"
+}
+
+// ---------- Logging ----------
+
+private logDebug(msg) {
+    if (debugLogging) log.debug msg
+}
