@@ -1,5 +1,6 @@
 /**
  * Reolink Doorbell (Component Driver)
+ * Version: 1.1.0 -- kept in sync with the parent app's version.
  * Same delegation pattern as Reolink Camera, plus a "visitor" (button press)
  * event so Rule Machine can trigger straight off "pushed 1" for a doorbell ring,
  * separate from AI person/motion detection.
@@ -17,6 +18,7 @@ metadata {
         attribute "package", "enum", ["active", "inactive"]
         attribute "snapshotUrl", "string"
         attribute "batteryMode", "enum", ["wired", "battery", "unknown"]
+        attribute "sleepStatus", "enum", ["awake", "asleep", "unknown"]
 
         command "takeSnapshot"
         command "setPollInterval", [[name: "seconds", type: "NUMBER"]]
@@ -44,6 +46,8 @@ def setPollInterval(seconds) {
 
 /** Called by the app after it polls GetAiState/GetMdState/visitor state for this channel. */
 def parseReolinkState(aiState, mdState) {
+    sendEvent(name: "sleepStatus", value: "awake")
+
     // TODO confirm the visitor/doorbell-press field name in your firmware's GetAiState/GetMdState payload
     def visitorPressed = aiState?.visitor?.alarm_state == 1
     if (visitorPressed) {
@@ -62,6 +66,12 @@ def parseReolinkState(aiState, mdState) {
     sendEvent(name: "package", value: pkgActive ? "active" : "inactive")
 }
 
+/** Called by the app when a poll gets no response -- see camera driver for the reasoning. */
+def markAsleep() {
+    sendEvent(name: "sleepStatus", value: "asleep")
+}
+
 def receiveSnapshotUrl(url) {
     sendEvent(name: "snapshotUrl", value: url)
 }
+
