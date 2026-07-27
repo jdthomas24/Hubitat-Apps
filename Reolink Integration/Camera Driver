@@ -9,6 +9,7 @@ metadata {
         capability "Motion Sensor"
         capability "Refresh"
         capability "Sensor"
+        capability "Battery"
 
         attribute "person", "enum", ["active", "inactive"]
         attribute "vehicle", "enum", ["active", "inactive"]
@@ -16,10 +17,25 @@ metadata {
         attribute "package", "enum", ["active", "inactive"]
         attribute "snapshotUrl", "string"
         attribute "batteryMode", "enum", ["wired", "battery", "unknown"]
+        attribute "sleepStatus", "enum", ["awake", "asleep", "unknown"]
+        attribute "spotlight", "enum", ["on", "off"]
+        attribute "nightVision", "enum", ["auto", "on", "off"]
+        attribute "siren", "enum", ["on", "off"]
 
         command "takeSnapshot"
         command "ptz", [[name: "direction", type: "ENUM",
             constraints: ["Left", "Right", "Up", "Down", "ZoomInc", "ZoomDec", "Stop"]]]
+        command "ptzGoToPreset", [[name: "presetId", type: "NUMBER",
+            description: "Preset ID set up in the Reolink app (e.g. 1 for your 'home' position)"]]
+        command "savePresetHere", [[name: "presetId", type: "NUMBER",
+            description: "Saves the camera's CURRENT position as this preset ID"],
+            [name: "name", type: "STRING", description: "Optional preset name"]]
+        command "spotlightOn"
+        command "spotlightOff"
+        command "setNightVision", [[name: "mode", type: "ENUM", constraints: ["auto", "on", "off"]]]
+        command "sirenOn"
+        command "sirenOff"
+        command "checkBattery"
         command "setPollInterval", [[name: "seconds", type: "NUMBER"]]
     }
     preferences {
@@ -39,12 +55,58 @@ def ptz(direction) {
     parent?.componentPtz(this, direction)
 }
 
+def ptzGoToPreset(presetId) {
+    parent?.componentPtzGoToPreset(this, presetId as Integer)
+}
+
+def savePresetHere(presetId, name = null) {
+    parent?.componentSavePreset(this, presetId as Integer, name)
+}
+
+def spotlightOn() {
+    parent?.componentSetSpotlight(this, true)
+    sendEvent(name: "spotlight", value: "on")
+}
+
+def spotlightOff() {
+    parent?.componentSetSpotlight(this, false)
+    sendEvent(name: "spotlight", value: "off")
+}
+
+def setNightVision(mode) {
+    parent?.componentSetNightVision(this, mode)
+    sendEvent(name: "nightVision", value: mode)
+}
+
+def sirenOn() {
+    parent?.componentSetSiren(this, true)
+    sendEvent(name: "siren", value: "on")
+}
+
+def sirenOff() {
+    parent?.componentSetSiren(this, false)
+    sendEvent(name: "siren", value: "off")
+}
+
+def checkBattery() {
+    parent?.componentCheckBattery(this)
+}
+
+/** Called by the app after GetBatteryInfo. Field names are a TODO -- see app comment. */
+def receiveBatteryInfo(battInfo) {
+    // TODO confirm field names once seen against a real battery-mode device
+    def pct = battInfo?.batteryPercent ?: battInfo?.batteryPercentage
+    if (pct != null) sendEvent(name: "battery", value: pct)
+}
+
 def setPollInterval(seconds) {
     parent?.componentSetPollInterval(this, seconds as Integer)
 }
 
 /** Called by the app after it polls GetAiState/GetMdState for this channel. */
 def parseReolinkState(aiState, mdState) {
+    sendEvent(name: "sleepStatus", value: "awake")
+
     // TODO map real field names once GetAiState/GetMdState payloads are confirmed
     def motionActive = mdState?.state == 1
     sendEvent(name: "motion", value: motionActive ? "active" : "inactive")
@@ -58,6 +120,18 @@ def parseReolinkState(aiState, mdState) {
     sendEvent(name: "package", value: pkgActive ? "active" : "inactive")
 }
 
+/**
+ * Called by the app when a poll gets no response at all. For a wired device this
+ * usually means a real problem; for a battery device it usually just means it
+ * hasn't checked in since its last event or self-wake. This does NOT flip
+ * motion/person/etc back to inactive -- those keep their last-known value,
+ * since "no response" isn't the same as "no longer detected."
+ */
+def markAsleep() {
+    sendEvent(name: "sleepStatus", value: "asleep")
+}
+
 def receiveSnapshotUrl(url) {
     sendEvent(name: "snapshotUrl", value: url)
 }
+
