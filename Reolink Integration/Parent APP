@@ -123,8 +123,8 @@ def tipsPage() {
         section {
             paragraph pillHeader("Poll interval")
             paragraph "Wired devices can be polled tight: a few seconds is fine."
-            paragraph "Battery devices should be polled loose. Home Assistant's own Reolink integration only " +
-                "wakes battery cameras roughly once an hour at most."
+            paragraph "Battery devices should be polled loose -- they only wake for their own events or an " +
+                "occasional self check-in, at most once an hour or so."
             paragraph "Polling a battery device harder doesn't get fresher data -- it just drains the battery " +
                 "for no benefit."
             paragraph "This still holds once a battery device is behind a Hub: you're asking the Hub for its " +
@@ -511,9 +511,9 @@ def pollChild(data) {
     def mdState = reolinkApiCall(sourceId, "GetMdState", [:], channel)
     if (aiState == null && mdState == null) {
         // No response at all -- for a battery device this is normal (asleep between
-        // events/check-ins, same as HA's "Sleep status"), not necessarily an error.
-        // Leave motion/person/etc at their last-known value rather than flipping
-        // everything to "inactive" just because we couldn't ask.
+        // events/check-ins), not necessarily an error. Leave motion/person/etc at
+        // their last-known value rather than flipping everything to "inactive"
+        // just because we couldn't ask.
         child.markAsleep()
     } else {
         child.parseReolinkState(aiState, mdState)
