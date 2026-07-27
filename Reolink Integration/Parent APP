@@ -405,4 +405,3 @@ def componentSetPollInterval(child, Integer seconds) {
 private logDebug(msg) {
     if (debugLogging) log.debug msg
 }
-
