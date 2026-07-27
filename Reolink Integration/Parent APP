@@ -80,7 +80,7 @@ def mainPage() {
         }
         section {
             paragraph pillHeader("Logging")
-            input "debugLogging", "bool", title: "Enable debug logging", defaultValue: false
+            input "debugLogging", "bool", title: "Enable debug logging (auto-off after 90 min)", defaultValue: false
         }
         section {
             href name: "tips", title: "Tips, limitations & what works so far", page: "tipsPage"
