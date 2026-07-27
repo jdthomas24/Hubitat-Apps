@@ -219,8 +219,11 @@ def discoverPage(params) {
                     def dni = childDni(sourceId, ch.channel)
                     def exists = getChildDevice(dni) != null
                     input "create_${sourceId}_${ch.channel}", "bool",
-                        title: "Ch ${ch.channel}: ${ch.name} (${ch.deviceType})${exists ? ' [already added]' : ''}",
+                        title: "Ch ${ch.channel}: ${ch.name} (${ch.deviceType})",
                         defaultValue: exists, submitOnChange: true
+                    if (exists) {
+                        paragraph "<span style='color:#1a73e8'>✔ Added to device list</span>"
+                    }
                 }
 
                 if (channelCount > 1) {
@@ -560,3 +563,4 @@ def componentSetPollInterval(child, Integer seconds) {
 private logDebug(msg) {
     if (debugLogging) log.debug msg
 }
+
