@@ -99,7 +99,13 @@ def discoverPage(params) {
     def sourceId = params?.sourceId ?: state.currentDiscoverySourceId
     state.currentDiscoverySourceId = sourceId
     def src = getSource(sourceId)
-    def channelCount = (state.lastDiscovery ?: []).size()
+
+    // Cached discovery results belong to whichever source last ran discovery --
+    // if that's not THIS source, treat it as empty rather than showing someone
+    // else's (possibly since-deleted) channels under the wrong source's page.
+    def cachedForThisSource = (state.lastDiscoverySourceId == sourceId)
+    def lastDiscovery = cachedForThisSource ? (state.lastDiscovery ?: []) : []
+    def channelCount = lastDiscovery.size()
 
     if (confirmCreate) {
         createSelectedChildren(sourceId)
@@ -111,7 +117,7 @@ def discoverPage(params) {
     // sources (NVR/Home Hub) keep select-then-confirm so you can batch-create several
     // at once without each checkbox firing off a device creation mid-selection.
     if (channelCount == 1 && src) {
-        def ch = state.lastDiscovery[0]
+        def ch = lastDiscovery[0]
         if (settings["create_${ch.channel}"]) {
             createSelectedChildren(sourceId)
         }
@@ -135,16 +141,19 @@ def discoverPage(params) {
                     page: "discoverPage", params: [sourceId: sourceId, run: true]
 
                 if (params?.run) {
-                    def channels = discoverChannels(sourceId)
-                    state.lastDiscovery = channels
-                    channelCount = channels.size()
+                    lastDiscovery = discoverChannels(sourceId)
+                    state.lastDiscovery = lastDiscovery
+                    state.lastDiscoverySourceId = sourceId
+                    channelCount = lastDiscovery.size()
+                } else if (!cachedForThisSource) {
+                    paragraph "No discovery results yet for this source -- tap 'Run discovery now' above."
                 }
 
                 if (state.lastDiscoveryError) {
                     paragraph "⚠️ ${state.lastDiscoveryError}"
                 }
 
-                (state.lastDiscovery ?: []).each { ch ->
+                lastDiscovery.each { ch ->
                     def dni = childDni(sourceId, ch.channel)
                     def exists = getChildDevice(dni) != null
                     input "create_${ch.channel}", "bool",
@@ -173,7 +182,8 @@ def discoverPage(params) {
 
 def addSource() {
     state.sources = state.sources ?: []
-    def id = (state.sources*.id.max() ?: 0) + 1
+    state.nextSourceId = (state.nextSourceId ?: 0) + 1 // monotonic -- never reuses a deleted source's id
+    def id = state.nextSourceId
     state.sources << [
         id: id, label: newLabel, host: newHost, port: newPort ?: 443,
         username: newUser, password: newPass, isHub: newIsHub ?: false,
@@ -395,3 +405,4 @@ def componentSetPollInterval(child, Integer seconds) {
 private logDebug(msg) {
     if (debugLogging) log.debug msg
 }
+
