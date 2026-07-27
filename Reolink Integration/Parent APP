@@ -215,12 +215,34 @@ private String reolinkLogin(sourceId) {
     // TODO verify exact Login command body/response shape against your firmware's API guide
     def body = [[cmd: "Login", param: [User: [userName: src.username, password: src.password]]]]
     def resp = reolinkRawPost(src, body)
-    def token = resp?.getAt(0)?.value?.Token?.name
-    def leaseSec = (resp?.getAt(0)?.value?.Token?.leaseTime ?: 3600) as Integer
+    def first = firstResultValue(resp, src)
+    def token = first?.Token?.name
+    def leaseSec = (first?.Token?.leaseTime ?: 3600) as Integer
 
     src.token = token
     src.tokenExpires = now() + (leaseSec * 1000L) - 30000L // refresh 30s early
     return token
+}
+
+/**
+ * Reolink's success responses are a JSON array of one object per command:
+ * [ { cmd: ..., value: {...} } ]. If the device instead returns an error object,
+ * an HTML page (wrong port/cert/proxy), or anything else non-array, log what we
+ * actually got instead of throwing a MissingMethodException on getAt(0) --
+ * that's what "ExecutorHttpClient5.getAt()" errors come from: assuming array
+ * shape on a response that wasn't one.
+ */
+private firstResultValue(resp, src) {
+    if (resp instanceof List && resp.size() > 0) {
+        return resp[0]?.value
+    }
+    def shape = resp == null ? "null" :
+        (resp instanceof Map) ? "a single object (Map), not an array" :
+        (resp instanceof String) ? "a plain string (likely HTML/text, not JSON)" :
+        "an unrecognized type"
+    log.warn "Reolink unexpected response shape from ${src.host} (source ${src.id}): " +
+        "expected a JSON array, got ${shape} -- raw: ${resp?.toString()?.take(300)}"
+    return null
 }
 
 private reolinkRawPost(src, bodyList) {
@@ -252,7 +274,7 @@ def reolinkApiCall(sourceId, String cmd, Map param = [:], Integer channel = null
     } catch (e) {
         log.warn "Reolink cmd ${cmd} failed for source ${sourceId} ch ${channel}: ${e.message}"
     }
-    return result?.getAt(0)?.value
+    return firstResultValue(result, src)
 }
 
 // ---------- Discovery ----------
