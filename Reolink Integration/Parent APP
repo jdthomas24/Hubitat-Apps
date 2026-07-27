@@ -46,6 +46,7 @@ preferences {
     page(name: "mainPage")
     page(name: "addSourcePage")
     page(name: "discoverPage")
+    page(name: "tipsPage")
 }
 
 def mainPage() {
@@ -75,6 +76,54 @@ def mainPage() {
         }
         section("Logging") {
             input "debugLogging", "bool", title: "Enable debug logging", defaultValue: false
+        }
+        section {
+            href name: "tips", title: "Tips, limitations & what works so far", page: "tipsPage"
+        }
+    }
+}
+
+def tipsPage() {
+    dynamicPage(name: "tipsPage", title: "Tips & Notes") {
+        section("What a source is") {
+            paragraph "A source is anything with its own IP/login: one standalone camera, one NVR, or one Home Hub. " +
+                "A standalone camera always has exactly one channel (0). An NVR/Home Hub has one channel per " +
+                "paired camera -- run discovery on it to see what it finds."
+        }
+        section("Devices that WON'T work as a standalone source") {
+            paragraph "Battery-class cameras/doorbells (Argus line, Doorbell Battery) don't run a local " +
+                "HTTP/ONVIF server standalone, even in \"Wired Power Mode\" (that setting only changes charging). " +
+                "They only become reachable once paired to a Home Hub or NVR -- add the Hub/NVR as the source " +
+                "instead, and the device shows up as one of its channels."
+            paragraph "E1 / E1 Pro / Lumus: Reolink's own docs claim no local HTTP/HTTPS support at all, but a " +
+                "real E1 Pro contradicted that -- it worked fine once HTTP was manually enabled in its own " +
+                "Network > Advanced settings (off by default). Check there before assuming one needs a Hub/NVR."
+        }
+        section("Poll interval") {
+            paragraph "Wired devices can be polled tight (a few seconds). Battery devices should be polled loose " +
+                "(HA's own Reolink integration only wakes battery cameras roughly once an hour at most) -- polling " +
+                "a battery device harder doesn't get fresher data, it just drains its battery for no benefit. This " +
+                "still applies even once a battery device is behind a Hub: you're asking the Hub for its last-known " +
+                "state, not the device directly, so the device's own check-in cadence is still the real limit."
+        }
+        section("Sleep Status") {
+            paragraph "A device shows 'awake' after a poll that actually got a response, and 'asleep' after a poll " +
+                "that got no response at all. For a battery device, 'asleep' is normal, not an error -- it just " +
+                "hasn't checked in since its last event or self-wake. Motion/person/vehicle/etc. keep their " +
+                "last-known value when this happens rather than resetting to inactive."
+        }
+        section("PTZ") {
+            paragraph "There's no 'Home' command in Reolink's API -- the real equivalent is a saved preset. Use " +
+                "'savePresetHere' once (commonly preset ID 1) to save wherever the camera is currently pointed, " +
+                "then 'ptzGoToPreset' with that same ID any time you want it to return there."
+        }
+        section("Confidence level on newer commands") {
+            paragraph "PtzCtrl (move + ToPos/preset recall) is confirmed working against real hardware. " +
+                "SetPtzPreset (save), SetWhiteLed (spotlight), SetIrLights (night vision), AudioAlarmPlay (siren), " +
+                "and GetBatteryInfo (battery %) are built from consistent patterns across several independent " +
+                "Reolink API references, but haven't been tested against this setup's actual firmware yet -- " +
+                "if one doesn't work as expected, check Logs with debug on for the exact response, since the " +
+                "field names may need a small adjustment for this particular device."
         }
     }
 }
@@ -107,6 +156,15 @@ def discoverPage(params) {
     state.currentDiscoverySourceId = sourceId
     def src = getSource(sourceId)
 
+    // Run discovery FIRST, before anything below reads channelCount -- doing this
+    // inside the page-rendering closure instead meant the very first "Run discovery
+    // now" click never got to react to its own results in the same request (the
+    // single-channel auto-create check below would only fire on the NEXT click).
+    if (params?.run && src) {
+        state.lastDiscovery = discoverChannels(sourceId)
+        state.lastDiscoverySourceId = sourceId
+    }
+
     // Cached discovery results belong to whichever source last ran discovery --
     // if that's not THIS source, treat it as empty rather than showing someone
     // else's (possibly since-deleted) channels under the wrong source's page.
@@ -123,9 +181,11 @@ def discoverPage(params) {
     // toggling the one channel checkbox creates the device immediately. Multi-channel
     // sources (NVR/Home Hub) keep select-then-confirm so you can batch-create several
     // at once without each checkbox firing off a device creation mid-selection.
+    // The setting name is scoped by sourceId (not just channel number) -- two
+    // different sources both having a "channel 0" must NOT share one toggle.
     if (channelCount == 1 && src) {
         def ch = lastDiscovery[0]
-        if (settings["create_${ch.channel}"]) {
+        if (settings["create_${sourceId}_${ch.channel}"]) {
             createSelectedChildren(sourceId)
         }
     }
@@ -147,12 +207,7 @@ def discoverPage(params) {
                     description: "Calls the source and lists available channels",
                     page: "discoverPage", params: [sourceId: sourceId, run: true]
 
-                if (params?.run) {
-                    lastDiscovery = discoverChannels(sourceId)
-                    state.lastDiscovery = lastDiscovery
-                    state.lastDiscoverySourceId = sourceId
-                    channelCount = lastDiscovery.size()
-                } else if (!cachedForThisSource) {
+                if (!params?.run && !cachedForThisSource) {
                     paragraph "No discovery results yet for this source -- tap 'Run discovery now' above."
                 }
 
@@ -163,7 +218,7 @@ def discoverPage(params) {
                 lastDiscovery.each { ch ->
                     def dni = childDni(sourceId, ch.channel)
                     def exists = getChildDevice(dni) != null
-                    input "create_${ch.channel}", "bool",
+                    input "create_${sourceId}_${ch.channel}", "bool",
                         title: "Ch ${ch.channel}: ${ch.name} (${ch.deviceType})${exists ? ' [already added]' : ''}",
                         defaultValue: exists, submitOnChange: true
                 }
@@ -352,7 +407,7 @@ private String childDni(sourceId, channel) {
 
 def createSelectedChildren(sourceId) {
     (state.lastDiscovery ?: []).each { ch ->
-        def wantIt = settings["create_${ch.channel}"]
+        def wantIt = settings["create_${sourceId}_${ch.channel}"]
         def dni = childDni(sourceId, ch.channel)
         def existing = getChildDevice(dni)
         if (wantIt && !existing) {
