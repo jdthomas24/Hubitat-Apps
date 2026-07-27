@@ -106,6 +106,14 @@ def tipsPage() {
             paragraph "An NVR/Home Hub has one channel per paired camera. Run discovery to see what it finds."
         }
         section {
+            paragraph pillHeader("Before adding any camera")
+            paragraph "Check the camera's own Network > Advanced (or Server) settings and make sure HTTP, " +
+                "HTTPS, and ONVIF are enabled."
+            paragraph "These are often off by default on every model tested so far -- not just Reolink's E1 " +
+                "line. This is the single most common reason a source fails to connect, and it's worth " +
+                "checking before assuming a device needs a Hub/NVR or isn't supported."
+        }
+        section {
             paragraph pillHeader("Why a device's ID number looks out of order")
             paragraph "Each device's internal ID (visible in Hubitat's device list as part of its DNI, e.g. " +
                 "'reolink-4-0') is just a counter that only ever goes up. It never reuses a number, even after " +
@@ -185,8 +193,13 @@ def addSourcePage(params) {
         section {
             paragraph "<span style='display:inline-block;background:#FFF3E0;color:#E65100;font-weight:700;" +
                 "padding:2px 10px;border-radius:10px;font-size:11px;margin-right:6px;'>NOTE</span>" +
-                "<b>Battery-class cameras/doorbells and Reolink's E1 line have connection quirks worth " +
-                "knowing about -- see the Tips page (link on the Sources list) if this one refuses to connect.</b>"
+                "<b>Before adding: check the camera's own Network > Advanced (or Server) settings and make " +
+                "sure HTTP, HTTPS, and ONVIF are enabled.</b> These are often off by default on every model " +
+                "tested so far, not just Reolink's E1 line -- this is the single most common reason a source " +
+                "fails to connect."
+            paragraph "Battery-class cameras/doorbells and Reolink's E1 line have additional connection quirks " +
+                "worth knowing about -- see the Tips page (link on the Sources list) if this one still refuses " +
+                "to connect after enabling the ports above."
             input "newLabel", "text", title: "Label (e.g. 'Front Door Hub', 'Garage Cam')"
             input "newHost", "text", title: "IP address"
             input "newPort", "number", title: "HTTPS port", defaultValue: 443
