@@ -1,11 +1,11 @@
 {
     "packageName": "Reolink Integration",
-    "releaseNotes": "v0.2.0 -- Multi-source architecture (standalone cameras, NVRs, Home Hubs); camera + doorbell component drivers with motion/AI attributes, PTZ (move, preset recall/save), spotlight, night vision, siren, and battery %; Sleep Status to distinguish a normal battery check-in gap from a real outage; in-app Tips page covering known device-specific connection quirks (battery-class devices and Reolink's E1 line both need a Home Hub/NVR or manual HTTP/HTTPS/ONVIF enablement). Confirmed working standalone against E1 Pro, Trackmix, and RL-1240A. Several PTZ/accessory commands and the motion/AI field names are pattern-based and not yet confirmed against every model -- see README for details.",
+    "releaseNotes": "v1.1.0 -- Multi-source architecture (standalone cameras, NVRs, Home Hubs); camera + doorbell component drivers with motion/AI attributes, PTZ (move, preset recall/save), spotlight, night vision, siren, and battery %; Sleep Status to distinguish a normal battery check-in gap from a real outage; in-app Tips page covering known device-specific connection quirks (battery-class devices and Reolink's E1 line both need a Home Hub/NVR or manual HTTP/HTTPS/ONVIF enablement). Confirmed working standalone against E1 Pro, Trackmix, and RL-1240A. Several PTZ/accessory commands and the motion/AI field names are pattern-based and not yet confirmed against every model -- see README for details.",
     "documentationLink": "https://github.com/jdthomas24/Hubitat-Apps-Drivers/tree/main/Reolink%20Integration",
     "communityLink": "https://github.com/jdthomas24/Hubitat-Apps-Drivers/tree/main/Reolink%20Integration",
     "author": "jdthomas24",
-    "version": "0.2.0",
-    "minimumHEVersion": "2.3.4",
+    "version": "1.1.0",
+    "minimumHEVersion": "2.3.0",
     "dateReleased": "2026-07-27",
     "category": "Integrations",
     "tags": "Cameras & Video",
@@ -39,4 +39,3 @@
         }
     ]
 }
-
