@@ -350,7 +350,15 @@ def pollChild(data) {
     // TODO confirm GetAiState / GetMdState response field names for your firmware
     def aiState = reolinkApiCall(sourceId, "GetAiState", [:], channel)
     def mdState = reolinkApiCall(sourceId, "GetMdState", [:], channel)
-    child.parseReolinkState(aiState, mdState)
+    if (aiState == null && mdState == null) {
+        // No response at all -- for a battery device this is normal (asleep between
+        // events/check-ins, same as HA's "Sleep status"), not necessarily an error.
+        // Leave motion/person/etc at their last-known value rather than flipping
+        // everything to "inactive" just because we couldn't ask.
+        child.markAsleep()
+    } else {
+        child.parseReolinkState(aiState, mdState)
+    }
 
     scheduleChildPoll(child)
 }
