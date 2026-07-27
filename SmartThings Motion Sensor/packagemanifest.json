@@ -1,12 +1,12 @@
 {
   "packageName": "SmartThings Motion Sensor Driver",
   "author": "jdthomas24",
-  "version": "1.7.9",
+  "version": "1.8.0",
   "category": "Utility",
   "description": "Custom Hubitat driver for SmartThings Zigbee motion sensors with local processing and battery reporting.",
   "dateReleased": "4-10-26",
   "minimumHEVersion": "2.3.0",
-  "releaseNotes": "v1.7.9 - Updated battery voltage curve for CR2 lithium chemistry (previous curve was tuned for CR2450/CR2477 coin cells). Default battery reporting interval changed from 60 to 240 minutes to improve Battery Monitor drain rate accuracy.",
+  "releaseNotes": "v1.8.0 - Updated battery voltage curve for CR2 lithium chemistry (previous curve was tuned for CR2450/CR2477 coin cells). Default battery reporting interval changed from 60 to 240 minutes to improve Battery Monitor drain rate accuracy.",
   "drivers": [
     {
       "id": "a60901b6-bed8-4d00-9c98-a12ff7fa196b",
