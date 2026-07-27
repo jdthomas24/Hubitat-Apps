@@ -57,9 +57,18 @@ def mainPage() {
 }
 
 def addSourcePage() {
-    if (confirmAdd) {
+    if (confirmAdd && newLabel && newHost && newUser && newPass) {
         addSource()
         app.updateSetting("confirmAdd", [type: "bool", value: false])
+        // Clear the form fields immediately. Hubitat can invoke this page method more
+        // than once for a single "Next"/toggle action -- if these were left populated,
+        // a second invocation would see confirmAdd still true (before the UI reflects
+        // the reset above) and add the same source again. Blanking newLabel/newHost
+        // makes the guard above false on any repeat call within the same request.
+        app.removeSetting("newLabel")
+        app.removeSetting("newHost")
+        app.removeSetting("newUser")
+        app.removeSetting("newPass")
     }
     return dynamicPage(name: "addSourcePage", title: "Add a Reolink Source", nextPage: "mainPage") {
         section {
@@ -84,26 +93,43 @@ def discoverPage(params) {
         app.updateSetting("confirmCreate", [type: "bool", value: false])
     }
 
-    return dynamicPage(name: "discoverPage", title: "Discover Channels - ${src?.label}", nextPage: "mainPage") {
-        section {
-            href name: "runDiscovery", title: "Run discovery now",
-                description: "Calls the source and lists available channels",
-                page: "discoverPage", params: [sourceId: sourceId, run: true]
+    if (confirmRemoveSource && src) {
+        removeSource(sourceId)
+        app.updateSetting("confirmRemoveSource", [type: "bool", value: false])
+        src = null // guards against this block re-running on a repeat invocation
+    }
 
-            if (params?.run) {
-                def channels = discoverChannels(sourceId)
-                state.lastDiscovery = channels
+    return dynamicPage(name: "discoverPage", title: "Discover Channels - ${src?.label ?: '(source removed)'}", nextPage: "mainPage") {
+        if (!src) {
+            section {
+                paragraph "This source has been removed. Go back and use Add a source... if this was a mistake."
             }
+        } else {
+            section {
+                href name: "runDiscovery", title: "Run discovery now",
+                    description: "Calls the source and lists available channels",
+                    page: "discoverPage", params: [sourceId: sourceId, run: true]
 
-            (state.lastDiscovery ?: []).each { ch ->
-                def dni = childDni(sourceId, ch.channel)
-                def exists = getChildDevice(dni) != null
-                input "create_${ch.channel}", "bool",
-                    title: "Ch ${ch.channel}: ${ch.name} (${ch.deviceType})${exists ? ' [already added]' : ''}",
-                    defaultValue: exists, submitOnChange: true
+                if (params?.run) {
+                    def channels = discoverChannels(sourceId)
+                    state.lastDiscovery = channels
+                }
+
+                (state.lastDiscovery ?: []).each { ch ->
+                    def dni = childDni(sourceId, ch.channel)
+                    def exists = getChildDevice(dni) != null
+                    input "create_${ch.channel}", "bool",
+                        title: "Ch ${ch.channel}: ${ch.name} (${ch.deviceType})${exists ? ' [already added]' : ''}",
+                        defaultValue: exists, submitOnChange: true
+                }
+
+                input "confirmCreate", "bool", title: "Create selected devices", defaultValue: false, submitOnChange: true
             }
-
-            input "confirmCreate", "bool", title: "Create selected devices", defaultValue: false, submitOnChange: true
+            section("Danger zone") {
+                input "confirmRemoveSource", "bool",
+                    title: "Remove this source (deletes its child devices too)",
+                    defaultValue: false, submitOnChange: true
+            }
         }
     }
 }
@@ -127,6 +153,12 @@ def getSource(id) {
 
 def childrenForSource(sourceId) {
     getChildDevices().findAll { it.getDataValue("sourceId") as Integer == sourceId }
+}
+
+def removeSource(id) {
+    childrenForSource(id as Integer).each { deleteChildDevice(it.deviceNetworkId) }
+    state.sources.removeAll { it.id == (id as Integer) }
+    logDebug "Removed source ${id}"
 }
 
 // ---------- Auth ----------
