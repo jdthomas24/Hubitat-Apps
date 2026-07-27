@@ -6,19 +6,6 @@ Talks to Reolink devices over their **local HTTP/JSON API**. No cloud dependency
 
 ---
 
-## Table of contents
-
-- [Why this exists](#why-this-exists)
-- [Features](#features)
-- [Architecture](#architecture)
-- [Installation](#installation)
-- [Setup](#setup)
-- [Device compatibility](#device-compatibility)
-- [Known limitations](#known-limitations)
-- [Contributing / testing](#contributing--testing)
-- [License](#license)
-
----
 
 ## Why this exists
 
