@@ -36,6 +36,16 @@ preferences {
 }
 
 def mainPage() {
+    // Runs whenever mainPage is reached -- including via the "Next" button on
+    // addSourcePage, since Next submits the form then navigates here. That's
+    // the actual save point now: no separate confirm toggle needed.
+    if (newLabel && newHost && newUser && newPass) {
+        addSource()
+        app.removeSetting("newLabel")
+        app.removeSetting("newHost")
+        app.removeSetting("newUser")
+        app.removeSetting("newPass")
+    }
     dynamicPage(name: "mainPage", title: "Reolink Integration", install: true, uninstall: true) {
         section("Sources") {
             paragraph "A source is one camera, one NVR, or one Home Hub -- anything with its own IP/login."
@@ -57,16 +67,7 @@ def mainPage() {
 }
 
 def addSourcePage() {
-    if (confirmAdd && newLabel && newHost && newUser && newPass) {
-        addSource()
-        app.updateSetting("confirmAdd", [type: "bool", value: false])
-        app.removeSetting("newLabel")
-        app.removeSetting("newHost")
-        app.removeSetting("newUser")
-        app.removeSetting("newPass")
-        return mainPage() // jump straight back to the Sources list instead of re-showing this form
-    }
-    return dynamicPage(name: "addSourcePage", title: "Add a Reolink Source", nextPage: "mainPage") {
+    dynamicPage(name: "addSourcePage", title: "Add a Reolink Source", nextPage: "mainPage") {
         section {
             input "newLabel", "text", title: "Label (e.g. 'Front Door Hub', 'Garage Cam')", required: true
             input "newHost", "text", title: "IP address", required: true
@@ -74,7 +75,7 @@ def addSourcePage() {
             input "newUser", "text", title: "Username", required: true
             input "newPass", "password", title: "Password", required: true
             input "newIsHub", "bool", title: "This is an NVR or Home Hub (multiple channels)", defaultValue: false
-            input "confirmAdd", "bool", title: "Save this source", defaultValue: false, submitOnChange: true
+            paragraph "Tap Next to save and return to the Sources list."
         }
     }
 }
