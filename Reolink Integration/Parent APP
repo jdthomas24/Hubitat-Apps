@@ -57,7 +57,11 @@ def mainPage() {
 }
 
 def addSourcePage() {
-    dynamicPage(name: "addSourcePage", title: "Add a Reolink Source", nextPage: "mainPage") {
+    if (confirmAdd) {
+        addSource()
+        app.updateSetting("confirmAdd", [type: "bool", value: false])
+    }
+    return dynamicPage(name: "addSourcePage", title: "Add a Reolink Source", nextPage: "mainPage") {
         section {
             input "newLabel", "text", title: "Label (e.g. 'Front Door Hub', 'Garage Cam')", required: true
             input "newHost", "text", title: "IP address", required: true
@@ -68,10 +72,6 @@ def addSourcePage() {
             input "confirmAdd", "bool", title: "Save this source", defaultValue: false, submitOnChange: true
         }
     }
-    if (confirmAdd) {
-        addSource()
-        app.updateSetting("confirmAdd", [type: "bool", value: false])
-    }
 }
 
 def discoverPage(params) {
@@ -79,7 +79,12 @@ def discoverPage(params) {
     state.currentDiscoverySourceId = sourceId
     def src = getSource(sourceId)
 
-    dynamicPage(name: "discoverPage", title: "Discover Channels - ${src?.label}", nextPage: "mainPage") {
+    if (confirmCreate) {
+        createSelectedChildren(sourceId)
+        app.updateSetting("confirmCreate", [type: "bool", value: false])
+    }
+
+    return dynamicPage(name: "discoverPage", title: "Discover Channels - ${src?.label}", nextPage: "mainPage") {
         section {
             href name: "runDiscovery", title: "Run discovery now",
                 description: "Calls the source and lists available channels",
@@ -100,10 +105,6 @@ def discoverPage(params) {
 
             input "confirmCreate", "bool", title: "Create selected devices", defaultValue: false, submitOnChange: true
         }
-    }
-    if (confirmCreate) {
-        createSelectedChildren(sourceId)
-        app.updateSetting("confirmCreate", [type: "bool", value: false])
     }
 }
 
