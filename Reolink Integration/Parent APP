@@ -69,7 +69,10 @@ def mainPage() {
                     description: "${src.isHub ? 'Hub/NVR' : 'Standalone'} · ${childrenForSource(src.id).size()} device(s)",
                     page: "discoverPage", params: [sourceId: src.id]
             }
-            href name: "addSource", title: "Add a source...", page: "addSourcePage"
+        }
+        section {
+            href name: "addSource", title: "➕ Add a source...",
+                description: "Standalone camera, NVR, or Home Hub", page: "addSourcePage"
         }
         section {
             paragraph pillHeader("Polling")
@@ -179,13 +182,14 @@ def addSourcePage(params) {
                 "but a real E1 Pro proved that wrong -- it connected fine once HTTP was manually enabled under " +
                 "the camera's own Network > Advanced settings (off by default). Check there first."
             paragraph "Everything else -- PoE cameras, WiFi cameras outside the E1 line -- works standalone."
-            input "newLabel", "text", title: "Label (e.g. 'Front Door Hub', 'Garage Cam')", required: true
-            input "newHost", "text", title: "IP address", required: true
+            input "newLabel", "text", title: "Label (e.g. 'Front Door Hub', 'Garage Cam')"
+            input "newHost", "text", title: "IP address"
             input "newPort", "number", title: "HTTPS port", defaultValue: 443
-            input "newUser", "text", title: "Username", required: true
-            input "newPass", "password", title: "Password", required: true
+            input "newUser", "text", title: "Username"
+            input "newPass", "password", title: "Password"
             input "newIsHub", "bool", title: "This is an NVR or Home Hub (multiple channels)", defaultValue: false
-            paragraph "Tap Next to save and return to the Sources list."
+            paragraph "Fill in Label, IP address, Username, and Password, then tap Next to save. " +
+                "Leaving any of those blank just returns you to the Sources list without creating anything."
         }
     }
 }
