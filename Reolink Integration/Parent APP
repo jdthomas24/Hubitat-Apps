@@ -433,6 +433,61 @@ def componentPtz(child, String direction) {
     reolinkApiCall(sourceId, "PtzCtrl", [op: direction, speed: 32], channel)
 }
 
+/**
+ * Reolink has no dedicated "Home" PTZ op -- the real-world equivalent is jumping
+ * to a saved preset (op: ToPos, id: presetId), same pattern used by every working
+ * Reolink integration/script. Set a preset in the Reolink app (commonly ID 1) as
+ * your home position, then call this with that ID.
+ */
+def componentPtzGoToPreset(child, Integer presetId) {
+    def sourceId = child.getDataValue("sourceId") as Integer
+    def channel = child.getDataValue("channel") as Integer
+    reolinkApiCall(sourceId, "PtzCtrl", [op: "ToPos", id: presetId, speed: 32], channel)
+}
+
+/** Saves the camera's CURRENT position as a preset (as opposed to ptzGoToPreset, which recalls one). */
+def componentSavePreset(child, Integer presetId, String name) {
+    def sourceId = child.getDataValue("sourceId") as Integer
+    def channel = child.getDataValue("channel") as Integer
+    // TODO confirm SetPtzPreset response/success shape against your firmware
+    // Nested param shape -- pass channel=null so reolinkApiCall doesn't also try to
+    // merge a flat top-level channel key alongside this command's nested one.
+    reolinkApiCall(sourceId, "SetPtzPreset",
+        [PtzPreset: [channel: channel, enable: 1, id: presetId, name: name ?: "Preset${presetId}"]], null)
+}
+
+def componentSetSpotlight(child, Boolean on) {
+    def sourceId = child.getDataValue("sourceId") as Integer
+    def channel = child.getDataValue("channel") as Integer
+    // TODO confirm SetWhiteLed's exact field names/values against your firmware --
+    // some models use additional mode/bright fields for scheduling or brightness.
+    reolinkApiCall(sourceId, "SetWhiteLed", [WhiteLed: [channel: channel, state: (on ? 1 : 0)]], null)
+}
+
+def componentSetNightVision(child, String mode) {
+    def sourceId = child.getDataValue("sourceId") as Integer
+    def channel = child.getDataValue("channel") as Integer
+    // TODO confirm SetIrLights' accepted state strings for your firmware --
+    // seen as "Auto"/"On"/"Off" in some models, "Auto"/"Open"/"Close" in others.
+    reolinkApiCall(sourceId, "SetIrLights", [IrLights: [channel: channel, state: mode]], null)
+}
+
+def componentSetSiren(child, Boolean on) {
+    def sourceId = child.getDataValue("sourceId") as Integer
+    def channel = child.getDataValue("channel") as Integer
+    // TODO confirm AudioAlarmPlay's exact field names against your firmware
+    reolinkApiCall(sourceId, "AudioAlarmPlay", [alarm_mode: "manul", manual_switch: (on ? 1 : 0), times: 2], channel)
+}
+
+def componentCheckBattery(child) {
+    def sourceId = child.getDataValue("sourceId") as Integer
+    def channel = child.getDataValue("channel") as Integer
+    // TODO confirm GetBatteryInfo's field names (seen elsewhere as something like
+    // batteryPercent / batteryVersion / chargeStatus -- needs real-device confirmation)
+    def battInfo = reolinkApiCall(sourceId, "GetBatteryInfo", [:], channel)
+    child.receiveBatteryInfo(battInfo)
+}
+
 def componentSetPollInterval(child, Integer seconds) {
     child.updateSetting("pollIntervalSec", [type: "number", value: seconds])
     logDebug "Set poll interval for ${child.deviceNetworkId} to ${seconds}s"
