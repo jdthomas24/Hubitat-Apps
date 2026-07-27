@@ -61,7 +61,8 @@ def mainPage() {
         app.removeSetting("newPass")
     }
     dynamicPage(name: "mainPage", title: "Reolink Integration", install: true, uninstall: true) {
-        section("Sources") {
+        section {
+            paragraph pillHeader("Sources")
             paragraph "A source is one camera, one NVR, or one Home Hub -- anything with its own IP/login."
             (state.sources ?: []).each { src ->
                 href name: "src_${src.id}", title: "${src.label} (${src.host})",
@@ -70,11 +71,13 @@ def mainPage() {
             }
             href name: "addSource", title: "Add a source...", page: "addSourcePage"
         }
-        section("Polling") {
+        section {
+            paragraph pillHeader("Polling")
             input "defaultWiredPoll", "number", title: "Default poll interval (sec) - wired/plugged-in devices", defaultValue: 3
             input "defaultBatteryPoll", "number", title: "Default poll interval (sec) - battery devices", defaultValue: 30
         }
-        section("Logging") {
+        section {
+            paragraph pillHeader("Logging")
             input "debugLogging", "bool", title: "Enable debug logging", defaultValue: false
         }
         section {
@@ -83,14 +86,25 @@ def mainPage() {
     }
 }
 
+/** Matches the blue-pill section-header style used elsewhere (e.g. Battery Monitor's
+ *  ACTIONS/CONFIGURATION) -- not a native Hubitat section() feature, just styled HTML
+ *  in a paragraph, kept in one place so every page's headers stay visually consistent. */
+private String pillHeader(String text) {
+    "<div style='display:inline-block;background:#E3F2FD;color:#1565C0;font-weight:700;" +
+    "font-size:12px;letter-spacing:0.5px;padding:4px 16px;border-radius:14px;" +
+    "margin-bottom:6px;'>${text.toUpperCase()}</div>"
+}
+
 def tipsPage() {
     dynamicPage(name: "tipsPage", title: "Tips & Notes") {
-        section("What a source is") {
+        section {
+            paragraph pillHeader("What a source is")
             paragraph "A source is anything with its own IP/login: one standalone camera, one NVR, or one Home Hub. " +
                 "A standalone camera always has exactly one channel (0). An NVR/Home Hub has one channel per " +
                 "paired camera -- run discovery on it to see what it finds."
         }
-        section("Devices that WON'T work as a standalone source") {
+        section {
+            paragraph pillHeader("Devices that WON'T work as a standalone source")
             paragraph "Battery-class cameras/doorbells (Argus line, Doorbell Battery) don't run a local " +
                 "HTTP/ONVIF server standalone, even in \"Wired Power Mode\" (that setting only changes charging). " +
                 "They only become reachable once paired to a Home Hub or NVR -- add the Hub/NVR as the source " +
@@ -99,25 +113,29 @@ def tipsPage() {
                 "real E1 Pro contradicted that -- it worked fine once HTTP was manually enabled in its own " +
                 "Network > Advanced settings (off by default). Check there before assuming one needs a Hub/NVR."
         }
-        section("Poll interval") {
+        section {
+            paragraph pillHeader("Poll interval")
             paragraph "Wired devices can be polled tight (a few seconds). Battery devices should be polled loose " +
                 "(HA's own Reolink integration only wakes battery cameras roughly once an hour at most) -- polling " +
                 "a battery device harder doesn't get fresher data, it just drains its battery for no benefit. This " +
                 "still applies even once a battery device is behind a Hub: you're asking the Hub for its last-known " +
                 "state, not the device directly, so the device's own check-in cadence is still the real limit."
         }
-        section("Sleep Status") {
+        section {
+            paragraph pillHeader("Sleep Status")
             paragraph "A device shows 'awake' after a poll that actually got a response, and 'asleep' after a poll " +
                 "that got no response at all. For a battery device, 'asleep' is normal, not an error -- it just " +
                 "hasn't checked in since its last event or self-wake. Motion/person/vehicle/etc. keep their " +
                 "last-known value when this happens rather than resetting to inactive."
         }
-        section("PTZ") {
+        section {
+            paragraph pillHeader("PTZ")
             paragraph "There's no 'Home' command in Reolink's API -- the real equivalent is a saved preset. Use " +
                 "'savePresetHere' once (commonly preset ID 1) to save wherever the camera is currently pointed, " +
                 "then 'ptzGoToPreset' with that same ID any time you want it to return there."
         }
-        section("Confidence level on newer commands") {
+        section {
+            paragraph pillHeader("Confidence level on newer commands")
             paragraph "PtzCtrl (move + ToPos/preset recall) is confirmed working against real hardware. " +
                 "SetPtzPreset (save), SetWhiteLed (spotlight), SetIrLights (night vision), AudioAlarmPlay (siren), " +
                 "and GetBatteryInfo (battery %) are built from consistent patterns across several independent " +
@@ -234,7 +252,8 @@ def discoverPage(params) {
                     paragraph "Standalone source, one channel -- toggling it on creates the device immediately, no separate confirm needed."
                 }
             }
-            section("Danger zone") {
+            section {
+                paragraph pillHeader("Danger zone")
                 input "confirmRemoveSource", "bool",
                     title: "Remove this source (deletes its child devices too)",
                     defaultValue: false, submitOnChange: true
@@ -563,4 +582,3 @@ def componentSetPollInterval(child, Integer seconds) {
 private logDebug(msg) {
     if (debugLogging) log.debug msg
 }
-
