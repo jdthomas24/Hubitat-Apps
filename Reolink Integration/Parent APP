@@ -59,10 +59,10 @@ def mainPage() {
         app.removeSetting("newUser")
         app.removeSetting("newPass")
     }
-    dynamicPage(name: "mainPage", title: "Reolink Integration", install: true, uninstall: true) {
+    dynamicPage(name: "mainPage", install: true, uninstall: true) {
         section {
             paragraph pillHeader("Sources")
-            paragraph "A source is one camera, one NVR, or one Home Hub -- anything with its own IP/login."
+            paragraph "<b>A source is one camera, one NVR, or one Home Hub -- anything with its own IP/login.</b>"
             (state.sources ?: []).each { src ->
                 href name: "src_${src.id}", title: "${src.label} (${src.host})",
                     description: "${src.isHub ? 'Hub/NVR' : 'Standalone'} · ${childrenForSource(src.id).size()} device(s)",
