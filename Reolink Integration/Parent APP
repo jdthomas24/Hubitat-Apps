@@ -106,6 +106,15 @@ def tipsPage() {
             paragraph "An NVR/Home Hub has one channel per paired camera. Run discovery to see what it finds."
         }
         section {
+            paragraph pillHeader("Why a device's ID number looks out of order")
+            paragraph "Each device's internal ID (visible in Hubitat's device list as part of its DNI, e.g. " +
+                "'reolink-4-0') is just a counter that only ever goes up. It never reuses a number, even after " +
+                "you delete a source and its device."
+            paragraph "So gaps in the numbering (4, 5, 8, 9 instead of 1, 2, 3, 4) just mean some source got " +
+                "removed and re-added at some point along the way -- normal, and nothing to fix. It doesn't " +
+                "affect how anything works."
+        }
+        section {
             paragraph pillHeader("Devices that won't work standalone")
             paragraph "⚠️ <b>Battery-class cameras/doorbells</b> (Argus line, Doorbell Battery). No local " +
                 "HTTP/ONVIF server standalone, even in \"Wired Power Mode\" -- that setting only changes " +
