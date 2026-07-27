@@ -1,7 +1,8 @@
 /**
  * Reolink Integration (Parent App)
+ * Version: 1.1.0
  *
- * Design notes (from planning discussion):
+ * Architecture notes:
  *  - A "source" is anything that answers the Reolink HTTP/JSON API: a standalone
  *    camera, a PoE NVR, or a network Home Hub. Each source has its own IP + creds.
  *  - A source with N paired channels (NVR/Home Hub) reports channels 0..N-1.
@@ -10,24 +11,18 @@
  *    HTTP directly -- they call parent.componentX() and this app does the call.
  *  - Poll interval is per-child, not global, because wired-mode doorbells/cams
  *    can be polled tight (2-5s) while battery-mode devices should be polled
- *    looser (or event-driven later) to avoid hammering a sleeping device.
- *  - CONFIRMED (2026-07-26): battery-class Reolink devices (Argus line, Doorbell
- *    Battery) have NO local HTTP/ONVIF server at all, standalone -- not a sleep/
- *    wake timing issue, the port is simply never opened by that hardware class.
- *    "Wired Power Mode" in the Reolink app only changes charging behavior, not
- *    this. They only become reachable once paired to a Home Hub or NVR, which
- *    proxies them.
- *  - CORRECTED (2026-07-26): E1, E1 Pro, and Lumus -- Reolink's own docs on which
- *    of these support local HTTP/HTTPS are inconsistent model to model, so don't
- *    trust the model name to decide. Check the camera's own Network > Advanced
- *    (or Server) settings for an HTTP/HTTPS/ONVIF toggle instead -- that's the
- *    only reliable answer for a specific unit. A real E1 Pro here turned out to
- *    support HTTP fine, just off by default.
+ *    looser to avoid hammering a sleeping device.
+ *
+ * Device-specific findings, known limitations, and setup gotchas are documented
+ * in the README and the in-app Tips page -- not duplicated here to avoid the
+ * two drifting out of sync.
  *
  * TODO markers throughout mark spots that need exact command/param names
  * verified against your firmware's API guide (GetMdState / GetAiState /
  * GetChannelstatus / Snap / PtzCtrl / Login field names can drift by version).
  */
+
+import groovy.transform.Field
 
 definition(
     name: "Reolink Integration",
@@ -40,6 +35,8 @@ definition(
     iconX2Url: "",
     singleThreaded: true
 )
+
+@Field static final String APP_VERSION = "1.1.0"
 
 preferences {
     page(name: "mainPage")
@@ -84,6 +81,10 @@ def mainPage() {
         }
         section {
             href name: "tips", title: "Tips, limitations & what works so far", page: "tipsPage"
+        }
+        section {
+            paragraph "<div style='text-align:center;color:#999;font-size:11px;margin-top:10px;'>" +
+                "Reolink Integration v${APP_VERSION}</div>"
         }
     }
 }
