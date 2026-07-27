@@ -61,6 +61,18 @@
                 "Notifications",
                 "Tools & Utilities"
             ]
+        },
+        {
+            "name": "Reolink Integration",
+            "category": "Safety & Security",
+            "location": "https://raw.githubusercontent.com/jdthomas24/Hubitat-Apps-Drivers/refs/heads/main/Reolink%20Integration/packagemanifest.json",
+            "description": "Discovers and manages Reolink cameras, doorbells, NVRs, and Home Hubs over the local HTTP API. Motion/AI detection, doorbell button press, snapshots, PTZ with preset recall, spotlight, night vision, siren, and battery %. No cloud account required.",
+            "descriptive": "",
+            "tags": [
+                "Cameras & Video",
+                "Safety & Security",
+                "Doorbell"
+            ]
         }
     ]
 }
