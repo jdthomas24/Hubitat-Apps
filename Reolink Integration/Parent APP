@@ -253,11 +253,25 @@ private reolinkRawPost(src, bodyList) {
                   body: groovy.json.JsonOutput.toJson(bodyList), timeout: 10]
     def result = null
     try {
-        httpPost(params) { resp -> result = resp.data }
+        httpPost(params) { resp -> result = parseReolinkResponse(resp) }
     } catch (e) {
         log.warn "Reolink POST failed for source ${src.id} (${src.host}): ${e.message}"
     }
     return result
+}
+
+/**
+ * resp.data can come back as an internal Hubitat wrapper type that prints as
+ * valid JSON via toString() but doesn't actually support Groovy list/map
+ * indexing (this is what "ExecutorHttpClient5.getAt()" errors come from --
+ * NOT malformed JSON, confirmed by seeing it thrown even on a well-formed,
+ * successful Login response). Re-parsing the raw text with JsonSlurper
+ * guarantees plain List/Map objects that behave the way the rest of this
+ * code expects.
+ */
+private parseReolinkResponse(resp) {
+    def raw = resp?.data?.toString()
+    return raw ? new groovy.json.JsonSlurper().parseText(raw) : null
 }
 
 /** Generic authenticated call. channel may be null for source-level commands (e.g. GetChannelstatus). */
@@ -272,7 +286,7 @@ def reolinkApiCall(sourceId, String cmd, Map param = [:], Integer channel = null
     def result = null
     try {
         httpPost([uri: uri, ignoreSSLIssues: true, requestContentType: "application/json",
-                  body: groovy.json.JsonOutput.toJson(body), timeout: 10]) { resp -> result = resp.data }
+                  body: groovy.json.JsonOutput.toJson(body), timeout: 10]) { resp -> result = parseReolinkResponse(resp) }
     } catch (e) {
         log.warn "Reolink cmd ${cmd} failed for source ${sourceId} ch ${channel}: ${e.message}"
     }
