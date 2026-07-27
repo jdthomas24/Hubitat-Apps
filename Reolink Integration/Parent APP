@@ -60,15 +60,11 @@ def addSourcePage() {
     if (confirmAdd && newLabel && newHost && newUser && newPass) {
         addSource()
         app.updateSetting("confirmAdd", [type: "bool", value: false])
-        // Clear the form fields immediately. Hubitat can invoke this page method more
-        // than once for a single "Next"/toggle action -- if these were left populated,
-        // a second invocation would see confirmAdd still true (before the UI reflects
-        // the reset above) and add the same source again. Blanking newLabel/newHost
-        // makes the guard above false on any repeat call within the same request.
         app.removeSetting("newLabel")
         app.removeSetting("newHost")
         app.removeSetting("newUser")
         app.removeSetting("newPass")
+        return mainPage() // jump straight back to the Sources list instead of re-showing this form
     }
     return dynamicPage(name: "addSourcePage", title: "Add a Reolink Source", nextPage: "mainPage") {
         section {
@@ -96,7 +92,7 @@ def discoverPage(params) {
     if (confirmRemoveSource && src) {
         removeSource(sourceId)
         app.updateSetting("confirmRemoveSource", [type: "bool", value: false])
-        src = null // guards against this block re-running on a repeat invocation
+        return mainPage() // jump straight back to the Sources list
     }
 
     return dynamicPage(name: "discoverPage", title: "Discover Channels - ${src?.label ?: '(source removed)'}", nextPage: "mainPage") {
