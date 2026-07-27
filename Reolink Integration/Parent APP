@@ -17,17 +17,12 @@
  *    "Wired Power Mode" in the Reolink app only changes charging behavior, not
  *    this. They only become reachable once paired to a Home Hub or NVR, which
  *    proxies them.
- *  - CORRECTED (2026-07-26): E1, E1 Pro, and Lumus are three DISTINCT models, not
- *    one line. Reolink's OWN docs disagree with each other on E1 Pro specifically:
- *    their port-configuration guide gives E1/Lumus a five-item exclusion (HTTP/
- *    HTTPS/RTMP/RTSP/ONVIF) but gives E1 Pro a one-item exclusion (RTMP only) --
- *    a separate firewall-ports article claims the broader exclusion applies to
- *    E1 Pro too. Real-world testing matched the NARROWER claim: E1 Pro's HTTP was
- *    just off by default under Network > Advanced settings; once enabled, it
- *    connected fine. So the port-config guide looks accurate for E1 Pro and the
- *    firewall-ports article looks wrong/outdated for that model. The base E1 and
- *    Lumus are untested here -- both articles agree on excluding those two, so
- *    treat that as standing until proven otherwise on real hardware.
+ *  - CORRECTED (2026-07-26): E1, E1 Pro, and Lumus -- Reolink's own docs on which
+ *    of these support local HTTP/HTTPS are inconsistent model to model, so don't
+ *    trust the model name to decide. Check the camera's own Network > Advanced
+ *    (or Server) settings for an HTTP/HTTPS/ONVIF toggle instead -- that's the
+ *    only reliable answer for a specific unit. A real E1 Pro here turned out to
+ *    support HTTP fine, just off by default.
  *
  * TODO markers throughout mark spots that need exact command/param names
  * verified against your firmware's API guide (GetMdState / GetAiState /
@@ -117,18 +112,12 @@ def tipsPage() {
                 "charging, not the network API."
             paragraph "They only become reachable once paired to a Home Hub or NVR. Add the Hub/NVR as the " +
                 "source instead, and the device shows up as one of its channels."
-            paragraph "⚠️ <b>E1, E1 Pro, and Lumus</b> -- three distinct models, not one line."
-            paragraph "Reolink's own docs actually disagree with each other on the E1 Pro specifically. Their " +
-                "port-configuration guide gives E1/Lumus a five-item exclusion list (HTTP/HTTPS/RTMP/RTSP/ONVIF) " +
-                "but gives E1 Pro a list of just one: RTMP only. A separate Reolink firewall-ports article claims " +
-                "the broader HTTP/HTTPS exclusion applies to E1 Pro too. Those can't both be right."
-            paragraph "Real-world testing here matches the narrower claim: E1 Pro's HTTP was simply off by " +
-                "default under its own Network > Advanced settings -- once enabled, it connected fine. So it " +
-                "looks like the port-configuration guide (RTMP-only) is the accurate one for E1 Pro, and the " +
-                "firewall-ports article is the outdated/incorrect one."
-            paragraph "The base <b>E1</b> and <b>Lumus</b> haven't been tested here -- both Reolink articles " +
-                "agree those two lack HTTP/HTTPS/RTSP/ONVIF entirely, so treat that as standing until proven " +
-                "otherwise on real hardware."
+            paragraph "⚠️ <b>E1, E1 Pro, and Lumus</b> -- Reolink's own docs on whether these support local " +
+                "HTTP/HTTPS are inconsistent, and don't fully agree with each other model to model."
+            paragraph "Don't rely on the model name to decide. <b>Check the camera's own Network > Advanced " +
+                "(or Server) settings</b> for HTTP/HTTPS/ONVIF toggles -- that tells you directly whether this " +
+                "specific unit can do it, regardless of what any doc claims for the line in general. That's " +
+                "exactly how a real E1 Pro here turned out to support HTTP fine, just off by default."
             paragraph "Everything else -- PoE cameras, WiFi cameras outside the E1 line -- works standalone."
         }
         section {
@@ -190,13 +179,10 @@ def addSourcePage(params) {
             paragraph "⚠️ <b>Battery-class cameras/doorbells</b> (Argus line, Doorbell Battery). No local " +
                 "HTTP/ONVIF server standalone, even in \"Wired Power Mode\" -- that setting only changes " +
                 "charging, not the network API."
-            paragraph "⚠️ <b>E1, E1 Pro, and Lumus</b> -- three distinct models, not one line."
-            paragraph "Reolink's own docs disagree with each other on E1 Pro specifically -- one article gives " +
-                "it a one-item exclusion (RTMP only), another claims it also lacks HTTP/HTTPS. Real testing " +
-                "here matched the narrower claim: E1 Pro connected fine once HTTP was manually enabled under " +
-                "its own Network > Advanced settings (off by default) -- check there first."
-            paragraph "The base E1 and Lumus are untested here -- both Reolink articles agree those two lack " +
-                "HTTP/HTTPS entirely, so treat that as standing until proven otherwise."
+            paragraph "⚠️ <b>E1, E1 Pro, and Lumus</b> -- Reolink's docs on this are inconsistent model to model."
+            paragraph "Don't rely on the model name. <b>Check the camera's own Network > Advanced (or Server) " +
+                "settings</b> for HTTP/HTTPS/ONVIF toggles -- that tells you directly whether this specific " +
+                "unit supports it. A real E1 Pro here turned out to support HTTP fine, just off by default."
             paragraph "Everything else -- PoE cameras, WiFi cameras outside the E1 line -- works standalone."
             input "newLabel", "text", title: "Label (e.g. 'Front Door Hub', 'Garage Cam')"
             input "newHost", "text", title: "IP address"
