@@ -1,1 +1,135 @@
+# Reolink Integration for Hubitat
 
+An open-source Hubitat integration for Reolink cameras, doorbells, NVRs, and Home Hubs.
+
+Talks to Reolink devices over their **local HTTP/JSON API**. No cloud dependency, no Reolink account login required — just the device's IP (or the NVR/Home Hub's IP) and local credentials.
+
+---
+
+## Table of contents
+
+- [Why this exists](#why-this-exists)
+- [Features](#features)
+- [Architecture](#architecture)
+- [Installation](#installation)
+- [Setup](#setup)
+- [Device compatibility](#device-compatibility)
+- [Known limitations](#known-limitations)
+- [Contributing / testing](#contributing--testing)
+- [License](#license)
+
+---
+
+## Why this exists
+
+Reolink doesn't have an official Hubitat integration. This project fills that gap.
+
+It's built and tested against real hardware rather than assumptions from the API docs alone. Several of the notes in this README exist specifically because Reolink's own documentation turned out to be incomplete or self-contradictory once checked against actual devices.
+
+---
+
+## Features
+
+- **Motion & AI detection** — motion, person, vehicle, pet, package as native Hubitat attributes
+- **Doorbell button press** — exposed as a standard `PushableButton` event, triggers Rule Machine like any other doorbell
+- **Snapshot capture** — pulls a still image via the camera's local API
+- **PTZ control** — pan/tilt/zoom, plus preset recall (`ptzGoToPreset`) and save (`savePresetHere`)
+- **Spotlight, night vision, and siren control** — on models that support them
+- **Battery %** — via the standard Hubitat `Battery` capability
+- **Sleep Status** — tells "no response because asleep" apart from "no response because something's wrong"
+- **Multi-source architecture** — any mix of standalone cameras, NVRs, and Home Hubs at once, with per-device poll intervals
+
+> Reolink's API has no dedicated "Home" command for PTZ cameras — `ptzGoToPreset` / `savePresetHere` are the practical equivalent.
+
+---
+
+## Architecture
+
+**App** (`reolink-integration-app.groovy`)
+Owns all connection, auth, discovery, and polling logic. Maintains a list of **sources** — anything with its own IP and login: a standalone camera, an NVR, or a Home Hub.
+
+**Component drivers** (`reolink-camera-driver.groovy`, `reolink-doorbell-driver.groovy`)
+Thin — no HTTP logic of their own. Every command delegates back to the parent app via `parent.componentX(...)`.
+
+**Sources and channels**
+A source with N paired channels (NVR/Home Hub) exposes channels `0..N-1`. A standalone camera is a source with exactly one channel: `0`. Each child device is tagged internally with `(sourceId, channel)`.
+
+**Why it's built this way**
+Moving a camera from standalone to behind an NVR/Home Hub later is a re-discovery and channel-remap — not a driver rewrite.
+
+---
+
+## Installation
+
+### Via Hubitat Package Manager (HPM)
+
+1. In HPM, choose **Install** → **From a URL**.
+2. Point it at this repo's `packageManifest.json`.
+3. HPM installs the app and both drivers together.
+
+### Manual install
+
+1. **Drivers Code** → *New Driver* → paste `reolink-camera-driver.groovy` → Save.
+2. Repeat for `reolink-doorbell-driver.groovy`.
+3. **Apps Code** → *New App* → paste `reolink-integration-app.groovy` → Save.
+4. **Apps** → *Add User App* → search "Reolink Integration" (grouped under **Integrations**).
+
+---
+
+## Setup
+
+1. **On the camera itself first** — check its Network > Advanced (or Server) settings and make sure HTTP, HTTPS, and ONVIF are enabled.
+   > These are often **off by default on every model tested so far** — not just Reolink's E1 line. This is the single most common reason a source fails to connect.
+2. Open the app → **Add a source...** → enter the IP, port (default 443), username, and password.
+   - Check "This is an NVR or Home Hub" if it has multiple channels.
+3. Click into the new source → **Run discovery now**.
+4. Create the device(s):
+   - **Single-channel (standalone) source** — toggling the channel on creates the device immediately.
+   - **Multi-channel source (NVR/Home Hub)** — select the channels you want, then toggle **Create selected devices**.
+5. See the in-app **Tips, limitations & what works so far** page (linked from the Sources list) for troubleshooting and device-specific quirks. It's kept current as things are discovered on real hardware, rather than duplicated here and left to drift out of sync.
+
+---
+
+## Device compatibility
+
+| Model | Status |
+|---|---|
+| E1 Pro | ✅ Working standalone — HTTP had to be manually enabled under Network > Advanced (off by default on this unit) |
+| Trackmix | ✅ Working standalone |
+| RL-1240A | ✅ Working standalone |
+| Doorbell 2K Gen 2 | ⚠️ Did not connect reliably standalone — may require a Home Hub/NVR, unconfirmed |
+| Battery-class (Argus line, Doorbell Battery) | ❌ No local HTTP/ONVIF server standalone, confirmed — requires a Home Hub or NVR |
+| Base E1, Lumus | ❓ Untested — Reolink's docs claim no local HTTP support, unconfirmed |
+| Home Hub Pro | ❓ Untested — needed to confirm NVR-style channel importing/selection |
+| Argus Pro (Black) | ❓ Untested — needed to confirm WiFi battery relay behavior through a Hub at a distance |
+| 16MP line (e.g. Duo 3V PoE) | ❓ Untested |
+
+PoE cameras and WiFi cameras outside the E1/battery lines are expected to work standalone without issue.
+
+---
+
+## Known limitations
+
+### Battery-class devices
+Argus line, Doorbell Battery. No local HTTP/ONVIF server at all when standalone — not a sleep/timing issue, the port is never opened by that hardware class. Only reachable once paired to a Home Hub or NVR.
+
+### E1 / E1 Pro / Lumus
+Reolink's own documentation is inconsistent about which of these support local HTTP/HTTPS. Don't trust the model name — check the camera's own Network > Advanced (or Server) settings directly.
+
+### Unverified commands
+`SetPtzPreset`, `SetWhiteLed`, `SetIrLights`, `AudioAlarmPlay`, `GetBatteryInfo` are built from consistent patterns across independent Reolink API references, but aren't yet confirmed against every model. See `TODO` comments in the app source for specifics.
+
+---
+
+## Contributing / testing
+
+Testing against additional hardware is genuinely useful, particularly:
+
+- A Home Hub/NVR — multi-channel discovery, channel importing
+- Any battery-class device paired to one — confirming relay-through-sleep behavior
+
+---
+
+## License
+
+*(add your preferred license here — MIT is a common default for Hubitat community projects)*
