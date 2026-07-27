@@ -174,16 +174,8 @@ def addSourcePage(params) {
                 page: "addSourcePage", params: [cancel: true]
         }
         section {
-            paragraph "Two kinds of device won't work added directly here -- both need a Home Hub or NVR " +
-                "as the source instead, with the device showing up as one of its channels:"
-            paragraph "⚠️ <b>Battery-class cameras/doorbells</b> (Argus line, Doorbell Battery). No local " +
-                "HTTP/ONVIF server standalone, even in \"Wired Power Mode\" -- that setting only changes " +
-                "charging, not the network API."
-            paragraph "⚠️ <b>E1, E1 Pro, and Lumus</b> -- Reolink's docs on this are inconsistent model to model."
-            paragraph "Don't rely on the model name. <b>Check the camera's own Network > Advanced (or Server) " +
-                "settings</b> for HTTP/HTTPS/ONVIF toggles -- that tells you directly whether this specific " +
-                "unit supports it. A real E1 Pro here turned out to support HTTP fine, just off by default."
-            paragraph "Everything else -- PoE cameras, WiFi cameras outside the E1 line -- works standalone."
+            paragraph "Battery-class cameras/doorbells and Reolink's E1 line have connection quirks worth " +
+                "knowing about -- see the Tips page (link on the Sources list) if this one refuses to connect."
             input "newLabel", "text", title: "Label (e.g. 'Front Door Hub', 'Garage Cam')"
             input "newHost", "text", title: "IP address"
             input "newPort", "number", title: "HTTPS port", defaultValue: 443
