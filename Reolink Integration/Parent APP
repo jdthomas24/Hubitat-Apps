@@ -174,8 +174,10 @@ def addSourcePage(params) {
                 page: "addSourcePage", params: [cancel: true]
         }
         section {
-            paragraph "Battery-class cameras/doorbells and Reolink's E1 line have connection quirks worth " +
-                "knowing about -- see the Tips page (link on the Sources list) if this one refuses to connect."
+            paragraph "<span style='display:inline-block;background:#FFF3E0;color:#E65100;font-weight:700;" +
+                "padding:2px 10px;border-radius:10px;font-size:11px;margin-right:6px;'>NOTE</span>" +
+                "<b>Battery-class cameras/doorbells and Reolink's E1 line have connection quirks worth " +
+                "knowing about -- see the Tips page (link on the Sources list) if this one refuses to connect.</b>"
             input "newLabel", "text", title: "Label (e.g. 'Front Door Hub', 'Garage Cam')"
             input "newHost", "text", title: "IP address"
             input "newPort", "number", title: "HTTPS port", defaultValue: 443
@@ -476,6 +478,14 @@ def updated() { initialize() }
 def initialize() {
     unschedule()
     initializePolling()
+    if (debugLogging) {
+        runIn(5400, "disableDebugLogging") // 90 min -- debug logging shouldn't run forever
+    }
+}
+
+def disableDebugLogging() {
+    app.updateSetting("debugLogging", [type: "bool", value: false])
+    log.info "Reolink Integration: debug logging auto-disabled after 90 minutes"
 }
 
 def initializePolling() {
