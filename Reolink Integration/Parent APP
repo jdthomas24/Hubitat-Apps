@@ -11,6 +11,14 @@
  *  - Poll interval is per-child, not global, because wired-mode doorbells/cams
  *    can be polled tight (2-5s) while battery-mode devices should be polled
  *    looser (or event-driven later) to avoid hammering a sleeping device.
+ *  - CONFIRMED (2026-07-26): battery-class Reolink devices (Argus line, Doorbell
+ *    Battery) have NO local HTTP/ONVIF server at all, standalone -- not a sleep/
+ *    wake timing issue, the port is simply never opened by that hardware class.
+ *    "Wired Power Mode" in the Reolink app only changes charging behavior, not
+ *    this. They only become reachable once paired to a Home Hub or NVR, which
+ *    proxies them. PoE and plug-in WiFi cameras/doorbells run the full local
+ *    API standalone and are unaffected -- confirmed via Reolink's own support
+ *    docs. See the warning on addSourcePage for the user-facing version of this.
  *
  * TODO markers throughout mark spots that need exact command/param names
  * verified against your firmware's API guide (GetMdState / GetAiState /
@@ -69,6 +77,13 @@ def mainPage() {
 def addSourcePage() {
     dynamicPage(name: "addSourcePage", title: "Add a Reolink Source", nextPage: "mainPage") {
         section {
+            paragraph "⚠️ Battery-class Reolink cameras and doorbells (Argus line, Doorbell Battery) do not run " +
+                "a local HTTP/ONVIF server standalone -- not even in \"Wired Power Mode\" (that setting only " +
+                "changes charging behavior, not whether the device has a network API). Adding one directly here " +
+                "will fail with connection-refused errors. These devices only become locally reachable once " +
+                "paired to a Reolink Home Hub or NVR -- add the Hub/NVR as the source instead, and the doorbell " +
+                "will show up as one of its channels. PoE and plug-in WiFi cameras/doorbells are unaffected and " +
+                "work standalone as expected."
             input "newLabel", "text", title: "Label (e.g. 'Front Door Hub', 'Garage Cam')", required: true
             input "newHost", "text", title: "IP address", required: true
             input "newPort", "number", title: "HTTPS port", defaultValue: 443
@@ -123,6 +138,10 @@ def discoverPage(params) {
                     def channels = discoverChannels(sourceId)
                     state.lastDiscovery = channels
                     channelCount = channels.size()
+                }
+
+                if (state.lastDiscoveryError) {
+                    paragraph "⚠️ ${state.lastDiscoveryError}"
                 }
 
                 (state.lastDiscovery ?: []).each { ch ->
@@ -231,13 +250,30 @@ def reolinkApiCall(sourceId, String cmd, Map param = [:], Integer channel = null
 def discoverChannels(sourceId) {
     def src = getSource(sourceId)
     def channels = []
+    state.lastDiscoveryError = null
+
     if (!src.isHub) {
         // TODO confirm GetDevInfo response field for a friendly camera name
         def info = reolinkApiCall(sourceId, "GetDevInfo")
+        if (info == null) {
+            // Login or GetDevInfo genuinely failed -- most likely this is a battery-class
+            // device (Argus/battery doorbell) that has no local HTTP/ONVIF server at all,
+            // even in "Wired Power Mode." Those only become reachable once paired to a
+            // Home Hub or NVR, which proxies them. Don't fabricate a channel from the
+            // label the user typed -- report the failure so it's not mistaken for success.
+            state.lastDiscoveryError = "No response from ${src.host}. If this is a battery-class " +
+                "camera or doorbell (not PoE/plug-in WiFi), it may not run a local HTTP/ONVIF " +
+                "server at all -- those typically only become reachable once paired to a Home Hub or NVR."
+            return channels
+        }
         channels << [channel: 0, name: info?.DevInfo?.name ?: src.label, deviceType: guessDeviceType(info)]
     } else {
         // TODO confirm GetChannelstatus response shape for hub/NVR channel enumeration
         def status = reolinkApiCall(sourceId, "GetChannelstatus")
+        if (status == null) {
+            state.lastDiscoveryError = "No response from ${src.host}. Check IP/credentials."
+            return channels
+        }
         status?.status?.each { ch ->
             if (ch.online) {
                 channels << [channel: ch.channel, name: ch.name ?: "Channel ${ch.channel}", deviceType: guessDeviceType(ch)]
