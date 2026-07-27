@@ -1,7 +1,7 @@
 /*
 SmartThings Motion Sensor Enhanced
 
-Version: 1.7.9
+Version: 1.8.0
 Author: jdthomas24
 Namespace: jdthomas24
 
@@ -56,7 +56,7 @@ Changes in 1.7.6:
 import hubitat.zigbee.clusters.iaszone.ZoneStatus
 import hubitat.zigbee.zcl.DataType
 
-def driverVersion() { return "1.7.9" }
+def driverVersion() { return "1.8.0" }
 
 metadata {
     definition(
