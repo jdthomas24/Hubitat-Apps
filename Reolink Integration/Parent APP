@@ -84,10 +84,22 @@ def discoverPage(params) {
     def sourceId = params?.sourceId ?: state.currentDiscoverySourceId
     state.currentDiscoverySourceId = sourceId
     def src = getSource(sourceId)
+    def channelCount = (state.lastDiscovery ?: []).size()
 
     if (confirmCreate) {
         createSelectedChildren(sourceId)
         app.updateSetting("confirmCreate", [type: "bool", value: false])
+    }
+
+    // Single-channel sources (standalone cameras) skip the separate confirm step --
+    // toggling the one channel checkbox creates the device immediately. Multi-channel
+    // sources (NVR/Home Hub) keep select-then-confirm so you can batch-create several
+    // at once without each checkbox firing off a device creation mid-selection.
+    if (channelCount == 1 && src) {
+        def ch = state.lastDiscovery[0]
+        if (settings["create_${ch.channel}"]) {
+            createSelectedChildren(sourceId)
+        }
     }
 
     if (confirmRemoveSource && src) {
@@ -110,6 +122,7 @@ def discoverPage(params) {
                 if (params?.run) {
                     def channels = discoverChannels(sourceId)
                     state.lastDiscovery = channels
+                    channelCount = channels.size()
                 }
 
                 (state.lastDiscovery ?: []).each { ch ->
@@ -120,7 +133,13 @@ def discoverPage(params) {
                         defaultValue: exists, submitOnChange: true
                 }
 
-                input "confirmCreate", "bool", title: "Create selected devices", defaultValue: false, submitOnChange: true
+                if (channelCount > 1) {
+                    input "confirmCreate", "bool", title: "Create selected devices", defaultValue: false, submitOnChange: true
+                    paragraph "This source has multiple channels (NVR/Home Hub) -- check the ones you want, " +
+                        "then toggle 'Create selected devices' once to create them all together."
+                } else if (channelCount == 1) {
+                    paragraph "Standalone source, one channel -- toggling it on creates the device immediately, no separate confirm needed."
+                }
             }
             section("Danger zone") {
                 input "confirmRemoveSource", "bool",
