@@ -99,65 +99,86 @@ def tipsPage() {
     dynamicPage(name: "tipsPage", title: "Tips & Notes") {
         section {
             paragraph pillHeader("What a source is")
-            paragraph "A source is anything with its own IP/login: one standalone camera, one NVR, or one Home Hub. " +
-                "A standalone camera always has exactly one channel (0). An NVR/Home Hub has one channel per " +
-                "paired camera -- run discovery on it to see what it finds."
+            paragraph "A source is one camera, one NVR, or one Home Hub -- anything with its own IP/login."
+            paragraph "A standalone camera always has one channel: 0."
+            paragraph "An NVR/Home Hub has one channel per paired camera. Run discovery to see what it finds."
         }
         section {
-            paragraph pillHeader("Devices that WON'T work as a standalone source")
-            paragraph "Battery-class cameras/doorbells (Argus line, Doorbell Battery) don't run a local " +
-                "HTTP/ONVIF server standalone, even in \"Wired Power Mode\" (that setting only changes charging). " +
-                "They only become reachable once paired to a Home Hub or NVR -- add the Hub/NVR as the source " +
-                "instead, and the device shows up as one of its channels."
-            paragraph "E1 / E1 Pro / Lumus: Reolink's own docs claim no local HTTP/HTTPS support at all, but a " +
-                "real E1 Pro contradicted that -- it worked fine once HTTP was manually enabled in its own " +
-                "Network > Advanced settings (off by default). Check there before assuming one needs a Hub/NVR."
+            paragraph pillHeader("Devices that won't work standalone")
+            paragraph "⚠️ <b>Battery-class cameras/doorbells</b> (Argus line, Doorbell Battery). No local " +
+                "HTTP/ONVIF server standalone, even in \"Wired Power Mode\" -- that setting only changes " +
+                "charging, not the network API."
+            paragraph "They only become reachable once paired to a Home Hub or NVR. Add the Hub/NVR as the " +
+                "source instead, and the device shows up as one of its channels."
+            paragraph "⚠️ <b>E1 / E1 Pro / Lumus</b>. Reolink's own docs claim no local HTTP/HTTPS support at " +
+                "all -- a real E1 Pro proved that wrong."
+            paragraph "It connected fine once HTTP was manually enabled under the camera's own Network > " +
+                "Advanced settings (off by default). Check there before assuming one needs a Hub/NVR."
+            paragraph "Everything else -- PoE cameras, WiFi cameras outside the E1 line -- works standalone."
         }
         section {
             paragraph pillHeader("Poll interval")
-            paragraph "Wired devices can be polled tight (a few seconds). Battery devices should be polled loose " +
-                "(HA's own Reolink integration only wakes battery cameras roughly once an hour at most) -- polling " +
-                "a battery device harder doesn't get fresher data, it just drains its battery for no benefit. This " +
-                "still applies even once a battery device is behind a Hub: you're asking the Hub for its last-known " +
-                "state, not the device directly, so the device's own check-in cadence is still the real limit."
+            paragraph "Wired devices can be polled tight: a few seconds is fine."
+            paragraph "Battery devices should be polled loose. Home Assistant's own Reolink integration only " +
+                "wakes battery cameras roughly once an hour at most."
+            paragraph "Polling a battery device harder doesn't get fresher data -- it just drains the battery " +
+                "for no benefit."
+            paragraph "This still holds once a battery device is behind a Hub: you're asking the Hub for its " +
+                "last-known state, not the device directly. The device's own check-in cadence is still the " +
+                "real limit."
         }
         section {
-            paragraph pillHeader("Sleep Status")
-            paragraph "A device shows 'awake' after a poll that actually got a response, and 'asleep' after a poll " +
-                "that got no response at all. For a battery device, 'asleep' is normal, not an error -- it just " +
-                "hasn't checked in since its last event or self-wake. Motion/person/vehicle/etc. keep their " +
-                "last-known value when this happens rather than resetting to inactive."
+            paragraph pillHeader("Sleep status")
+            paragraph "<b>Awake</b> -- the last poll actually got a response."
+            paragraph "<b>Asleep</b> -- the last poll got no response at all."
+            paragraph "For a battery device, asleep is normal, not an error -- it just hasn't checked in since " +
+                "its last event or self-wake."
+            paragraph "Motion/person/vehicle/etc. keep their last-known value when this happens, rather than " +
+                "resetting to inactive."
         }
         section {
             paragraph pillHeader("PTZ")
-            paragraph "There's no 'Home' command in Reolink's API -- the real equivalent is a saved preset. Use " +
-                "'savePresetHere' once (commonly preset ID 1) to save wherever the camera is currently pointed, " +
-                "then 'ptzGoToPreset' with that same ID any time you want it to return there."
+            paragraph "Reolink has no 'Home' command. The real equivalent is a saved preset."
+            paragraph "Use <b>savePresetHere</b> once (commonly preset ID 1) to save wherever the camera is " +
+                "currently pointed."
+            paragraph "Use <b>ptzGoToPreset</b> with that same ID any time you want it to return there."
         }
         section {
             paragraph pillHeader("Confidence level on newer commands")
-            paragraph "PtzCtrl (move + ToPos/preset recall) is confirmed working against real hardware. " +
-                "SetPtzPreset (save), SetWhiteLed (spotlight), SetIrLights (night vision), AudioAlarmPlay (siren), " +
-                "and GetBatteryInfo (battery %) are built from consistent patterns across several independent " +
-                "Reolink API references, but haven't been tested against this setup's actual firmware yet -- " +
-                "if one doesn't work as expected, check Logs with debug on for the exact response, since the " +
-                "field names may need a small adjustment for this particular device."
+            paragraph "<b>Confirmed working</b> against real hardware: PtzCtrl -- move, and ToPos (preset recall)."
+            paragraph "<b>Built but not yet tested</b> against this setup's actual firmware: SetPtzPreset " +
+                "(save), SetWhiteLed (spotlight), SetIrLights (night vision), AudioAlarmPlay (siren), " +
+                "GetBatteryInfo (battery %)."
+            paragraph "These are built from consistent patterns across several independent Reolink API " +
+                "references. If one doesn't work as expected, check Logs with debug on -- the exact response " +
+                "usually points to which field name needs adjusting for this device."
         }
     }
 }
 
-def addSourcePage() {
+def addSourcePage(params) {
+    if (params?.cancel) {
+        app.removeSetting("newLabel")
+        app.removeSetting("newHost")
+        app.removeSetting("newUser")
+        app.removeSetting("newPass")
+        return mainPage()
+    }
     dynamicPage(name: "addSourcePage", title: "Add a Reolink Source", nextPage: "mainPage") {
         section {
-            paragraph "⚠️ Battery-class Reolink cameras/doorbells (Argus line, Doorbell Battery) do not run a " +
-                "local HTTP/ONVIF server standalone, even in \"Wired Power Mode\" (that setting only changes " +
-                "charging, not the network API). They only become reachable once paired to a Home Hub or NVR -- " +
-                "add the Hub/NVR as the source instead, and the device will show up as one of its channels.\n\n" +
-                "Note on E1 / E1 Pro / Lumus: Reolink's own docs claim these have no local HTTP/HTTPS support at " +
-                "all, but a real E1 Pro contradicted that -- it connected fine once HTTP was manually enabled in " +
-                "the camera's own Network > Advanced settings (off by default). If one of these refuses a " +
-                "connection, check its own settings for an HTTP/HTTPS toggle before assuming it needs a Hub/NVR.\n\n" +
-                "PoE cameras and WiFi cameras generally work standalone as expected."
+            href name: "cancelAddSource", title: "Cancel", description: "Back to Sources without saving",
+                page: "addSourcePage", params: [cancel: true]
+        }
+        section {
+            paragraph "Two kinds of device won't work added directly here -- both need a Home Hub or NVR " +
+                "as the source instead, with the device showing up as one of its channels:"
+            paragraph "⚠️ <b>Battery-class cameras/doorbells</b> (Argus line, Doorbell Battery). No local " +
+                "HTTP/ONVIF server standalone, even in \"Wired Power Mode\" -- that setting only changes " +
+                "charging, not the network API."
+            paragraph "⚠️ <b>E1 / E1 Pro / Lumus</b>. Reolink's docs claim no local HTTP/HTTPS support at all, " +
+                "but a real E1 Pro proved that wrong -- it connected fine once HTTP was manually enabled under " +
+                "the camera's own Network > Advanced settings (off by default). Check there first."
+            paragraph "Everything else -- PoE cameras, WiFi cameras outside the E1 line -- works standalone."
             input "newLabel", "text", title: "Label (e.g. 'Front Door Hub', 'Garage Cam')", required: true
             input "newHost", "text", title: "IP address", required: true
             input "newPort", "number", title: "HTTPS port", defaultValue: 443
