@@ -233,20 +233,22 @@ private String reolinkLogin(sourceId) {
  * shape on a response that wasn't one.
  */
 private firstResultValue(resp, src) {
-    if (resp instanceof List && resp.size() > 0) {
+    try {
         return resp[0]?.value
+    } catch (e) {
+        log.warn "Reolink unexpected response shape from ${src.host} (source ${src.id}): " +
+            "${e.message} -- raw: ${resp?.toString()?.take(300)}"
+        return null
     }
-    def shape = resp == null ? "null" :
-        (resp instanceof Map) ? "a single object (Map), not an array" :
-        (resp instanceof String) ? "a plain string (likely HTML/text, not JSON)" :
-        "an unrecognized type"
-    log.warn "Reolink unexpected response shape from ${src.host} (source ${src.id}): " +
-        "expected a JSON array, got ${shape} -- raw: ${resp?.toString()?.take(300)}"
-    return null
 }
 
 private reolinkRawPost(src, bodyList) {
-    def uri = "https://${src.host}:${src.port}/cgi-bin/api.cgi"
+    // Reolink cameras route by the URL's ?cmd= parameter, not just the JSON body --
+    // Login needs it on the URL too, same as every other command, or it risks being
+    // misrouted/unauthenticated (this was likely the actual cause of the camera
+    // replying "please login first" / cmd:"Unknown" on the very next call).
+    def cmd = bodyList?.getAt(0)?.cmd ?: ""
+    def uri = "https://${src.host}:${src.port}/cgi-bin/api.cgi?cmd=${cmd}"
     def params = [uri: uri, ignoreSSLIssues: true, requestContentType: "application/json",
                   body: groovy.json.JsonOutput.toJson(bodyList), timeout: 10]
     def result = null
