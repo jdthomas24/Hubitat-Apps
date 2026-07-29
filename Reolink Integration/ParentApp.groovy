@@ -1,6 +1,6 @@
 /**
  * Reolink Integration (Parent App)
- * Version: 1.1.0
+ * Version: 1.1.1
  *
  * Architecture notes:
  *  - A "source" is anything that answers the Reolink HTTP/JSON API: a standalone
@@ -36,7 +36,7 @@ definition(
     singleThreaded: true
 )
 
-@Field static final String APP_VERSION = "1.1.0"
+@Field static final String APP_VERSION = "1.1.1"
 
 preferences {
     page(name: "mainPage")
@@ -522,7 +522,7 @@ def initializePolling() {
 
 def scheduleChildPoll(child) {
     def interval = (child.getSetting("pollIntervalSec") ?: 30) as Integer
-    runIn(interval, "pollChild", [data: [dni: child.deviceNetworkId], overwrite: false])
+    runIn(interval, "pollChild", [data: [dni: child.deviceNetworkId], overwrite: true])
 }
 
 def pollChild(data) {
