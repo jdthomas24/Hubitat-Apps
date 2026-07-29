@@ -1,6 +1,6 @@
 {
     "packageName": "Reolink Integration",
-    "releaseNotes": "v1.1.0 -- Multi-source architecture (standalone cameras, NVRs, Home Hubs); camera + doorbell component drivers with motion/AI attributes, PTZ (move, preset recall/save), spotlight, night vision, siren, and battery %; Sleep Status to distinguish a normal battery check-in gap from a real outage; in-app Tips page covering known device-specific connection quirks (battery-class devices and Reolink's E1 line both need a Home Hub/NVR or manual HTTP/HTTPS/ONVIF enablement). Confirmed working standalone against E1 Pro, Trackmix, and RL-1240A. Several PTZ/accessory commands and the motion/AI field names are pattern-based and not yet confirmed against every model -- see README for details.",
+    "releaseNotes": "v1.1.1 -- Bugfix: scheduleChildPoll() was stacking duplicate poll schedules per device on every app save/update instead of replacing the existing one, which could trip Hubitat's excessive-hub-load protection under repeated saves. Poll scheduling now correctly overwrites the prior schedule per device.",
     "documentationLink": "https://github.com/jdthomas24/Hubitat-Apps-Drivers/tree/main/Reolink%20Integration",
     "communityLink": "https://github.com/jdthomas24/Hubitat-Apps-Drivers/tree/main/Reolink%20Integration",
     "author": "jdthomas24",
