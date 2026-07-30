@@ -36,7 +36,7 @@ def refresh() {
     parent?.componentRefresh(this)
 }
 def takeSnapshot() {
-    parent?.componentTakeSnapshot(this)
+    parent?.componentTakeSnapshot(this, device.deviceNetworkId)
 }
 def setPollInterval(seconds) {
     parent?.componentSetPollInterval(this, seconds as Integer)
