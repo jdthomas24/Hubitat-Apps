@@ -1,6 +1,6 @@
 /**
  * Reolink Integration (Parent App)
- * Version: 1.2.3
+ * Version: 1.2.4
  *
  * Architecture notes:
  *  - A "source" is anything that answers the Reolink HTTP/JSON API: a standalone
@@ -133,6 +133,16 @@
  * DEFAULT_WIRED_POLL_SEC/DEFAULT_BATTERY_POLL_SEC constants (3s/30s) as the
  * one-time default applied when a device is first created, with no
  * app-level setting to configure or confuse that with.
+ *
+ * v1.2.4 -- No app-side change; version bump to match the drivers. Both
+ * component drivers' parseReolinkState()/markAsleep() now only call
+ * sendEvent() when a value actually changed, instead of unconditionally on
+ * every poll (6 calls every 3s per wired camera regardless of whether
+ * anything changed). Found after a user on a lower-spec hub (base C-8, vs.
+ * a C-8 Pro on the hub this was developed against) hit repeated "excessive
+ * hub load" errors on parseReolinkState() even after every 1.2.3 scheduling
+ * fix landed -- a hub with less headroom trips Hubitat's load governor on
+ * the same call volume a faster hub handles fine.
  */
 
 import groovy.transform.Field
@@ -150,7 +160,7 @@ definition(
     oauth: true // required for createAccessToken()/local endpoint access used by the snapshot relay
 )
 
-@Field static final String APP_VERSION = "1.2.3"
+@Field static final String APP_VERSION = "1.2.4"
 
 // Poll interval is a device-level setting ONLY -- these are just the one-time
 // default applied to a newly created device, not user-configurable at the app
