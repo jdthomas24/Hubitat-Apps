@@ -1,6 +1,6 @@
 /**
  * Reolink Integration (Parent App)
- * Version: 1.1.1
+ * Version: 1.1.2
  *
  * Architecture notes:
  *  - A "source" is anything that answers the Reolink HTTP/JSON API: a standalone
@@ -36,7 +36,7 @@ definition(
     singleThreaded: true
 )
 
-@Field static final String APP_VERSION = "1.1.1"
+@Field static final String APP_VERSION = "1.1.2"
 
 preferences {
     page(name: "mainPage")
@@ -338,8 +338,12 @@ def removeSource(id) {
 
 private String reolinkLogin(sourceId) {
     def src = getSource(sourceId)
-    if (src.token && now() < src.tokenExpires) return src.token
+    if (src.token && now() < src.tokenExpires) {
+        logDebug "Reolink source ${sourceId}: reusing cached token, expires in ${(src.tokenExpires - now()) / 1000}s"
+        return src.token
+    }
 
+    logDebug "Reolink source ${sourceId}: cached token missing/expired, logging in fresh"
     // TODO verify exact Login command body/response shape against your firmware's API guide
     def body = [[cmd: "Login", param: [User: [userName: src.username, password: src.password]]]]
     def resp = reolinkRawPost(src, body)
@@ -349,6 +353,7 @@ private String reolinkLogin(sourceId) {
 
     src.token = token
     src.tokenExpires = now() + (leaseSec * 1000L) - 30000L // refresh 30s early
+    logDebug "Reolink source ${sourceId}: new token acquired, leaseTime=${leaseSec}s"
     return token
 }
 
@@ -406,7 +411,10 @@ private parseReolinkResponse(resp) {
 def reolinkApiCall(sourceId, String cmd, Map param = [:], Integer channel = null) {
     def src = getSource(sourceId)
     def token = reolinkLogin(sourceId)
-    if (!token) return null
+    if (!token) {
+        logDebug "Reolink source ${sourceId}: no token available, aborting ${cmd}"
+        return null
+    }
 
     def p = channel != null ? param + [channel: channel] : param
     def uri = "https://${src.host}:${src.port}/cgi-bin/api.cgi?cmd=${cmd}&token=${token}"
@@ -415,6 +423,7 @@ def reolinkApiCall(sourceId, String cmd, Map param = [:], Integer channel = null
     try {
         httpPost([uri: uri, ignoreSSLIssues: true, requestContentType: "application/json",
                   body: groovy.json.JsonOutput.toJson(body), timeout: 10]) { resp -> result = parseReolinkResponse(resp) }
+        logDebug "Reolink source ${sourceId}: ${cmd} (ch ${channel}) succeeded"
     } catch (e) {
         log.warn "Reolink cmd ${cmd} failed for source ${sourceId} ch ${channel}: ${e.message}"
     }
@@ -559,6 +568,7 @@ def componentTakeSnapshot(child) {
     def src = getSource(sourceId)
     def token = reolinkLogin(sourceId)
     def url = "https://${src.host}:${src.port}/cgi-bin/api.cgi?cmd=Snap&channel=${channel}&token=${token}"
+    logDebug "Reolink source ${sourceId} ch ${channel}: snapshot URL built, token expires in ${(src.tokenExpires - now()) / 1000}s"
     child.receiveSnapshotUrl(url)
 }
 
