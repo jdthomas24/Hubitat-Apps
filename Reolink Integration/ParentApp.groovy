@@ -45,6 +45,20 @@
  * broken "/snap/null" URL, and handleSnapshotRequest() explicitly detects
  * and logs a null/blank dni in the request path so a stale cached URL from
  * before this fix shows up clearly in the logs instead of just a blank page.
+ * Both drivers' takeSnapshot() now pass device.deviceNetworkId explicitly
+ * rather than relying on the app to read deviceNetworkId off the driver's
+ * "this" reference, which doesn't reliably expose it.
+ *
+ * Also (still 1.2.3): reworked the snapshot relay to stop hitting the camera
+ * on every single dashboard tile refresh. Doing that live, in-request, ran
+ * straight into this app's singleThreaded execution model -- with more than
+ * one tile refreshing normally, requests queued up behind each other and
+ * started hitting Hubitat's 120-second semaphore timeout, causing tiles to
+ * spin forever and the whole app (polling included) to slow down. The camera
+ * is now only ever fetched from pollChild()'s normal poll cycle (and once,
+ * immediately, on a manual takeSnapshot); the result is cached to local hub
+ * file storage via uploadHubFile(), and the relay endpoint just serves that
+ * cached file, no camera round-trip in the request path at all.
  */
 
 import groovy.transform.Field
@@ -582,9 +596,43 @@ def pollChild(data) {
     } else {
         logDebug "Reolink source ${sourceId} ch ${channel}: response received, marking awake"
         child.parseReolinkState(aiState, mdState)
+        cacheSnapshot(child, sourceId, channel)
     }
 
     scheduleChildPoll(child)
+}
+
+/**
+ * Fetches a fresh snapshot and writes it to local hub file storage, keyed by
+ * device DNI. This is the ONLY place that hits the camera for a snapshot --
+ * the dashboard-facing relay endpoint (handleSnapshotRequest) just serves
+ * whatever's cached here, instantly, with no camera round-trip in the
+ * request path. That's what keeps a busy dashboard (multiple tiles, fast
+ * refresh) from backing up this app's single-threaded execution queue.
+ *
+ * TODO: verify uploadHubFile()/downloadHubFile() byte-array signatures and
+ * any file size ceiling against your hub's actual platform version -- these
+ * are standard Hubitat File Manager APIs (2.2.8+) but haven't been tested
+ * against real hardware in this codebase yet.
+ */
+private void cacheSnapshot(child, sourceId, channel) {
+    def src = getSource(sourceId)
+    if (!src) return
+    def imageBytes = fetchSnapshotBytes(src, sourceId, channel)
+    if (imageBytes == null) {
+        logDebug "Reolink source ${sourceId} ch ${channel}: snapshot cache refresh failed, keeping last cached image (if any)"
+        return
+    }
+    try {
+        uploadHubFile(snapshotFileName(child.deviceNetworkId), imageBytes)
+        logDebug "Reolink source ${sourceId} ch ${channel}: snapshot cache updated (${imageBytes.length} bytes)"
+    } catch (e) {
+        log.warn "Reolink source ${sourceId} ch ${channel}: failed to write snapshot to hub file storage -- ${e.message}"
+    }
+}
+
+private String snapshotFileName(dni) {
+    "reolink-snap-${dni}.jpg"
 }
 
 // ---------- Component callbacks (children call these via parent.X()) ----------
@@ -594,12 +642,14 @@ def componentRefresh(child) {
 }
 
 /**
- * Builds the dashboard-facing snapshot URL. As of 1.2.2 this points at this
- * app's own local relay endpoint (see mappings + handleSnapshotRequest()
- * below), NOT at the camera directly -- so the URL never goes stale, no
- * matter how often a dashboard tile refreshes or how long the token lives.
+ * Builds the dashboard-facing snapshot URL and, since the person explicitly
+ * asked for a snapshot right now, immediately refreshes the cached image
+ * rather than waiting for the next poll cycle. The URL itself points at this
+ * app's local relay endpoint (see mappings + handleSnapshotRequest() below),
+ * which serves the cached file directly -- no camera round-trip happens on
+ * the dashboard's own refresh timer, only here and during normal polling.
  *
- * dni is now passed explicitly by the driver (via its own device.deviceNetworkId)
+ * dni is passed explicitly by the driver (via its own device.deviceNetworkId)
  * rather than read off child.deviceNetworkId. Found in the field: a driver's
  * "this" reference reliably exposes methods like getDataValue(), but does NOT
  * reliably expose deviceNetworkId as a property when passed into another app's
@@ -621,16 +671,22 @@ def componentTakeSnapshot(child, String dni = null) {
             return
         }
     }
+    def sourceId = child.getDataValue("sourceId") as Integer
+    def channel = child.getDataValue("channel") as Integer
+    cacheSnapshot(child, sourceId, channel)
     def url = "${getFullLocalApiServerUrl()}/snap/${effectiveDni}?access_token=${state.accessToken}"
-    logDebug "Reolink ${effectiveDni}: snapshot URL built (local relay endpoint, not camera-direct)"
+    logDebug "Reolink ${effectiveDni}: snapshot URL built (local relay endpoint, cache refreshed on demand)"
     child.receiveSnapshotUrl(url)
 }
 
 /**
- * Handler for GET /snap/:dni?access_token=... -- called fresh by the browser
- * every time a dashboard image tile refreshes. Fetches a brand new snapshot
- * from the camera right now and streams the bytes straight back, so the
- * tile can never be looking at an expired-token URL.
+ * Handler for GET /snap/:dni?access_token=... -- called by the browser every
+ * time a dashboard image tile refreshes. Serves whatever's currently cached
+ * in local hub file storage for this device (kept fresh by cacheSnapshot(),
+ * called from pollChild() and from componentTakeSnapshot()). Deliberately
+ * does NOT talk to the camera itself -- doing that on every request is what
+ * caused the semaphore/queueing problem in 1.2.2 when multiple dashboard
+ * tiles refresh often against this app's singleThreaded execution model.
  */
 def handleSnapshotRequest() {
     def dni = params?.dni
@@ -644,20 +700,18 @@ def handleSnapshotRequest() {
         render status: 404, data: "Unknown device: ${dni}", contentType: "text/plain"
         return
     }
-    def sourceId = child.getDataValue("sourceId") as Integer
-    def channel = child.getDataValue("channel") as Integer
-    def src = getSource(sourceId)
-    if (!src) {
-        render status: 404, data: "Unknown source for device ${dni}", contentType: "text/plain"
-        return
-    }
 
-    def imageBytes = fetchSnapshotBytes(src, sourceId, channel)
-    if (imageBytes == null) {
-        render status: 502, data: "Snapshot fetch failed, check app logs with debug on", contentType: "text/plain"
+    byte[] cached = null
+    try {
+        cached = downloadHubFile(snapshotFileName(dni))
+    } catch (e) {
+        logDebug "Reolink Integration: no cached snapshot yet for ${dni} -- ${e.message}"
+    }
+    if (!cached || cached.length == 0) {
+        render status: 404, data: "No snapshot cached yet for this device -- wait for the next poll cycle or run takeSnapshot", contentType: "text/plain"
         return
     }
-    render contentType: "image/jpeg", data: imageBytes
+    render contentType: "image/jpeg", data: cached
 }
 
 /** Fetches a live snapshot, retrying once with a forced fresh login on auth failure. */
