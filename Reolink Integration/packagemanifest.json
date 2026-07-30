@@ -1,10 +1,10 @@
 {
     "packageName": "Reolink Integration",
-    "releaseNotes": "v1.1.2 -- Bugfix + debug logging. v1.1.1 fixed a polling bug where device schedules stacked duplicates on every app save instead of replacing them, which could trip Hubitat's excessive-hub-load protection (LimitExceededException in Logs). v1.1.2 adds debug logging across token/auth lifecycle and poll response outcomes -- helps diagnose a snapshot tile going stale, and dropped/no-response polls on wired/PoE devices (e.g. Duo 3V), where a no-response result is a real issue rather than expected battery-conservation behavior. Update recommended for anyone on 1.1.0 who hit excessive-hub-load errors.",
+    "releaseNotes": "v1.2.0 -Added PTZ calibration support: calibratePtz (triggers pan/tilt recalibration) and checkPtzCalibrationStatus (reports Required/Running/Done via new ptzCalibrationStatus attribute) commands on the Reolink Camera driver, for PTZ-capable models like Trackmix and E1 Zoom. Non-PTZ cameras will simply return an error if these are used -- harmless, see in-app Tips page. Also includes v1.1.1 (fixed a polling bug causing duplicate stacked schedules that could trip Hubitat's excessive-hub-load protection) and v1.1.2 (expanded debug logging for token lifecycle and poll response/no-response transitions.",
     "documentationLink": "https://github.com/jdthomas24/Hubitat-Apps-Drivers/tree/main/Reolink%20Integration",
     "communityLink": "https://github.com/jdthomas24/Hubitat-Apps-Drivers/tree/main/Reolink%20Integration",
     "author": "jdthomas24",
-    "version": "1.1.2",
+    "version": "1.2.0",
     "minimumHEVersion": "2.3.0",
     "dateReleased": "2026-07-27",
     "category": "Integrations",
