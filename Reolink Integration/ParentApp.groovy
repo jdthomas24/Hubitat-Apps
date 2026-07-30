@@ -46,9 +46,6 @@ preferences {
 }
 
 def mainPage() {
-    // Runs whenever mainPage is reached -- including via the "Next" button on
-    // addSourcePage, since Next submits the form then navigates here. That's
-    // the actual save point now: no separate confirm toggle needed.
     if (newLabel && newHost && newUser && newPass) {
         addSource()
         app.removeSetting("newLabel")
@@ -89,9 +86,6 @@ def mainPage() {
     }
 }
 
-/** Matches the blue-pill section-header style used elsewhere (e.g. Battery Monitor's
- *  ACTIONS/CONFIGURATION) -- not a native Hubitat section() feature, just styled HTML
- *  in a paragraph, kept in one place so every page's headers stay visually consistent. */
 private String pillHeader(String text) {
     "<div style='display:inline-block;background:#E3F2FD;color:#1565C0;font-weight:700;" +
     "font-size:12px;letter-spacing:0.5px;padding:4px 16px;border-radius:14px;" +
@@ -218,18 +212,11 @@ def discoverPage(params) {
     state.currentDiscoverySourceId = sourceId
     def src = getSource(sourceId)
 
-    // Run discovery FIRST, before anything below reads channelCount -- doing this
-    // inside the page-rendering closure instead meant the very first "Run discovery
-    // now" click never got to react to its own results in the same request (the
-    // single-channel auto-create check below would only fire on the NEXT click).
     if (params?.run && src) {
         state.lastDiscovery = discoverChannels(sourceId)
         state.lastDiscoverySourceId = sourceId
     }
 
-    // Cached discovery results belong to whichever source last ran discovery --
-    // if that's not THIS source, treat it as empty rather than showing someone
-    // else's (possibly since-deleted) channels under the wrong source's page.
     def cachedForThisSource = (state.lastDiscoverySourceId == sourceId)
     def lastDiscovery = cachedForThisSource ? (state.lastDiscovery ?: []) : []
     def channelCount = lastDiscovery.size()
@@ -239,12 +226,6 @@ def discoverPage(params) {
         app.updateSetting("confirmCreate", [type: "bool", value: false])
     }
 
-    // Single-channel sources (standalone cameras) skip the separate confirm step --
-    // toggling the one channel checkbox creates the device immediately. Multi-channel
-    // sources (NVR/Home Hub) keep select-then-confirm so you can batch-create several
-    // at once without each checkbox firing off a device creation mid-selection.
-    // The setting name is scoped by sourceId (not just channel number) -- two
-    // different sources both having a "channel 0" must NOT share one toggle.
     if (channelCount == 1 && src) {
         def ch = lastDiscovery[0]
         if (settings["create_${sourceId}_${ch.channel}"]) {
@@ -255,7 +236,7 @@ def discoverPage(params) {
     if (confirmRemoveSource && src) {
         removeSource(sourceId)
         app.updateSetting("confirmRemoveSource", [type: "bool", value: false])
-        return mainPage() // jump straight back to the Sources list
+        return mainPage()
     }
 
     return dynamicPage(name: "discoverPage", title: "Discover Channels - ${src?.label ?: '(source removed)'}", nextPage: "mainPage") {
@@ -310,7 +291,7 @@ def discoverPage(params) {
 
 def addSource() {
     state.sources = state.sources ?: []
-    state.nextSourceId = (state.nextSourceId ?: 0) + 1 // monotonic -- never reuses a deleted source's id
+    state.nextSourceId = (state.nextSourceId ?: 0) + 1
     def id = state.nextSourceId
     state.sources << [
         id: id, label: newLabel, host: newHost, port: newPort ?: 443,
@@ -344,7 +325,6 @@ private String reolinkLogin(sourceId) {
     }
 
     logDebug "Reolink source ${sourceId}: cached token missing/expired, logging in fresh"
-    // TODO verify exact Login command body/response shape against your firmware's API guide
     def body = [[cmd: "Login", param: [User: [userName: src.username, password: src.password]]]]
     def resp = reolinkRawPost(src, body)
     def first = firstResultValue(resp, src)
@@ -352,19 +332,11 @@ private String reolinkLogin(sourceId) {
     def leaseSec = (first?.Token?.leaseTime ?: 3600) as Integer
 
     src.token = token
-    src.tokenExpires = now() + (leaseSec * 1000L) - 30000L // refresh 30s early
+    src.tokenExpires = now() + (leaseSec * 1000L) - 30000L
     logDebug "Reolink source ${sourceId}: new token acquired, leaseTime=${leaseSec}s"
     return token
 }
 
-/**
- * Reolink's success responses are a JSON array of one object per command:
- * [ { cmd: ..., value: {...} } ]. If the device instead returns an error object,
- * an HTML page (wrong port/cert/proxy), or anything else non-array, log what we
- * actually got instead of throwing a MissingMethodException on getAt(0) --
- * that's what "ExecutorHttpClient5.getAt()" errors come from: assuming array
- * shape on a response that wasn't one.
- */
 private firstResultValue(resp, src) {
     try {
         return resp[0]?.value
@@ -376,10 +348,6 @@ private firstResultValue(resp, src) {
 }
 
 private reolinkRawPost(src, bodyList) {
-    // Reolink cameras route by the URL's ?cmd= parameter, not just the JSON body --
-    // Login needs it on the URL too, same as every other command, or it risks being
-    // misrouted/unauthenticated (this was likely the actual cause of the camera
-    // replying "please login first" / cmd:"Unknown" on the very next call).
     def cmd = bodyList?.getAt(0)?.cmd ?: ""
     def uri = "https://${src.host}:${src.port}/cgi-bin/api.cgi?cmd=${cmd}"
     def params = [uri: uri, ignoreSSLIssues: true, requestContentType: "application/json",
@@ -393,21 +361,11 @@ private reolinkRawPost(src, bodyList) {
     return result
 }
 
-/**
- * resp.data can come back as an internal Hubitat wrapper type that prints as
- * valid JSON via toString() but doesn't actually support Groovy list/map
- * indexing (this is what "ExecutorHttpClient5.getAt()" errors come from --
- * NOT malformed JSON, confirmed by seeing it thrown even on a well-formed,
- * successful Login response). Re-parsing the raw text with JsonSlurper
- * guarantees plain List/Map objects that behave the way the rest of this
- * code expects.
- */
 private parseReolinkResponse(resp) {
     def raw = resp?.data?.toString()
     return raw ? new groovy.json.JsonSlurper().parseText(raw) : null
 }
 
-/** Generic authenticated call. channel may be null for source-level commands (e.g. GetChannelstatus). */
 def reolinkApiCall(sourceId, String cmd, Map param = [:], Integer channel = null) {
     def src = getSource(sourceId)
     def token = reolinkLogin(sourceId)
@@ -438,14 +396,8 @@ def discoverChannels(sourceId) {
     state.lastDiscoveryError = null
 
     if (!src.isHub) {
-        // TODO confirm GetDevInfo response field for a friendly camera name
         def info = reolinkApiCall(sourceId, "GetDevInfo")
         if (info == null) {
-            // Login or GetDevInfo genuinely failed -- most likely this is a battery-class
-            // device (Argus/battery doorbell) that has no local HTTP/ONVIF server at all,
-            // even in "Wired Power Mode." Those only become reachable once paired to a
-            // Home Hub or NVR, which proxies them. Don't fabricate a channel from the
-            // label the user typed -- report the failure so it's not mistaken for success.
             state.lastDiscoveryError = "No response from ${src.host}. If this is a battery-class " +
                 "camera or doorbell (not PoE/plug-in WiFi), it may not run a local HTTP/ONVIF " +
                 "server at all -- those typically only become reachable once paired to a Home Hub or NVR."
@@ -453,7 +405,6 @@ def discoverChannels(sourceId) {
         }
         channels << [channel: 0, name: info?.DevInfo?.name ?: src.label, deviceType: guessDeviceType(info)]
     } else {
-        // TODO confirm GetChannelstatus response shape for hub/NVR channel enumeration
         def status = reolinkApiCall(sourceId, "GetChannelstatus")
         if (status == null) {
             state.lastDiscoveryError = "No response from ${src.host}. Check IP/credentials."
@@ -469,7 +420,6 @@ def discoverChannels(sourceId) {
 }
 
 private String guessDeviceType(info) {
-    // TODO refine once real GetDevInfo/GetChannelstatus payloads are in hand
     def model = (info?.DevInfo?.model ?: info?.model ?: "").toLowerCase()
     return model.contains("doorbell") ? "doorbell" : "camera"
 }
@@ -493,7 +443,7 @@ def createSelectedChildren(sourceId) {
             child.updateDataValue("sourceId", "${sourceId}")
             child.updateDataValue("channel", "${ch.channel}")
             child.updateSetting("pollIntervalSec", [type: "number",
-                value: defaultBatteryPoll ?: 30]) // user adjusts per-device after wired/battery mode is known
+                value: defaultBatteryPoll ?: 30])
             logDebug "Created child ${dni} (${driverName})"
         } else if (!wantIt && existing) {
             deleteChildDevice(dni)
@@ -511,7 +461,7 @@ def initialize() {
     unschedule()
     initializePolling()
     if (debugLogging) {
-        runIn(5400, "disableDebugLogging") // 90 min -- debug logging shouldn't run forever
+        runIn(5400, "disableDebugLogging")
     }
 }
 
@@ -521,9 +471,6 @@ def disableDebugLogging() {
 }
 
 def initializePolling() {
-    // Simple approach: each child schedules its own refresh via a short runIn loop,
-    // driven from the app so we control concurrency and can centrally back off a
-    // source that's timing out instead of every child retrying independently.
     getChildDevices().each { child ->
         scheduleChildPoll(child)
     }
@@ -540,16 +487,13 @@ def pollChild(data) {
     def sourceId = child.getDataValue("sourceId") as Integer
     def channel = child.getDataValue("channel") as Integer
 
-    // TODO confirm GetAiState / GetMdState response field names for your firmware
     def aiState = reolinkApiCall(sourceId, "GetAiState", [:], channel)
     def mdState = reolinkApiCall(sourceId, "GetMdState", [:], channel)
     if (aiState == null && mdState == null) {
-        // No response at all -- for a battery device this is normal (asleep between
-        // events/check-ins), not necessarily an error. Leave motion/person/etc at
-        // their last-known value rather than flipping everything to "inactive"
-        // just because we couldn't ask.
+        logDebug "Reolink source ${sourceId} ch ${channel}: no response, marking asleep"
         child.markAsleep()
     } else {
+        logDebug "Reolink source ${sourceId} ch ${channel}: response received, marking awake"
         child.parseReolinkState(aiState, mdState)
     }
 
@@ -575,29 +519,18 @@ def componentTakeSnapshot(child) {
 def componentPtz(child, String direction) {
     def sourceId = child.getDataValue("sourceId") as Integer
     def channel = child.getDataValue("channel") as Integer
-    // TODO confirm PtzCtrl param names (op: Left/Right/Up/Down/ZoomInc/ZoomDec/Stop, speed, etc.)
     reolinkApiCall(sourceId, "PtzCtrl", [op: direction, speed: 32], channel)
 }
 
-/**
- * Reolink has no dedicated "Home" PTZ op -- the real-world equivalent is jumping
- * to a saved preset (op: ToPos, id: presetId), same pattern used by every working
- * Reolink integration/script. Set a preset in the Reolink app (commonly ID 1) as
- * your home position, then call this with that ID.
- */
 def componentPtzGoToPreset(child, Integer presetId) {
     def sourceId = child.getDataValue("sourceId") as Integer
     def channel = child.getDataValue("channel") as Integer
     reolinkApiCall(sourceId, "PtzCtrl", [op: "ToPos", id: presetId, speed: 32], channel)
 }
 
-/** Saves the camera's CURRENT position as a preset (as opposed to ptzGoToPreset, which recalls one). */
 def componentSavePreset(child, Integer presetId, String name) {
     def sourceId = child.getDataValue("sourceId") as Integer
     def channel = child.getDataValue("channel") as Integer
-    // TODO confirm SetPtzPreset response/success shape against your firmware
-    // Nested param shape -- pass channel=null so reolinkApiCall doesn't also try to
-    // merge a flat top-level channel key alongside this command's nested one.
     reolinkApiCall(sourceId, "SetPtzPreset",
         [PtzPreset: [channel: channel, enable: 1, id: presetId, name: name ?: "Preset${presetId}"]], null)
 }
@@ -605,31 +538,24 @@ def componentSavePreset(child, Integer presetId, String name) {
 def componentSetSpotlight(child, Boolean on) {
     def sourceId = child.getDataValue("sourceId") as Integer
     def channel = child.getDataValue("channel") as Integer
-    // TODO confirm SetWhiteLed's exact field names/values against your firmware --
-    // some models use additional mode/bright fields for scheduling or brightness.
     reolinkApiCall(sourceId, "SetWhiteLed", [WhiteLed: [channel: channel, state: (on ? 1 : 0)]], null)
 }
 
 def componentSetNightVision(child, String mode) {
     def sourceId = child.getDataValue("sourceId") as Integer
     def channel = child.getDataValue("channel") as Integer
-    // TODO confirm SetIrLights' accepted state strings for your firmware --
-    // seen as "Auto"/"On"/"Off" in some models, "Auto"/"Open"/"Close" in others.
     reolinkApiCall(sourceId, "SetIrLights", [IrLights: [channel: channel, state: mode]], null)
 }
 
 def componentSetSiren(child, Boolean on) {
     def sourceId = child.getDataValue("sourceId") as Integer
     def channel = child.getDataValue("channel") as Integer
-    // TODO confirm AudioAlarmPlay's exact field names against your firmware
     reolinkApiCall(sourceId, "AudioAlarmPlay", [alarm_mode: "manul", manual_switch: (on ? 1 : 0), times: 2], channel)
 }
 
 def componentCheckBattery(child) {
     def sourceId = child.getDataValue("sourceId") as Integer
     def channel = child.getDataValue("channel") as Integer
-    // TODO confirm GetBatteryInfo's field names (seen elsewhere as something like
-    // batteryPercent / batteryVersion / chargeStatus -- needs real-device confirmation)
     def battInfo = reolinkApiCall(sourceId, "GetBatteryInfo", [:], channel)
     child.receiveBatteryInfo(battInfo)
 }
