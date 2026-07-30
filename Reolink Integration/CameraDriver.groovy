@@ -1,6 +1,6 @@
 /**
  * Reolink Camera (Component Driver)
- * Version: 1.2.0 -- kept in sync with the parent app's version.
+ * Version: 1.2.1 -- kept in sync with the parent app's version.
  * Thin device: no HTTP of its own. Everything delegates to the parent app via
  * parent.componentX(this, ...). The app knows which source/channel this device
  * maps to (stored as data values sourceId/channel) and does the actual API call.
