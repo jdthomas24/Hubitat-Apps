@@ -384,6 +384,26 @@ def reolinkApiCall(sourceId, String cmd, Map param = [:], Integer channel = null
         return null
     }
 
+    def outcome = doReolinkApiCall(src, sourceId, cmd, token, param, channel)
+
+    // rspCode -6 ("please login first") means the camera invalidated our session
+    // before our local tokenExpires said it should -- most likely a competing
+    // client (Reolink app/NVR viewing this camera) forced a fresh login on the
+    // camera side. Don't wait for the next poll cycle to notice; force our own
+    // fresh login and retry once now.
+    if (outcome.value == null && outcome.rspCode == -6) {
+        logDebug "Reolink source ${sourceId}: token rejected by camera (please login first), forcing re-login"
+        src.token = null
+        src.tokenExpires = 0
+        def freshToken = reolinkLogin(sourceId)
+        if (freshToken) {
+            outcome = doReolinkApiCall(src, sourceId, cmd, freshToken, param, channel)
+        }
+    }
+    return outcome.value
+}
+
+private Map doReolinkApiCall(src, sourceId, String cmd, String token, Map param, Integer channel) {
     def p = channel != null ? param + [channel: channel] : param
     def uri = "https://${src.host}:${src.port}/cgi-bin/api.cgi?cmd=${cmd}&token=${token}"
     def body = [[cmd: cmd, action: 0, param: p]]
@@ -392,15 +412,16 @@ def reolinkApiCall(sourceId, String cmd, Map param = [:], Integer channel = null
         httpPost([uri: uri, ignoreSSLIssues: true, requestContentType: "application/json",
                   body: groovy.json.JsonOutput.toJson(body), timeout: 10]) { resp -> result = parseReolinkResponse(resp) }
         def value = firstResultValue(result, src)
+        def rspCode = result?.getAt(0)?.error?.rspCode
         if (value == null) {
             logDebug "Reolink source ${sourceId}: ${cmd} (ch ${channel}) HTTP ok but no usable value -- raw: ${result?.toString()?.take(300)}"
         } else {
             logDebug "Reolink source ${sourceId}: ${cmd} (ch ${channel}) succeeded"
         }
-        return value
+        return [value: value, rspCode: rspCode]
     } catch (e) {
         log.warn "Reolink cmd ${cmd} failed for source ${sourceId} ch ${channel}: ${e.message}"
-        return null
+        return [value: null, rspCode: null]
     }
 }
 
