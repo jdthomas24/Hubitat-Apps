@@ -110,6 +110,29 @@
  * on the very next tick instead of waiting out the old interval, and
  * forgetSchedulingState() so deleted devices don't leave stale entries in
  * state forever.
+ *
+ * Also (still 1.2.3): made the new central scheduler self-healing rather
+ * than dependent on the user opening the app. Two gaps: (1) nothing resumed
+ * polling after a hub reboot -- Hubitat doesn't guarantee runIn schedules
+ * survive a restart, and nothing else in this app runs on boot, so a reboot
+ * could leave every camera silently un-polled indefinitely until someone
+ * happened to open the app and hit Done. Added a subscribe(location,
+ * "systemStart", ...) handler so initialize() runs automatically on boot.
+ * (2) schedulerTick() re-arms its own next run at the very end of the
+ * method -- if any single device's processing threw an unhandled exception,
+ * the whole tick could abort before reaching that point, silently stopping
+ * ALL devices at once (a bigger blast radius than the bug it replaced, which
+ * only ever affected one device at a time). Each device is now processed in
+ * its own try/catch, and the next tick is re-armed in a finally block so it
+ * cannot fail to reschedule itself.
+ *
+ * Also (still 1.2.3): removed the app-level "Default poll interval" settings
+ * (defaultWiredPoll/defaultBatteryPoll) entirely -- poll/snapshot interval is
+ * now a device-only concept, full stop. The app no longer exposes any
+ * interval configuration at all; createSelectedChildren() uses fixed
+ * DEFAULT_WIRED_POLL_SEC/DEFAULT_BATTERY_POLL_SEC constants (3s/30s) as the
+ * one-time default applied when a device is first created, with no
+ * app-level setting to configure or confuse that with.
  */
 
 import groovy.transform.Field
@@ -128,6 +151,13 @@ definition(
 )
 
 @Field static final String APP_VERSION = "1.2.3"
+
+// Poll interval is a device-level setting ONLY -- these are just the one-time
+// default applied to a newly created device, not user-configurable at the app
+// level. To change an existing device's interval, use its own device page (or
+// the Set Poll Interval / Set Snapshot Interval commands).
+@Field static final Integer DEFAULT_WIRED_POLL_SEC = 3
+@Field static final Integer DEFAULT_BATTERY_POLL_SEC = 30
 
 preferences {
     page(name: "mainPage")
@@ -165,11 +195,6 @@ def mainPage() {
         section {
             href name: "addSource", title: "➕ Add a source...",
                 description: "Standalone camera, NVR, or Home Hub", page: "addSourcePage"
-        }
-        section {
-            paragraph pillHeader("Polling")
-            input "defaultWiredPoll", "number", title: "Default poll interval (sec) - wired/plugged-in devices", defaultValue: 3
-            input "defaultBatteryPoll", "number", title: "Default poll interval (sec) - battery devices", defaultValue: 30
         }
         section {
             paragraph pillHeader("Logging")
@@ -620,7 +645,9 @@ def createSelectedChildren(sourceId) {
             ])
             child.updateDataValue("sourceId", "${sourceId}")
             child.updateDataValue("channel", "${ch.channel}")
-            def pollDefault = ch.isBattery ? (defaultBatteryPoll ?: 30) : (defaultWiredPoll ?: 3)
+            // Poll interval is device-only, configurable ONLY on the device page (or via
+            // setPollInterval) -- these are just the one-time defaults applied at creation.
+            def pollDefault = ch.isBattery ? DEFAULT_BATTERY_POLL_SEC : DEFAULT_WIRED_POLL_SEC
             child.updateSetting("pollIntervalSec", [type: "number", value: pollDefault])
             logDebug "Created child ${dni} (${driverName}), poll interval defaulted to ${pollDefault}s (${ch.isBattery ? 'battery' : 'wired'})"
         } else if (!wantIt && existing) {
@@ -636,8 +663,22 @@ def createSelectedChildren(sourceId) {
 def installed() { initialize() }
 def updated() { initialize() }
 
+/**
+ * Ensures polling resumes automatically after a hub reboot. Hubitat does not
+ * guarantee runIn schedules survive a restart on their own, and nothing else
+ * in this app gets called on boot -- without this, a hub reboot could leave
+ * every camera silently un-polled until someone happened to open the app and
+ * hit Done/Update, with no error or indication anything was wrong.
+ */
+def systemStartHandler(evt) {
+    logDebug "Reolink Integration: hub restarted, resuming polling"
+    initialize()
+}
+
 def initialize() {
     unschedule()
+    unsubscribe()
+    subscribe(location, "systemStart", "systemStartHandler")
     if (!state.accessToken) {
         try {
             createAccessToken()
@@ -692,29 +733,53 @@ def initializePolling() {
  * independently in state (nextPollDue / nextSnapshotDue, keyed by DNI).
  * Nothing here can ever cancel another device's schedule, because there is
  * only one schedule.
+ *
+ * Two more robustness measures, since this single tick is now the ONE thing
+ * every device's polling depends on -- a failure here has a much bigger
+ * blast radius than the old per-device timers did, so it can't be allowed to
+ * silently die:
+ *  1. Each device is processed in its own try/catch. One device throwing
+ *     (bad API response, unexpected null, etc.) logs a warning and moves on
+ *     instead of aborting the whole tick and silently stopping every camera.
+ *  2. The next tick is re-armed in a finally block, so even an unexpected
+ *     failure outside the per-device loop still can't prevent the scheduler
+ *     from continuing to run.
  */
 def schedulerTick() {
-    def nowMs = now()
-    def pollDue = state.nextPollDue ?: [:]
-    def snapDue = state.nextSnapshotDue ?: [:]
+    try {
+        def nowMs = now()
+        def pollDue = state.nextPollDue ?: [:]
+        def snapDue = state.nextSnapshotDue ?: [:]
 
-    getChildDevices().each { child ->
-        def dni = child.deviceNetworkId
-        if (nowMs >= ((pollDue[dni] ?: 0) as Long)) {
-            pollChildNow(child)
-            def interval = (child.getSetting("pollIntervalSec") ?: 30) as Integer
-            pollDue[dni] = nowMs + (interval * 1000L)
+        getChildDevices().each { child ->
+            def dni = child.deviceNetworkId
+            try {
+                if (nowMs >= ((pollDue[dni] ?: 0) as Long)) {
+                    pollChildNow(child)
+                    def interval = (child.getSetting("pollIntervalSec") ?: 30) as Integer
+                    pollDue[dni] = nowMs + (interval * 1000L)
+                }
+                if (nowMs >= ((snapDue[dni] ?: 0) as Long)) {
+                    pollChildSnapshotNow(child)
+                    def sInterval = (child.getSetting("snapshotIntervalSec") ?: 30) as Integer
+                    snapDue[dni] = nowMs + (sInterval * 1000L)
+                }
+            } catch (e) {
+                log.warn "Reolink Integration: schedulerTick() failed for device ${dni} -- ${e.message}. Skipping this device this tick, will retry next tick."
+                // Push this device's due time forward by its own interval anyway, so a
+                // persistently failing device can't get retried every single tick forever.
+                def interval = (child.getSetting("pollIntervalSec") ?: 30) as Integer
+                pollDue[dni] = nowMs + (interval * 1000L)
+            }
         }
-        if (nowMs >= ((snapDue[dni] ?: 0) as Long)) {
-            pollChildSnapshotNow(child)
-            def sInterval = (child.getSetting("snapshotIntervalSec") ?: 30) as Integer
-            snapDue[dni] = nowMs + (sInterval * 1000L)
-        }
+
+        state.nextPollDue = pollDue
+        state.nextSnapshotDue = snapDue
+    } catch (e) {
+        log.warn "Reolink Integration: schedulerTick() failed outside the per-device loop -- ${e.message}"
+    } finally {
+        runIn(1, "schedulerTick", [overwrite: true])
     }
-
-    state.nextPollDue = pollDue
-    state.nextSnapshotDue = snapDue
-    runIn(1, "schedulerTick", [overwrite: true])
 }
 
 /** Marks a device due on the very next tick (within ~1s) -- used after a poll-interval change so it takes effect immediately rather than waiting out the old interval. */
