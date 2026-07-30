@@ -1,19 +1,14 @@
 /**
  * Reolink Camera (Component Driver)
- * Version: 1.2.4 -- kept in sync with the parent app's version.
+ * Version: 1.2.5 -- kept in sync with the parent app's version.
  * Thin device: no HTTP of its own. Everything delegates to the parent app via
  * parent.componentX(this, ...). The app knows which source/channel this device
  * maps to (stored as data values sourceId/channel) and does the actual API call.
  *
- * No functional change from 1.2.1 -- the snapshot fixes in 1.2.2/1.2.3 are
- * entirely on the app side (snapshotUrl points at a local relay endpoint
- * instead of a camera URL with a baked-in token, and the relay endpoint
- * itself now correctly drains the image stream). This driver still just
- * displays whatever URL the app hands back via receiveSnapshotUrl().
- * Also (still 1.2.3): added an inline description under pollIntervalSec
- * clarifying that it, not a dashboard tile's own refresh rate, controls
- * snapshot image freshness -- came up after a user assumed the tile's
- * refresh setting alone would keep the image live.
+ * No functional change from 1.2.4 -- v1.2.5 is an app-side-only change (tiered
+ * Errors Only / Normal / Full logging on the app, replacing the old single
+ * debug toggle). This driver's own logic, including the sendIfChanged() event
+ * gating added in 1.2.4, is unchanged.
  *
  * v1.2.4 -- parseReolinkState()/markAsleep() now only call sendEvent() when
  * a value actually changed, instead of unconditionally on every poll. Found
