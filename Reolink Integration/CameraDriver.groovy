@@ -24,7 +24,12 @@ metadata {
         attribute "siren", "enum", ["on", "off"]
         attribute "ptzCalibrationStatus", "enum", ["unknown", "required", "running", "done"]
 
+        // ---- Core ----
         command "takeSnapshot"
+        command "checkBattery", [[name: "Battery-mode devices only"]]
+        command "setPollInterval", [[name: "seconds", type: "NUMBER"]]
+
+        // ---- PTZ (pan/tilt/zoom cameras only, e.g. Trackmix, E1 Zoom) ----
         command "ptz", [[name: "direction", type: "ENUM",
             constraints: ["Left", "Right", "Up", "Down", "ZoomInc", "ZoomDec", "Stop"]]]
         command "ptzGoToPreset", [[name: "presetId", type: "NUMBER",
@@ -32,15 +37,15 @@ metadata {
         command "savePresetHere", [[name: "presetId", type: "NUMBER",
             description: "Saves the camera's CURRENT position as this preset ID"],
             [name: "name", type: "STRING", description: "Optional preset name"]]
-        command "spotlightOn"
-        command "spotlightOff"
-        command "setNightVision", [[name: "mode", type: "ENUM", constraints: ["auto", "on", "off"]]]
-        command "sirenOn"
-        command "sirenOff"
-        command "checkBattery"
         command "calibratePtz", [[name: "PTZ cameras only -- recalibrates pan/tilt to fix preset drift over time"]]
-        command "checkPtzCalibrationStatus"
-        command "setPollInterval", [[name: "seconds", type: "NUMBER"]]
+        command "checkPtzCalibrationStatus", [[name: "PTZ cameras only"]]
+
+        // ---- Accessories (model-dependent -- not every camera has these) ----
+        command "spotlightOn", [[name: "Spotlight-equipped cameras only"]]
+        command "spotlightOff", [[name: "Spotlight-equipped cameras only"]]
+        command "setNightVision", [[name: "mode", type: "ENUM", constraints: ["auto", "on", "off"]]]
+        command "sirenOn", [[name: "Siren-equipped cameras only"]]
+        command "sirenOff", [[name: "Siren-equipped cameras only"]]
     }
     preferences {
         input name: "pollIntervalSec", type: "number", title: "Poll interval (sec)", defaultValue: 30
