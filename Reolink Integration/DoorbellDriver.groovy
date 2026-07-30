@@ -1,16 +1,14 @@
 /**
  * Reolink Doorbell (Component Driver)
- * Version: 1.2.4 -- kept in sync with the parent app's version.
+ * Version: 1.2.5 -- kept in sync with the parent app's version.
  * Same delegation pattern as Reolink Camera, plus a "visitor" (button press)
  * event so Rule Machine can trigger straight off "pushed 1" for a doorbell ring,
  * separate from AI person/motion detection.
  *
- * No functional change from 1.2.1 -- see the app's 1.2.2/1.2.3 notes for the
- * snapshot relay fix. This driver still just displays whatever URL the app
- * hands back via receiveSnapshotUrl().
- * Also (still 1.2.3): added an inline description under pollIntervalSec
- * clarifying that it, not a dashboard tile's own refresh rate, controls
- * snapshot image freshness.
+ * No functional change from 1.2.4 -- v1.2.5 is an app-side-only change (tiered
+ * Errors Only / Normal / Full logging on the app, replacing the old single
+ * debug toggle). This driver's own logic, including the sendIfChanged() event
+ * gating added in 1.2.4, is unchanged.
  *
  * v1.2.4 -- see camera driver's 1.2.4 note -- same sendIfChanged() fix
  * applied here to cut redundant sendEvent() load on lower-spec hubs.
