@@ -44,16 +44,16 @@ def installed() {
     sendEvent(name: "numberOfButtons", value: 1)
 }
 def refresh() {
-    parent?.componentRefresh(this)
+    parent?.componentRefresh(this, device.deviceNetworkId)
 }
 def takeSnapshot() {
     parent?.componentTakeSnapshot(this, device.deviceNetworkId)
 }
 def setPollInterval(seconds) {
-    parent?.componentSetPollInterval(this, seconds as Integer)
+    parent?.componentSetPollInterval(this, seconds as Integer, device.deviceNetworkId)
 }
 def setSnapshotInterval(seconds) {
-    parent?.componentSetSnapshotInterval(this, seconds as Integer)
+    parent?.componentSetSnapshotInterval(this, seconds as Integer, device.deviceNetworkId)
 }
 /** Called by the app after it polls GetAiState/GetMdState/visitor state for this channel. */
 def parseReolinkState(aiState, mdState) {
