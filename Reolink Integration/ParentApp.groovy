@@ -40,6 +40,11 @@
  * responded 200 with the right content-type, producing a blank page rather
  * than an obvious error. Now explicitly drains the InputStream into a byte
  * array via ByteArrayOutputStream before rendering.
+ * Also (still 1.2.3, not yet released): componentTakeSnapshot() now guards
+ * against a null/missing deviceNetworkId instead of silently building a
+ * broken "/snap/null" URL, and handleSnapshotRequest() explicitly detects
+ * and logs a null/blank dni in the request path so a stale cached URL from
+ * before this fix shows up clearly in the logs instead of just a blank page.
  */
 
 import groovy.transform.Field
@@ -595,6 +600,10 @@ def componentRefresh(child) {
  * matter how often a dashboard tile refreshes or how long the token lives.
  */
 def componentTakeSnapshot(child) {
+    if (!child?.deviceNetworkId) {
+        log.warn "Reolink Integration: componentTakeSnapshot() called with a device that has no deviceNetworkId, refusing to build a snapshot URL"
+        return
+    }
     if (!state.accessToken) {
         try {
             createAccessToken()
@@ -616,7 +625,12 @@ def componentTakeSnapshot(child) {
  */
 def handleSnapshotRequest() {
     def dni = params?.dni
-    def child = dni ? getChildDevice(dni) : null
+    if (!dni || dni == "null") {
+        log.warn "Reolink Integration: snapshot endpoint hit with no/null device id, this URL is stale -- run takeSnapshot again to regenerate it"
+        render status: 400, data: "Missing or stale device id, run takeSnapshot again to regenerate this URL", contentType: "text/plain"
+        return
+    }
+    def child = getChildDevice(dni)
     if (!child) {
         render status: 404, data: "Unknown device: ${dni}", contentType: "text/plain"
         return
