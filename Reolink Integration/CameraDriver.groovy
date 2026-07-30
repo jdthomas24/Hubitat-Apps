@@ -1,15 +1,15 @@
 /**
  * Reolink Camera (Component Driver)
- * Version: 1.2.2 -- kept in sync with the parent app's version.
+ * Version: 1.2.3 -- kept in sync with the parent app's version.
  * Thin device: no HTTP of its own. Everything delegates to the parent app via
  * parent.componentX(this, ...). The app knows which source/channel this device
  * maps to (stored as data values sourceId/channel) and does the actual API call.
  *
- * No functional change from 1.2.1 -- the snapshot fix in this version is
- * entirely on the app side (see the app's 1.2.2 notes: snapshotUrl now points
- * at a local relay endpoint instead of a camera URL with a baked-in token).
- * This driver still just displays whatever URL the app hands back via
- * receiveSnapshotUrl().
+ * No functional change from 1.2.1 -- the snapshot fixes in 1.2.2/1.2.3 are
+ * entirely on the app side (snapshotUrl points at a local relay endpoint
+ * instead of a camera URL with a baked-in token, and the relay endpoint
+ * itself now correctly drains the image stream). This driver still just
+ * displays whatever URL the app hands back via receiveSnapshotUrl().
  */
 metadata {
     definition(name: "Reolink Camera", namespace: "jdthomas24", author: "Jason", component: true) {
