@@ -95,9 +95,12 @@
  *
  * Replaced the single "Enable debug logging" bool with a 3-level logLevel
  * setting:
- *   - Errors Only: warnings/errors only (unconditional log.warn calls,
- *     always on regardless of this setting -- unchanged from before).
- *   - Normal (default): Errors Only, plus meaningful one-time events and
+ *   - Errors Only (default): warnings/errors only (unconditional log.warn
+ *     calls, always on regardless of this setting -- unchanged from before).
+ *     Matches the old debug-logging-off behavior, so an existing install
+ *     that never touched the debug toggle sees no change in log volume
+ *     after updating.
+ *   - Normal: Errors Only, plus meaningful one-time events and
  *     STATE TRANSITIONS -- a fresh login, a device flipping asleep<->awake,
  *     a child created/removed, a config change via a set-interval command,
  *     a hub reboot resuming polling. Routine "still succeeded, nothing
@@ -183,11 +186,11 @@ def mainPage() {
         section {
             paragraph pillHeader("Logging")
             input "logLevel", "enum", title: "Log level", options: LOG_LEVELS,
-                defaultValue: "Normal", submitOnChange: true
-            paragraph logLevelPill("Errors Only") + " Warnings and errors only."
+                defaultValue: "Errors Only", submitOnChange: true
+            paragraph logLevelPill("Errors Only") + " Warnings and errors only. Default -- matches the " +
+                "old debug-logging-off behavior, so nothing changes for anyone who hasn't touched this setting."
             paragraph logLevelPill("Normal") + " Adds meaningful one-time events and state transitions " +
-                "(login, asleep/awake changes, devices created, config changes) on top of Errors Only. " +
-                "Default."
+                "(login, asleep/awake changes, devices created, config changes) on top of Errors Only."
             paragraph logLevelPill("Full") + " Everything, including every routine poll step. Useful for " +
                 "actively chasing something intermittent. <b>Automatically reverts to Normal after 60 " +
                 "minutes</b> -- Errors Only and Normal have no timer, since neither is noisy enough to need one."
@@ -320,8 +323,9 @@ def tipsPage() {
         }
         section {
             paragraph pillHeader("Log levels")
-            paragraph logLevelPill("Errors Only") + " Warnings and errors only."
-            paragraph logLevelPill("Normal") + " Default. Adds meaningful one-time events and state " +
+            paragraph logLevelPill("Errors Only") + " Default. Warnings and errors only -- matches the old " +
+                "debug-logging-off behavior, so nothing changes for anyone who hasn't touched this setting."
+            paragraph logLevelPill("Normal") + " Adds meaningful one-time events and state " +
                 "transitions: a fresh login, a device flipping asleep/awake, a device created, a config " +
                 "change. Routine polls that succeed with no change don't log anything."
             paragraph logLevelPill("Full") + " Everything, including every routine poll step. Useful for " +
@@ -1167,8 +1171,8 @@ def componentSetSnapshotInterval(child, Integer seconds, String dni = null) {
 
 /** Rank of the current logLevel setting within LOG_LEVELS (0=Errors Only, 1=Normal, 2=Full). Defaults to Normal if unset/unrecognized. */
 private int logLevelRank() {
-    def idx = LOG_LEVELS.indexOf(logLevel ?: "Normal")
-    return idx < 0 ? 1 : idx
+    def idx = LOG_LEVELS.indexOf(logLevel ?: "Errors Only")
+    return idx < 0 ? 0 : idx
 }
 
 /** Logs at Normal tier and above (Normal, Full). Meaningful one-time events and state transitions -- not routine unchanged polls. */
