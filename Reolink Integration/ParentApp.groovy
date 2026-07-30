@@ -92,6 +92,24 @@
  * no-ops) -- unrelated to anything from this session, this one predates all
  * of 1.2.2/1.2.3 and just never surfaced because nobody had reason to notice
  * a refresh silently failing.
+ *
+ * Also (still 1.2.3): fixed a much bigger scheduling bug found testing with
+ * 4 cameras -- only 1 of 4 was actually polling; the other 3 had silently
+ * stopped. Root cause: scheduleChildPoll()/scheduleChildSnapshot() scheduled
+ * every device through runIn(interval, "pollChild"/"pollChildSnapshot",
+ * [data: [dni: ...], overwrite: true]) -- ALL devices shared the same
+ * handler name, and Hubitat's overwrite: true cancels ANY pending call to
+ * that handler, not just the calling device's own. Whichever device
+ * (re)scheduled last silently canceled every other device's pending timer,
+ * with no error anywhere. Replaced with a single central scheduler
+ * (schedulerTick(), ticking every 1s) that tracks each device's own due time
+ * independently in state (nextPollDue/nextSnapshotDue, keyed by DNI) --
+ * nothing can cancel another device's schedule because there is now only
+ * one schedule, system-wide. Also added markPollDueNow()/markSnapshotDueNow()
+ * so an interval change via setPollInterval/setSnapshotInterval takes effect
+ * on the very next tick instead of waiting out the old interval, and
+ * forgetSchedulingState() so deleted devices don't leave stale entries in
+ * state forever.
  */
 
 import groovy.transform.Field
@@ -418,9 +436,18 @@ def childrenForSource(sourceId) {
 }
 
 def removeSource(id) {
-    childrenForSource(id as Integer).each { deleteChildDevice(it.deviceNetworkId) }
+    childrenForSource(id as Integer).each {
+        forgetSchedulingState(it.deviceNetworkId)
+        deleteChildDevice(it.deviceNetworkId)
+    }
     state.sources.removeAll { it.id == (id as Integer) }
     logDebug "Removed source ${id}"
+}
+
+/** Drops a device's entries from the central scheduler's due-time maps once it's deleted, so state doesn't accumulate dead DNIs forever. */
+private forgetSchedulingState(String dni) {
+    state.nextPollDue?.remove(dni)
+    state.nextSnapshotDue?.remove(dni)
 }
 
 // ---------- Auth ----------
@@ -598,6 +625,7 @@ def createSelectedChildren(sourceId) {
             logDebug "Created child ${dni} (${driverName}), poll interval defaulted to ${pollDefault}s (${ch.isBattery ? 'battery' : 'wired'})"
         } else if (!wantIt && existing) {
             deleteChildDevice(dni)
+            forgetSchedulingState(dni)
         }
     }
     initializePolling()
@@ -631,20 +659,86 @@ def disableDebugLogging() {
 }
 
 def initializePolling() {
+    // Seed every child so it's due immediately on the first tick, then start
+    // (or restart) the single central scheduler.
+    def now = now()
+    def pollDue = state.nextPollDue ?: [:]
+    def snapDue = state.nextSnapshotDue ?: [:]
     getChildDevices().each { child ->
-        scheduleChildPoll(child)
-        scheduleChildSnapshot(child)
+        def dni = child.deviceNetworkId
+        if (!pollDue.containsKey(dni)) pollDue[dni] = now
+        if (!snapDue.containsKey(dni)) snapDue[dni] = now
     }
+    state.nextPollDue = pollDue
+    state.nextSnapshotDue = snapDue
+    runIn(1, "schedulerTick", [overwrite: true])
 }
 
-def scheduleChildPoll(child) {
-    def interval = (child.getSetting("pollIntervalSec") ?: 30) as Integer
-    runIn(interval, "pollChild", [data: [dni: child.deviceNetworkId], overwrite: true])
+/**
+ * Single central scheduler, replacing the old per-device runIn(interval,
+ * "pollChild", [data: [dni: ...], overwrite: true]) pattern.
+ *
+ * That pattern was broken: every device's call shared the SAME handler name
+ * ("pollChild"), and Hubitat's overwrite: true cancels ANY pending call to
+ * that handler, not just the calling device's own previous one. With 4
+ * cameras, whichever device happened to (re)schedule last silently canceled
+ * every other device's pending timer -- no error, nothing in the logs, they
+ * just stopped polling. Found in the field: only 1 of 4 cameras was still
+ * polling, the other 3 had gone silent since before this session started.
+ * Same bug applied to pollChildSnapshot().
+ *
+ * The fix: exactly ONE recurring timer exists for the whole app (this
+ * method, ticking every second), and each device's own due-time is tracked
+ * independently in state (nextPollDue / nextSnapshotDue, keyed by DNI).
+ * Nothing here can ever cancel another device's schedule, because there is
+ * only one schedule.
+ */
+def schedulerTick() {
+    def nowMs = now()
+    def pollDue = state.nextPollDue ?: [:]
+    def snapDue = state.nextSnapshotDue ?: [:]
+
+    getChildDevices().each { child ->
+        def dni = child.deviceNetworkId
+        if (nowMs >= ((pollDue[dni] ?: 0) as Long)) {
+            pollChildNow(child)
+            def interval = (child.getSetting("pollIntervalSec") ?: 30) as Integer
+            pollDue[dni] = nowMs + (interval * 1000L)
+        }
+        if (nowMs >= ((snapDue[dni] ?: 0) as Long)) {
+            pollChildSnapshotNow(child)
+            def sInterval = (child.getSetting("snapshotIntervalSec") ?: 30) as Integer
+            snapDue[dni] = nowMs + (sInterval * 1000L)
+        }
+    }
+
+    state.nextPollDue = pollDue
+    state.nextSnapshotDue = snapDue
+    runIn(1, "schedulerTick", [overwrite: true])
+}
+
+/** Marks a device due on the very next tick (within ~1s) -- used after a poll-interval change so it takes effect immediately rather than waiting out the old interval. */
+private markPollDueNow(String dni) {
+    def pollDue = state.nextPollDue ?: [:]
+    pollDue[dni] = now()
+    state.nextPollDue = pollDue
+}
+
+/** See markPollDueNow() -- same idea for the snapshot schedule. */
+private markSnapshotDueNow(String dni) {
+    def snapDue = state.nextSnapshotDue ?: [:]
+    snapDue[dni] = now()
+    state.nextSnapshotDue = snapDue
 }
 
 def pollChild(data) {
     def child = getChildDevice(data.dni)
     if (!child) return
+    pollChildNow(child)
+    markPollDueNow(child.deviceNetworkId)
+}
+
+private void pollChildNow(child) {
     def sourceId = child.getDataValue("sourceId") as Integer
     def channel = child.getDataValue("channel") as Integer
 
@@ -657,31 +751,29 @@ def pollChild(data) {
         logDebug "Reolink source ${sourceId} ch ${channel}: response received, marking awake"
         child.parseReolinkState(aiState, mdState)
     }
-
-    scheduleChildPoll(child)
 }
 
 /**
- * Snapshot caching runs on its OWN schedule, separate from pollChild()'s
- * tight AI/motion polling. Motion detection benefits from being fast (a few
- * seconds); a dashboard image does not need to be refreshed nearly that
- * often, and pulling a full JPEG every few seconds across several cameras
- * against this app's singleThreaded execution model risks the exact
- * semaphore/queueing problem the caching redesign was meant to fix in the
- * first place. Defaults to a much looser interval than the poll interval.
+ * Snapshot caching runs on its OWN schedule (nextSnapshotDue, see
+ * schedulerTick() above), separate from AI/motion polling (nextPollDue).
+ * Motion detection benefits from being fast (a few seconds); a dashboard
+ * image does not need to be refreshed nearly that often, and pulling a full
+ * JPEG every few seconds across several cameras against this app's
+ * singleThreaded execution model risks the exact semaphore/queueing problem
+ * the caching redesign was meant to fix in the first place. Defaults to a
+ * much looser interval than the poll interval.
  */
-def scheduleChildSnapshot(child) {
-    def interval = (child.getSetting("snapshotIntervalSec") ?: 30) as Integer
-    runIn(interval, "pollChildSnapshot", [data: [dni: child.deviceNetworkId], overwrite: true])
-}
-
 def pollChildSnapshot(data) {
     def child = getChildDevice(data.dni)
     if (!child) return
+    pollChildSnapshotNow(child)
+    markSnapshotDueNow(child.deviceNetworkId)
+}
+
+private void pollChildSnapshotNow(child) {
     def sourceId = child.getDataValue("sourceId") as Integer
     def channel = child.getDataValue("channel") as Integer
     cacheSnapshot(child, sourceId, channel)
-    scheduleChildSnapshot(child)
 }
 
 /**
@@ -954,6 +1046,7 @@ def componentSetPollInterval(child, Integer seconds, String dni = null) {
     }
     c.updateSetting("pollIntervalSec", [type: "number", value: seconds])
     logDebug "Set poll interval for ${c.deviceNetworkId ?: dni} to ${seconds}s"
+    if (c.deviceNetworkId) markPollDueNow(c.deviceNetworkId)
 }
 
 /** dni resolved via resolveChild() -- see that method's doc comment for why. */
@@ -965,7 +1058,7 @@ def componentSetSnapshotInterval(child, Integer seconds, String dni = null) {
     }
     c.updateSetting("snapshotIntervalSec", [type: "number", value: seconds])
     logDebug "Set snapshot interval for ${c.deviceNetworkId ?: dni} to ${seconds}s"
-    scheduleChildSnapshot(c)
+    if (c.deviceNetworkId) markSnapshotDueNow(c.deviceNetworkId)
 }
 
 // ---------- Logging ----------
