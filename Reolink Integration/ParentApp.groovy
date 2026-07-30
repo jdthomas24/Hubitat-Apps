@@ -331,6 +331,10 @@ def tipsPage() {
             paragraph logLevelPill("Full") + " Everything, including every routine poll step. Useful for " +
                 "actively chasing something intermittent. <b>Automatically reverts to Normal after 60 " +
                 "minutes</b> so it doesn't stay noisy indefinitely."
+            paragraph "⚠️ It's normal for <b>Errors Only</b> and <b>Normal</b> to show nothing at all for " +
+                "long stretches -- that means nothing worth flagging has happened, not that the app has " +
+                "stopped working. If you want to confirm it's actually running, switch to <b>Full</b> " +
+                "temporarily and you'll see continuous poll activity."
         }
         section {
             paragraph pillHeader("Confidence level on newer commands")
@@ -720,6 +724,22 @@ def initialize() {
 def revertToNormalLogging() {
     app.updateSetting("logLevel", [type: "enum", value: "Normal"])
     log.info "Reolink Integration: log level auto-reverted from Full to Normal after 60 minutes"
+}
+
+/**
+ * Backward-compat stub for the pre-1.2.5 debugLogging system's scheduled
+ * callback name. An install that had the old "Enable debug logging" toggle
+ * on before updating to 1.2.5 would have a runIn(5400, "disableDebugLogging")
+ * job already pending on the hub -- Hubitat's scheduler persists jobs by
+ * method name independently of the code text, so updating the code (which
+ * renamed this method to revertToNormalLogging()) left that stale job
+ * pointing at a name that no longer existed, throwing
+ * MissingMethodExceptionNoStack when it fired. This stub just gives that
+ * leftover job somewhere safe to land instead of erroring; it has no other
+ * purpose and nothing schedules a job under this name going forward.
+ */
+def disableDebugLogging() {
+    log.info "Reolink Integration: leftover pre-1.2.5 logging job fired, no action needed (see disableDebugLogging() comment)"
 }
 
 def initializePolling() {
