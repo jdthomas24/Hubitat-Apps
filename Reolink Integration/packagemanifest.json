@@ -1,10 +1,10 @@
 {
     "packageName": "Reolink Integration",
-    "releaseNotes": "v1.2.0 -Added PTZ calibration support: calibratePtz (triggers pan/tilt recalibration) and checkPtzCalibrationStatus (reports Required/Running/Done via new ptzCalibrationStatus attribute) commands on the Reolink Camera driver, for PTZ-capable models like Trackmix and E1 Zoom. Non-PTZ cameras will simply return an error if these are used -- harmless, see in-app Tips page. Also includes v1.1.1 (fixed a polling bug causing duplicate stacked schedules that could trip Hubitat's excessive-hub-load protection) and v1.1.2 (expanded debug logging for token lifecycle and poll response/no-response transitions.",
+    "releaseNotes": "v1.2.1 -- Diagnostic logging fix. reolinkApiCall() previously logged every call as 'succeeded' whenever the HTTP request itself didn't error, even if the camera returned no usable value -- masking real issues on devices intermittently failing to return AI/motion state. Now logs the raw response body when a call gets an HTTP response but no usable value. No functional/behavior change, improves debug visibility only. Also includes v1.2.0 (PTZ calibration via calibratePtz/checkPtzCalibrationStatus, reorganized device page command grouping with model-dependent notes), v1.1.2 (debug logging for token lifecycle and poll transitions), and v1.1.1 (fixed a polling scheduler bug that could trip Hubitat's excessive-hub-load protection).",
     "documentationLink": "https://github.com/jdthomas24/Hubitat-Apps-Drivers/tree/main/Reolink%20Integration",
     "communityLink": "https://github.com/jdthomas24/Hubitat-Apps-Drivers/tree/main/Reolink%20Integration",
     "author": "jdthomas24",
-    "version": "1.2.0",
+    "version": "1.2.1",
     "minimumHEVersion": "2.3.0",
     "dateReleased": "2026-07-27",
     "category": "Integrations",
