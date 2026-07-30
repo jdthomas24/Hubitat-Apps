@@ -1,10 +1,10 @@
 {
     "packageName": "Reolink Integration",
-    "releaseNotes": "v1.1.1 -- Bugfix: scheduleChildPoll() was stacking duplicate poll schedules per device on every app save/update instead of replacing the existing one, which could trip Hubitat's excessive-hub-load protection under repeated saves. Poll scheduling now correctly overwrites the prior schedule per device.",
+    "releaseNotes": "v1.1.2 -- Bugfix + debug logging. v1.1.1 fixed a polling bug where device schedules stacked duplicates on every app save instead of replacing them, which could trip Hubitat's excessive-hub-load protection (LimitExceededException in Logs). v1.1.2 adds debug logging across token/auth lifecycle and poll response outcomes -- helps diagnose a snapshot tile going stale, and dropped/no-response polls on wired/PoE devices (e.g. Duo 3V), where a no-response result is a real issue rather than expected battery-conservation behavior. Update recommended for anyone on 1.1.0 who hit excessive-hub-load errors.",
     "documentationLink": "https://github.com/jdthomas24/Hubitat-Apps-Drivers/tree/main/Reolink%20Integration",
     "communityLink": "https://github.com/jdthomas24/Hubitat-Apps-Drivers/tree/main/Reolink%20Integration",
     "author": "jdthomas24",
-    "version": "1.1.1",
+    "version": "1.1.2",
     "minimumHEVersion": "2.3.0",
     "dateReleased": "2026-07-27",
     "category": "Integrations",
