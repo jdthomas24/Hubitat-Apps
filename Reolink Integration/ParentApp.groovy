@@ -1,6 +1,6 @@
 /**
  * Reolink Integration (Parent App)
- * Version: 1.2.4
+ * Version: 1.2.5
  *
  * Architecture notes:
  *  - A "source" is anything that answers the Reolink HTTP/JSON API: a standalone
@@ -40,99 +40,40 @@
  * responded 200 with the right content-type, producing a blank page rather
  * than an obvious error. Now explicitly drains the InputStream into a byte
  * array via ByteArrayOutputStream before rendering.
- * Also (still 1.2.3, not yet released): componentTakeSnapshot() now guards
- * against a null/missing deviceNetworkId instead of silently building a
- * broken "/snap/null" URL, and handleSnapshotRequest() explicitly detects
- * and logs a null/blank dni in the request path so a stale cached URL from
- * before this fix shows up clearly in the logs instead of just a blank page.
- * Both drivers' takeSnapshot() now pass device.deviceNetworkId explicitly
- * rather than relying on the app to read deviceNetworkId off the driver's
- * "this" reference, which doesn't reliably expose it.
- *
- * Also (still 1.2.3): the camera is now only ever fetched from pollChild()'s
- * normal poll cycle (and once, immediately, on a manual takeSnapshot); the
- * result is cached to local hub file storage via uploadHubFile(), and the
- * relay endpoint just serves that cached file, no camera round-trip in the
- * request path at all.
- *
- * Also (still 1.2.3): snapshot caching now runs on its OWN interval
- * (snapshotIntervalSec, device preference, defaults to 30s), decoupled from
- * pollIntervalSec. Originally it piggybacked on the same tight AI/motion poll
- * cycle, which meant a full JPEG download on every single poll -- fine at a
- * loose interval, but a real risk of re-triggering the exact semaphore/
- * queueing problem this whole redesign exists to fix if someone runs several
- * wired cameras at a fast (e.g. 3s) poll interval for motion responsiveness.
- * Motion detection should stay fast; a dashboard image doesn't need to be.
- * cacheSnapshot() also no longer logs on every successful write, only on
- * failure, since a line every cycle added up to real log noise for no
- * diagnostic benefit once snapshot caching became a recurring background job.
- *
- * Also (still 1.2.3): fixed createSelectedChildren() unconditionally applying
- * defaultBatteryPoll to every newly created device, wired or battery --
- * defaultWiredPoll existed as a setting but nothing ever actually used it, so
- * every PoE/wired camera has been defaulting to the loose battery interval
- * since creation. Discovery now tags each channel as battery or wired (via
- * guessIsBattery(), using GetBatteryInfo as the signal), and the correct
- * default gets applied at creation time. This only affects newly created
- * devices going forward -- existing devices already on the wrong interval
- * need their poll interval corrected by hand (device page, or the
- * setPollInterval command).
- *
- * Also (still 1.2.3): full audit of every componentX(child, ...) callback
- * after componentSetPollInterval turned out to have the same underlying bug
- * as the deviceNetworkId issue, just on updateSetting() instead. Every
- * driver command that calls into this app now passes its own
- * device.deviceNetworkId explicitly, and every componentX callback resolves
- * a proper reference via the new resolveChild() helper instead of operating
- * on the raw driver-passed "this". Confirmed broken via this path so far:
- * deviceNetworkId (property), updateSetting() (method). Confirmed working:
- * getDataValue(), user-defined driver methods like receiveSnapshotUrl(). This
- * also caught componentRefresh(), which was silently doing nothing on every
- * refresh command (pollChild(dni: null) getChildDevice()'s to null and
- * no-ops) -- unrelated to anything from this session, this one predates all
- * of 1.2.2/1.2.3 and just never surfaced because nobody had reason to notice
- * a refresh silently failing.
- *
- * Also (still 1.2.3): fixed a much bigger scheduling bug found testing with
- * 4 cameras -- only 1 of 4 was actually polling; the other 3 had silently
- * stopped. Root cause: scheduleChildPoll()/scheduleChildSnapshot() scheduled
- * every device through runIn(interval, "pollChild"/"pollChildSnapshot",
- * [data: [dni: ...], overwrite: true]) -- ALL devices shared the same
- * handler name, and Hubitat's overwrite: true cancels ANY pending call to
- * that handler, not just the calling device's own. Whichever device
- * (re)scheduled last silently canceled every other device's pending timer,
- * with no error anywhere. Replaced with a single central scheduler
- * (schedulerTick(), ticking every 1s) that tracks each device's own due time
- * independently in state (nextPollDue/nextSnapshotDue, keyed by DNI) --
- * nothing can cancel another device's schedule because there is now only
- * one schedule, system-wide. Also added markPollDueNow()/markSnapshotDueNow()
- * so an interval change via setPollInterval/setSnapshotInterval takes effect
- * on the very next tick instead of waiting out the old interval, and
- * forgetSchedulingState() so deleted devices don't leave stale entries in
- * state forever.
- *
- * Also (still 1.2.3): made the new central scheduler self-healing rather
- * than dependent on the user opening the app. Two gaps: (1) nothing resumed
- * polling after a hub reboot -- Hubitat doesn't guarantee runIn schedules
- * survive a restart, and nothing else in this app runs on boot, so a reboot
- * could leave every camera silently un-polled indefinitely until someone
- * happened to open the app and hit Done. Added a subscribe(location,
- * "systemStart", ...) handler so initialize() runs automatically on boot.
- * (2) schedulerTick() re-arms its own next run at the very end of the
- * method -- if any single device's processing threw an unhandled exception,
- * the whole tick could abort before reaching that point, silently stopping
- * ALL devices at once (a bigger blast radius than the bug it replaced, which
- * only ever affected one device at a time). Each device is now processed in
- * its own try/catch, and the next tick is re-armed in a finally block so it
- * cannot fail to reschedule itself.
- *
- * Also (still 1.2.3): removed the app-level "Default poll interval" settings
- * (defaultWiredPoll/defaultBatteryPoll) entirely -- poll/snapshot interval is
- * now a device-only concept, full stop. The app no longer exposes any
- * interval configuration at all; createSelectedChildren() uses fixed
- * DEFAULT_WIRED_POLL_SEC/DEFAULT_BATTERY_POLL_SEC constants (3s/30s) as the
- * one-time default applied when a device is first created, with no
- * app-level setting to configure or confuse that with.
+ * Also: componentTakeSnapshot() now guards against a null/missing
+ * deviceNetworkId instead of silently building a broken "/snap/null" URL,
+ * and handleSnapshotRequest() explicitly detects and logs a null/blank dni
+ * in the request path so a stale cached URL from before this fix shows up
+ * clearly in the logs instead of just a blank page. Both drivers' takeSnapshot()
+ * now pass device.deviceNetworkId explicitly rather than relying on the app to
+ * read deviceNetworkId off the driver's "this" reference, which doesn't
+ * reliably expose it.
+ * Also: the camera is now only ever fetched from pollChild()'s normal poll
+ * cycle (and once, immediately, on a manual takeSnapshot); the result is
+ * cached to local hub file storage via uploadHubFile(), and the relay
+ * endpoint just serves that cached file, no camera round-trip in the request
+ * path at all.
+ * Also: snapshot caching now runs on its OWN interval (snapshotIntervalSec,
+ * device preference, defaults to 30s), decoupled from pollIntervalSec.
+ * Also: fixed createSelectedChildren() unconditionally applying
+ * defaultBatteryPoll to every newly created device, wired or battery.
+ * Discovery now tags each channel as battery or wired (via guessIsBattery(),
+ * using GetBatteryInfo as the signal), and the correct default gets applied
+ * at creation time.
+ * Also: full audit of every componentX(child, ...) callback -- every driver
+ * command that calls into this app now passes its own device.deviceNetworkId
+ * explicitly, and every componentX callback resolves a proper reference via
+ * resolveChild() instead of operating on the raw driver-passed "this".
+ * Also: fixed a scheduling bug where scheduleChildPoll()/scheduleChildSnapshot()
+ * shared a single handler name across all devices, so Hubitat's overwrite:true
+ * canceled every OTHER device's pending timer whenever one device rescheduled.
+ * Replaced with a single central scheduler (schedulerTick(), ticking every 1s)
+ * tracking each device's own due time independently in state.
+ * Also: made the scheduler self-healing -- resumes automatically after a hub
+ * reboot (systemStart subscription), and each device is processed in its own
+ * try/catch so one device's failure can't silently stop every device at once.
+ * Also: removed the app-level "Default poll interval" settings entirely --
+ * poll/snapshot interval is a device-only concept now, full stop.
  *
  * v1.2.4 -- No app-side change; version bump to match the drivers. Both
  * component drivers' parseReolinkState()/markAsleep() now only call
@@ -143,6 +84,37 @@
  * hub load" errors on parseReolinkState() even after every 1.2.3 scheduling
  * fix landed -- a hub with less headroom trips Hubitat's load governor on
  * the same call volume a faster hub handles fine.
+ *
+ * v1.2.5 -- Same underlying problem as 1.2.4, applied to LOGGING instead of
+ * events. With 4 devices polling every few seconds, routine "reusing cached
+ * token" / "succeeded" / "marking awake" lines were firing on every single
+ * poll cycle even when nothing changed or was worth seeing -- dozens of log
+ * lines every few seconds, burying anything actually diagnostic (like a
+ * device's session getting invalidated by a competing client, or a genuine
+ * sleep transition) in routine noise.
+ *
+ * Replaced the single "Enable debug logging" bool with a 3-level logLevel
+ * setting:
+ *   - Errors Only: warnings/errors only (unconditional log.warn calls,
+ *     always on regardless of this setting -- unchanged from before).
+ *   - Normal (default): Errors Only, plus meaningful one-time events and
+ *     STATE TRANSITIONS -- a fresh login, a device flipping asleep<->awake,
+ *     a child created/removed, a config change via a set-interval command,
+ *     a hub reboot resuming polling. Routine "still succeeded, nothing
+ *     changed" polls don't log at all.
+ *   - Full: everything, including every routine poll step (token reuse,
+ *     each individual API call succeeding), for actively chasing something
+ *     intermittent.
+ *
+ * pollChildNow() now checks the child's current sleepStatus before deciding
+ * whether "marking awake"/"marking asleep" is a real transition (Normal) or
+ * a repeat of the same state (Full only) -- the same idea as the drivers'
+ * sendIfChanged(), just applied to log lines instead of events.
+ *
+ * Full auto-reverts to Normal after 60 minutes (was 90 min under the old
+ * single debug toggle) so it's safe to leave on temporarily to catch
+ * something intermittent without it staying noisy indefinitely. Errors Only
+ * and Normal have no timer -- neither is noisy enough to need one.
  */
 
 import groovy.transform.Field
@@ -160,7 +132,9 @@ definition(
     oauth: true // required for createAccessToken()/local endpoint access used by the snapshot relay
 )
 
-@Field static final String APP_VERSION = "1.2.4"
+@Field static final String APP_VERSION = "1.2.5"
+
+@Field static final List LOG_LEVELS = ["Errors Only", "Normal", "Full"]
 
 // Poll interval is a device-level setting ONLY -- these are just the one-time
 // default applied to a newly created device, not user-configurable at the app
@@ -208,7 +182,16 @@ def mainPage() {
         }
         section {
             paragraph pillHeader("Logging")
-            input "debugLogging", "bool", title: "Enable debug logging (auto-off after 90 min)", defaultValue: false
+            input "logLevel", "enum", title: "Log level", options: LOG_LEVELS,
+                defaultValue: "Normal", submitOnChange: true
+            paragraph "<b>Errors Only</b> -- warnings/errors only. " +
+                "<b>Normal</b> -- adds meaningful one-time events and state transitions (login, " +
+                "asleep/awake changes, devices created, config changes). " +
+                "<b>Full</b> -- everything, including every routine poll step. " +
+                "Useful for actively chasing something intermittent."
+            if (logLevel == "Full") {
+                paragraph "<i>Full automatically reverts to Normal after 60 minutes.</i>"
+            }
         }
         section {
             href name: "tips", title: "Tips, limitations & what works so far", page: "tipsPage"
@@ -321,14 +304,24 @@ def tipsPage() {
                 "tile's own refresh setting."
         }
         section {
+            paragraph pillHeader("Log levels")
+            paragraph "<b>Errors Only</b> -- warnings/errors only."
+            paragraph "<b>Normal</b> (default) -- adds meaningful one-time events and state transitions: a " +
+                "fresh login, a device flipping asleep/awake, a device created, a config change. Routine " +
+                "polls that succeed with no change don't log anything."
+            paragraph "<b>Full</b> -- everything, including every routine poll step. Useful for actively " +
+                "chasing something intermittent -- auto-reverts to Normal after 60 minutes so it doesn't stay " +
+                "noisy indefinitely."
+        }
+        section {
             paragraph pillHeader("Confidence level on newer commands")
             paragraph "<b>Confirmed working</b> against real hardware: PtzCtrl -- move, and ToPos (preset recall)."
             paragraph "<b>Built but not yet tested</b> against this setup's actual firmware: SetPtzPreset " +
                 "(save), SetWhiteLed (spotlight), SetIrLights (night vision), AudioAlarmPlay (siren), " +
                 "GetBatteryInfo (battery %), PtzCheck/GetPtzCheckState (calibration)."
             paragraph "These are built from consistent patterns across several independent Reolink API " +
-                "references. If one doesn't work as expected, check Logs with debug on -- the exact response " +
-                "usually points to which field name needs adjusting for this device."
+                "references. If one doesn't work as expected, check Logs with the log level set to Full -- " +
+                "the exact response usually points to which field name needs adjusting for this device."
         }
     }
 }
@@ -459,7 +452,7 @@ def addSource() {
         username: newUser, password: newPass, isHub: newIsHub ?: false,
         token: null, tokenExpires: 0
     ]
-    logDebug "Added source ${id}: ${newLabel} (${newHost})"
+    logNormal "Added source ${id}: ${newLabel} (${newHost})"
 }
 
 def getSource(id) {
@@ -476,7 +469,7 @@ def removeSource(id) {
         deleteChildDevice(it.deviceNetworkId)
     }
     state.sources.removeAll { it.id == (id as Integer) }
-    logDebug "Removed source ${id}"
+    logNormal "Removed source ${id}"
 }
 
 /** Drops a device's entries from the central scheduler's due-time maps once it's deleted, so state doesn't accumulate dead DNIs forever. */
@@ -490,11 +483,11 @@ private forgetSchedulingState(String dni) {
 private String reolinkLogin(sourceId) {
     def src = getSource(sourceId)
     if (src.token && now() < src.tokenExpires) {
-        logDebug "Reolink source ${sourceId}: reusing cached token, expires in ${(src.tokenExpires - now()) / 1000}s"
+        logFull "Reolink source ${sourceId}: reusing cached token, expires in ${(src.tokenExpires - now()) / 1000}s"
         return src.token
     }
 
-    logDebug "Reolink source ${sourceId}: cached token missing/expired, logging in fresh"
+    logFull "Reolink source ${sourceId}: cached token missing/expired, logging in fresh"
     def body = [[cmd: "Login", param: [User: [userName: src.username, password: src.password]]]]
     def resp = reolinkRawPost(src, body)
     def first = firstResultValue(resp, src)
@@ -503,7 +496,7 @@ private String reolinkLogin(sourceId) {
 
     src.token = token
     src.tokenExpires = now() + (leaseSec * 1000L) - 30000L
-    logDebug "Reolink source ${sourceId}: new token acquired, leaseTime=${leaseSec}s"
+    logNormal "Reolink source ${sourceId}: new token acquired, leaseTime=${leaseSec}s"
     return token
 }
 
@@ -540,7 +533,7 @@ def reolinkApiCall(sourceId, String cmd, Map param = [:], Integer channel = null
     def src = getSource(sourceId)
     def token = reolinkLogin(sourceId)
     if (!token) {
-        logDebug "Reolink source ${sourceId}: no token available, aborting ${cmd}"
+        log.warn "Reolink source ${sourceId}: no token available, aborting ${cmd}"
         return null
     }
 
@@ -552,7 +545,7 @@ def reolinkApiCall(sourceId, String cmd, Map param = [:], Integer channel = null
     // camera side. Don't wait for the next poll cycle to notice; force our own
     // fresh login and retry once now.
     if (outcome.value == null && outcome.rspCode == -6) {
-        logDebug "Reolink source ${sourceId}: token rejected by camera (please login first), forcing re-login"
+        logNormal "Reolink source ${sourceId}: token rejected by camera (please login first), forcing re-login"
         src.token = null
         src.tokenExpires = 0
         def freshToken = reolinkLogin(sourceId)
@@ -574,9 +567,9 @@ private Map doReolinkApiCall(src, sourceId, String cmd, String token, Map param,
         def value = firstResultValue(result, src)
         def rspCode = result?.getAt(0)?.error?.rspCode
         if (value == null) {
-            logDebug "Reolink source ${sourceId}: ${cmd} (ch ${channel}) HTTP ok but no usable value -- raw: ${result?.toString()?.take(300)}"
+            logFull "Reolink source ${sourceId}: ${cmd} (ch ${channel}) HTTP ok but no usable value -- raw: ${result?.toString()?.take(300)}"
         } else {
-            logDebug "Reolink source ${sourceId}: ${cmd} (ch ${channel}) succeeded"
+            logFull "Reolink source ${sourceId}: ${cmd} (ch ${channel}) succeeded"
         }
         return [value: value, rspCode: rspCode]
     } catch (e) {
@@ -659,7 +652,7 @@ def createSelectedChildren(sourceId) {
             // setPollInterval) -- these are just the one-time defaults applied at creation.
             def pollDefault = ch.isBattery ? DEFAULT_BATTERY_POLL_SEC : DEFAULT_WIRED_POLL_SEC
             child.updateSetting("pollIntervalSec", [type: "number", value: pollDefault])
-            logDebug "Created child ${dni} (${driverName}), poll interval defaulted to ${pollDefault}s (${ch.isBattery ? 'battery' : 'wired'})"
+            logNormal "Created child ${dni} (${driverName}), poll interval defaulted to ${pollDefault}s (${ch.isBattery ? 'battery' : 'wired'})"
         } else if (!wantIt && existing) {
             deleteChildDevice(dni)
             forgetSchedulingState(dni)
@@ -681,7 +674,7 @@ def updated() { initialize() }
  * hit Done/Update, with no error or indication anything was wrong.
  */
 def systemStartHandler(evt) {
-    logDebug "Reolink Integration: hub restarted, resuming polling"
+    logNormal "Reolink Integration: hub restarted, resuming polling"
     initialize()
 }
 
@@ -692,21 +685,22 @@ def initialize() {
     if (!state.accessToken) {
         try {
             createAccessToken()
-            logDebug "Access token created for local snapshot relay endpoint"
+            logNormal "Access token created for local snapshot relay endpoint"
         } catch (e) {
             log.warn "Reolink Integration: could not create access token (needed for dashboard snapshot tiles) -- ${e.message}. " +
                 "If this persists, check that OAuth is enabled for this app under Apps Code."
         }
     }
     initializePolling()
-    if (debugLogging) {
-        runIn(5400, "disableDebugLogging")
+    if (logLevel == "Full") {
+        runIn(3600, "revertToNormalLogging")
     }
 }
 
-def disableDebugLogging() {
-    app.updateSetting("debugLogging", [type: "bool", value: false])
-    log.info "Reolink Integration: debug logging auto-disabled after 90 minutes"
+/** Auto-reverts Full back to Normal after 60 minutes -- Full is meant for actively chasing something, not a steady state. Errors Only and Normal have no timer. */
+def revertToNormalLogging() {
+    app.updateSetting("logLevel", [type: "enum", value: "Normal"])
+    log.info "Reolink Integration: log level auto-reverted from Full to Normal after 60 minutes"
 }
 
 def initializePolling() {
@@ -813,17 +807,35 @@ def pollChild(data) {
     markPollDueNow(child.deviceNetworkId)
 }
 
+/**
+ * Checks the child's CURRENT sleepStatus before logging, so "marking asleep"/
+ * "marking awake" only hits Normal-tier logging on a real transition -- same
+ * idea as the drivers' sendIfChanged(), applied to log lines instead of
+ * sendEvent() calls. A device that's already asleep and stays asleep (or
+ * already awake and stays awake) only logs at Full tier, since that's routine
+ * and not worth surfacing by default.
+ */
 private void pollChildNow(child) {
     def sourceId = child.getDataValue("sourceId") as Integer
     def channel = child.getDataValue("channel") as Integer
 
     def aiState = reolinkApiCall(sourceId, "GetAiState", [:], channel)
     def mdState = reolinkApiCall(sourceId, "GetMdState", [:], channel)
+    def wasAsleep = child.currentValue("sleepStatus") == "asleep"
+
     if (aiState == null && mdState == null) {
-        logDebug "Reolink source ${sourceId} ch ${channel}: no response, marking asleep"
+        if (wasAsleep) {
+            logFull "Reolink source ${sourceId} ch ${channel}: still no response, still asleep"
+        } else {
+            logNormal "Reolink source ${sourceId} ch ${channel}: no response, marking asleep"
+        }
         child.markAsleep()
     } else {
-        logDebug "Reolink source ${sourceId} ch ${channel}: response received, marking awake"
+        if (wasAsleep) {
+            logNormal "Reolink source ${sourceId} ch ${channel}: response received, marking awake"
+        } else {
+            logFull "Reolink source ${sourceId} ch ${channel}: response received (still awake)"
+        }
         child.parseReolinkState(aiState, mdState)
     }
 }
@@ -869,7 +881,7 @@ private void cacheSnapshot(child, sourceId, channel) {
     if (!src) return
     def imageBytes = fetchSnapshotBytes(src, sourceId, channel)
     if (imageBytes == null) {
-        logDebug "Reolink source ${sourceId} ch ${channel}: snapshot cache refresh failed, keeping last cached image (if any)"
+        logNormal "Reolink source ${sourceId} ch ${channel}: snapshot cache refresh failed, keeping last cached image (if any)"
         return
     }
     try {
@@ -955,7 +967,7 @@ def componentTakeSnapshot(child, String dni = null) {
     def channel = c.getDataValue("channel") as Integer
     cacheSnapshot(c, sourceId, channel)
     def url = "${getFullLocalApiServerUrl()}/snap/${effectiveDni}?access_token=${state.accessToken}"
-    logDebug "Reolink ${effectiveDni}: snapshot URL built (local relay endpoint, cache refreshed on demand)"
+    logNormal "Reolink ${effectiveDni}: snapshot URL built (local relay endpoint, cache refreshed on demand)"
     c.receiveSnapshotUrl(url)
 }
 
@@ -985,7 +997,7 @@ def handleSnapshotRequest() {
     try {
         cached = downloadHubFile(snapshotFileName(dni))
     } catch (e) {
-        logDebug "Reolink Integration: no cached snapshot yet for ${dni} -- ${e.message}"
+        logFull "Reolink Integration: no cached snapshot yet for ${dni} -- ${e.message}"
     }
     if (!cached || cached.length == 0) {
         render status: 404, data: "No snapshot cached yet for this device -- wait for the next poll cycle or run takeSnapshot", contentType: "text/plain"
@@ -999,7 +1011,7 @@ private byte[] fetchSnapshotBytes(src, sourceId, channel) {
     def token = reolinkLogin(sourceId)
     def bytes = doFetchSnapshot(src, sourceId, token, channel)
     if (bytes == null) {
-        logDebug "Reolink source ${sourceId} ch ${channel}: snapshot fetch failed, forcing re-login and retrying once"
+        logNormal "Reolink source ${sourceId} ch ${channel}: snapshot fetch failed, forcing re-login and retrying once"
         src.token = null
         src.tokenExpires = 0
         def freshToken = reolinkLogin(sourceId)
@@ -1026,13 +1038,13 @@ private byte[] doFetchSnapshot(src, sourceId, token, channel) {
             def ct = resp?.contentType?.toString()?.toLowerCase() ?: ""
             if (ct.contains("json")) {
                 def raw = resp?.data?.toString()
-                logDebug "Reolink source ${sourceId} ch ${channel}: snapshot request returned JSON instead of an image -- ${raw?.take(300)}"
+                logNormal "Reolink source ${sourceId} ch ${channel}: snapshot request returned JSON instead of an image -- ${raw?.take(300)}"
             } else if (resp?.data != null) {
                 def bos = new ByteArrayOutputStream()
                 bos << resp.data
                 result = bos.toByteArray()
                 if (!result || result.length == 0) {
-                    logDebug "Reolink source ${sourceId} ch ${channel}: snapshot stream drained to 0 bytes"
+                    logNormal "Reolink source ${sourceId} ch ${channel}: snapshot stream drained to 0 bytes"
                     result = null
                 }
             }
@@ -1099,7 +1111,7 @@ def componentCalibratePtz(child, String dni = null) {
     def sourceId = c.getDataValue("sourceId") as Integer
     def channel = c.getDataValue("channel") as Integer
     reolinkApiCall(sourceId, "PtzCheck", [:], channel)
-    logDebug "Reolink source ${sourceId} ch ${channel}: PTZ calibration triggered"
+    logNormal "Reolink source ${sourceId} ch ${channel}: PTZ calibration triggered"
 }
 
 def componentCheckPtzCalibrationStatus(child, String dni = null) {
@@ -1108,7 +1120,7 @@ def componentCheckPtzCalibrationStatus(child, String dni = null) {
     def channel = c.getDataValue("channel") as Integer
     def result = reolinkApiCall(sourceId, "GetPtzCheckState", [:], channel)
     def state = result?.PtzCheckState
-    logDebug "Reolink source ${sourceId} ch ${channel}: PTZ calibration state = ${state}"
+    logNormal "Reolink source ${sourceId} ch ${channel}: PTZ calibration state = ${state}"
     c.receivePtzCalibrationState(state)
 }
 
@@ -1120,7 +1132,7 @@ def componentSetPollInterval(child, Integer seconds, String dni = null) {
         return
     }
     c.updateSetting("pollIntervalSec", [type: "number", value: seconds])
-    logDebug "Set poll interval for ${c.deviceNetworkId ?: dni} to ${seconds}s"
+    logNormal "Set poll interval for ${c.deviceNetworkId ?: dni} to ${seconds}s"
     if (c.deviceNetworkId) markPollDueNow(c.deviceNetworkId)
 }
 
@@ -1132,12 +1144,24 @@ def componentSetSnapshotInterval(child, Integer seconds, String dni = null) {
         return
     }
     c.updateSetting("snapshotIntervalSec", [type: "number", value: seconds])
-    logDebug "Set snapshot interval for ${c.deviceNetworkId ?: dni} to ${seconds}s"
+    logNormal "Set snapshot interval for ${c.deviceNetworkId ?: dni} to ${seconds}s"
     if (c.deviceNetworkId) markSnapshotDueNow(c.deviceNetworkId)
 }
 
 // ---------- Logging ----------
 
-private logDebug(msg) {
-    if (debugLogging) log.debug msg
+/** Rank of the current logLevel setting within LOG_LEVELS (0=Errors Only, 1=Normal, 2=Full). Defaults to Normal if unset/unrecognized. */
+private int logLevelRank() {
+    def idx = LOG_LEVELS.indexOf(logLevel ?: "Normal")
+    return idx < 0 ? 1 : idx
+}
+
+/** Logs at Normal tier and above (Normal, Full). Meaningful one-time events and state transitions -- not routine unchanged polls. */
+private void logNormal(msg) {
+    if (logLevelRank() >= 1) log.debug msg
+}
+
+/** Logs only at Full tier. Routine poll-by-poll detail -- token reuse, individual API calls succeeding, unchanged state repeats. */
+private void logFull(msg) {
+    if (logLevelRank() >= 2) log.debug msg
 }
