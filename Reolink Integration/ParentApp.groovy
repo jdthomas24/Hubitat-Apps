@@ -184,14 +184,13 @@ def mainPage() {
             paragraph pillHeader("Logging")
             input "logLevel", "enum", title: "Log level", options: LOG_LEVELS,
                 defaultValue: "Normal", submitOnChange: true
-            paragraph "<b>Errors Only</b> -- warnings/errors only. " +
-                "<b>Normal</b> -- adds meaningful one-time events and state transitions (login, " +
-                "asleep/awake changes, devices created, config changes). " +
-                "<b>Full</b> -- everything, including every routine poll step. " +
-                "Useful for actively chasing something intermittent."
-            if (logLevel == "Full") {
-                paragraph "<i>Full automatically reverts to Normal after 60 minutes.</i>"
-            }
+            paragraph logLevelPill("Errors Only") + " Warnings and errors only."
+            paragraph logLevelPill("Normal") + " Adds meaningful one-time events and state transitions " +
+                "(login, asleep/awake changes, devices created, config changes) on top of Errors Only. " +
+                "Default."
+            paragraph logLevelPill("Full") + " Everything, including every routine poll step. Useful for " +
+                "actively chasing something intermittent. <b>Automatically reverts to Normal after 60 " +
+                "minutes</b> -- Errors Only and Normal have no timer, since neither is noisy enough to need one."
         }
         section {
             href name: "tips", title: "Tips, limitations & what works so far", page: "tipsPage"
@@ -207,6 +206,22 @@ private String pillHeader(String text) {
     "<div style='display:inline-block;background:#E3F2FD;color:#1565C0;font-weight:700;" +
     "font-size:12px;letter-spacing:0.5px;padding:4px 16px;border-radius:14px;" +
     "margin-bottom:6px;'>${text.toUpperCase()}</div>"
+}
+
+/**
+ * Small colored pill for a log level name, distinct from pillHeader's section-title style so
+ * the two don't get visually confused. Color signals severity/verbosity at a glance: grey for
+ * the quietest tier, blue for the default, orange for the noisiest/temporary one.
+ */
+private String logLevelPill(String level) {
+    def colors = [
+        "Errors Only": [bg: "#ECEFF1", fg: "#455A64"],
+        "Normal":      [bg: "#E3F2FD", fg: "#1565C0"],
+        "Full":        [bg: "#FFF3E0", fg: "#E65100"]
+    ]
+    def c = colors[level] ?: [bg: "#ECEFF1", fg: "#455A64"]
+    "<span style='display:inline-block;background:${c.bg};color:${c.fg};font-weight:700;" +
+    "font-size:11px;letter-spacing:0.3px;padding:2px 10px;border-radius:10px;'>${level}</span>"
 }
 
 def tipsPage() {
@@ -305,13 +320,13 @@ def tipsPage() {
         }
         section {
             paragraph pillHeader("Log levels")
-            paragraph "<b>Errors Only</b> -- warnings/errors only."
-            paragraph "<b>Normal</b> (default) -- adds meaningful one-time events and state transitions: a " +
-                "fresh login, a device flipping asleep/awake, a device created, a config change. Routine " +
-                "polls that succeed with no change don't log anything."
-            paragraph "<b>Full</b> -- everything, including every routine poll step. Useful for actively " +
-                "chasing something intermittent -- auto-reverts to Normal after 60 minutes so it doesn't stay " +
-                "noisy indefinitely."
+            paragraph logLevelPill("Errors Only") + " Warnings and errors only."
+            paragraph logLevelPill("Normal") + " Default. Adds meaningful one-time events and state " +
+                "transitions: a fresh login, a device flipping asleep/awake, a device created, a config " +
+                "change. Routine polls that succeed with no change don't log anything."
+            paragraph logLevelPill("Full") + " Everything, including every routine poll step. Useful for " +
+                "actively chasing something intermittent. <b>Automatically reverts to Normal after 60 " +
+                "minutes</b> so it doesn't stay noisy indefinitely."
         }
         section {
             paragraph pillHeader("Confidence level on newer commands")
