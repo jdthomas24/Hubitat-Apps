@@ -49,16 +49,34 @@
  * rather than relying on the app to read deviceNetworkId off the driver's
  * "this" reference, which doesn't reliably expose it.
  *
- * Also (still 1.2.3): reworked the snapshot relay to stop hitting the camera
- * on every single dashboard tile refresh. Doing that live, in-request, ran
- * straight into this app's singleThreaded execution model -- with more than
- * one tile refreshing normally, requests queued up behind each other and
- * started hitting Hubitat's 120-second semaphore timeout, causing tiles to
- * spin forever and the whole app (polling included) to slow down. The camera
- * is now only ever fetched from pollChild()'s normal poll cycle (and once,
- * immediately, on a manual takeSnapshot); the result is cached to local hub
- * file storage via uploadHubFile(), and the relay endpoint just serves that
- * cached file, no camera round-trip in the request path at all.
+ * Also (still 1.2.3): the camera is now only ever fetched from pollChild()'s
+ * normal poll cycle (and once, immediately, on a manual takeSnapshot); the
+ * result is cached to local hub file storage via uploadHubFile(), and the
+ * relay endpoint just serves that cached file, no camera round-trip in the
+ * request path at all.
+ *
+ * Also (still 1.2.3): snapshot caching now runs on its OWN interval
+ * (snapshotIntervalSec, device preference, defaults to 30s), decoupled from
+ * pollIntervalSec. Originally it piggybacked on the same tight AI/motion poll
+ * cycle, which meant a full JPEG download on every single poll -- fine at a
+ * loose interval, but a real risk of re-triggering the exact semaphore/
+ * queueing problem this whole redesign exists to fix if someone runs several
+ * wired cameras at a fast (e.g. 3s) poll interval for motion responsiveness.
+ * Motion detection should stay fast; a dashboard image doesn't need to be.
+ * cacheSnapshot() also no longer logs on every successful write, only on
+ * failure, since a line every cycle added up to real log noise for no
+ * diagnostic benefit once snapshot caching became a recurring background job.
+ *
+ * Also (still 1.2.3): fixed createSelectedChildren() unconditionally applying
+ * defaultBatteryPoll to every newly created device, wired or battery --
+ * defaultWiredPoll existed as a setting but nothing ever actually used it, so
+ * every PoE/wired camera has been defaulting to the loose battery interval
+ * since creation. Discovery now tags each channel as battery or wired (via
+ * guessIsBattery(), using GetBatteryInfo as the signal), and the correct
+ * default gets applied at creation time. This only affects newly created
+ * devices going forward -- existing devices already on the wrong interval
+ * need their poll interval corrected by hand (device page, or the
+ * setPollInterval command).
  */
 
 import groovy.transform.Field
@@ -220,9 +238,19 @@ def tipsPage() {
         section {
             paragraph pillHeader("Snapshot tiles on dashboards")
             paragraph "Snapshot URLs point at a local relay endpoint on this app, not directly at the camera. " +
-                "Every dashboard refresh fetches a brand new image from the camera at that moment, so the " +
-                "tile can't go stale or hit a broken-image icon from an expired session, even at a 2-3 " +
-                "second refresh interval."
+                "The camera itself is only ever contacted on its own snapshot interval (device preference, " +
+                "separate from poll interval) -- the relay endpoint just serves whatever image was cached " +
+                "from that last fetch."
+            paragraph "That means a dashboard tile can refresh as often as you like, but the picture it shows " +
+                "only actually changes as often as that device's snapshot interval. A dashboard tile's own " +
+                "refresh setting has no effect on how often the image itself changes."
+            paragraph "Snapshot interval is intentionally kept separate from poll interval. Poll interval " +
+                "controls motion/AI state and should generally stay tight for responsive automations. " +
+                "Snapshot interval controls image freshness only, and can stay looser (default 30s) without " +
+                "affecting motion responsiveness at all."
+            paragraph "If a camera's tile feels slow to update, lower that device's snapshot interval (device " +
+                "page, or the setSnapshotInterval command) -- not the poll interval, and not the dashboard " +
+                "tile's own refresh setting."
         }
         section {
             paragraph pillHeader("Confidence level on newer commands")
@@ -495,7 +523,8 @@ def discoverChannels(sourceId) {
                 "server at all -- those typically only become reachable once paired to a Home Hub or NVR."
             return channels
         }
-        channels << [channel: 0, name: info?.DevInfo?.name ?: src.label, deviceType: guessDeviceType(info)]
+        channels << [channel: 0, name: info?.DevInfo?.name ?: src.label, deviceType: guessDeviceType(info),
+            isBattery: guessIsBattery(sourceId, 0)]
     } else {
         def status = reolinkApiCall(sourceId, "GetChannelstatus")
         if (status == null) {
@@ -504,7 +533,8 @@ def discoverChannels(sourceId) {
         }
         status?.status?.each { ch ->
             if (ch.online) {
-                channels << [channel: ch.channel, name: ch.name ?: "Channel ${ch.channel}", deviceType: guessDeviceType(ch)]
+                channels << [channel: ch.channel, name: ch.name ?: "Channel ${ch.channel}", deviceType: guessDeviceType(ch),
+                    isBattery: guessIsBattery(sourceId, ch.channel)]
             }
         }
     }
@@ -514,6 +544,20 @@ def discoverChannels(sourceId) {
 private String guessDeviceType(info) {
     def model = (info?.DevInfo?.model ?: info?.model ?: "").toLowerCase()
     return model.contains("doorbell") ? "doorbell" : "camera"
+}
+
+/**
+ * Battery vs wired isn't reported directly by GetDevInfo/GetChannelstatus, so
+ * this uses GetBatteryInfo as a signal instead: a battery-class device
+ * answers it with real data, a wired/PoE device returns nothing usable.
+ * TODO: verify this holds across all channel types (standalone vs behind a
+ * Hub/NVR) once tested against real battery hardware -- if a wired device
+ * ever answers GetBatteryInfo with a non-null placeholder value, this will
+ * misclassify it and default it to the loose battery poll interval.
+ */
+private Boolean guessIsBattery(sourceId, channel) {
+    def batt = reolinkApiCall(sourceId, "GetBatteryInfo", [:], channel)
+    return batt != null
 }
 
 // ---------- Child creation ----------
@@ -534,9 +578,9 @@ def createSelectedChildren(sourceId) {
             ])
             child.updateDataValue("sourceId", "${sourceId}")
             child.updateDataValue("channel", "${ch.channel}")
-            child.updateSetting("pollIntervalSec", [type: "number",
-                value: defaultBatteryPoll ?: 30])
-            logDebug "Created child ${dni} (${driverName})"
+            def pollDefault = ch.isBattery ? (defaultBatteryPoll ?: 30) : (defaultWiredPoll ?: 3)
+            child.updateSetting("pollIntervalSec", [type: "number", value: pollDefault])
+            logDebug "Created child ${dni} (${driverName}), poll interval defaulted to ${pollDefault}s (${ch.isBattery ? 'battery' : 'wired'})"
         } else if (!wantIt && existing) {
             deleteChildDevice(dni)
         }
@@ -574,6 +618,7 @@ def disableDebugLogging() {
 def initializePolling() {
     getChildDevices().each { child ->
         scheduleChildPoll(child)
+        scheduleChildSnapshot(child)
     }
 }
 
@@ -596,10 +641,32 @@ def pollChild(data) {
     } else {
         logDebug "Reolink source ${sourceId} ch ${channel}: response received, marking awake"
         child.parseReolinkState(aiState, mdState)
-        cacheSnapshot(child, sourceId, channel)
     }
 
     scheduleChildPoll(child)
+}
+
+/**
+ * Snapshot caching runs on its OWN schedule, separate from pollChild()'s
+ * tight AI/motion polling. Motion detection benefits from being fast (a few
+ * seconds); a dashboard image does not need to be refreshed nearly that
+ * often, and pulling a full JPEG every few seconds across several cameras
+ * against this app's singleThreaded execution model risks the exact
+ * semaphore/queueing problem the caching redesign was meant to fix in the
+ * first place. Defaults to a much looser interval than the poll interval.
+ */
+def scheduleChildSnapshot(child) {
+    def interval = (child.getSetting("snapshotIntervalSec") ?: 30) as Integer
+    runIn(interval, "pollChildSnapshot", [data: [dni: child.deviceNetworkId], overwrite: true])
+}
+
+def pollChildSnapshot(data) {
+    def child = getChildDevice(data.dni)
+    if (!child) return
+    def sourceId = child.getDataValue("sourceId") as Integer
+    def channel = child.getDataValue("channel") as Integer
+    cacheSnapshot(child, sourceId, channel)
+    scheduleChildSnapshot(child)
 }
 
 /**
@@ -625,7 +692,10 @@ private void cacheSnapshot(child, sourceId, channel) {
     }
     try {
         uploadHubFile(snapshotFileName(child.deviceNetworkId), imageBytes)
-        logDebug "Reolink source ${sourceId} ch ${channel}: snapshot cache updated (${imageBytes.length} bytes)"
+        // Deliberately not logging the success case -- with snapshot caching
+        // running on its own recurring schedule, a line every cycle adds up
+        // to real log noise for no diagnostic benefit. Failures above and
+        // below are still logged, since those are the cases worth seeing.
     } catch (e) {
         log.warn "Reolink source ${sourceId} ch ${channel}: failed to write snapshot to hub file storage -- ${e.message}"
     }
@@ -826,6 +896,12 @@ def componentCheckPtzCalibrationStatus(child) {
 def componentSetPollInterval(child, Integer seconds) {
     child.updateSetting("pollIntervalSec", [type: "number", value: seconds])
     logDebug "Set poll interval for ${child.deviceNetworkId} to ${seconds}s"
+}
+
+def componentSetSnapshotInterval(child, Integer seconds) {
+    child.updateSetting("snapshotIntervalSec", [type: "number", value: seconds])
+    logDebug "Set snapshot interval for ${child.deviceNetworkId} to ${seconds}s"
+    scheduleChildSnapshot(child)
 }
 
 // ---------- Logging ----------
