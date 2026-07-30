@@ -1,6 +1,6 @@
 /**
  * Reolink Integration (Parent App)
- * Version: 1.2.0
+ * Version: 1.2.1
  *
  * Architecture notes:
  *  - A "source" is anything that answers the Reolink HTTP/JSON API: a standalone
@@ -36,7 +36,7 @@ definition(
     singleThreaded: true
 )
 
-@Field static final String APP_VERSION = "1.2.0"
+@Field static final String APP_VERSION = "1.2.1"
 
 preferences {
     page(name: "mainPage")
@@ -391,11 +391,17 @@ def reolinkApiCall(sourceId, String cmd, Map param = [:], Integer channel = null
     try {
         httpPost([uri: uri, ignoreSSLIssues: true, requestContentType: "application/json",
                   body: groovy.json.JsonOutput.toJson(body), timeout: 10]) { resp -> result = parseReolinkResponse(resp) }
-        logDebug "Reolink source ${sourceId}: ${cmd} (ch ${channel}) succeeded"
+        def value = firstResultValue(result, src)
+        if (value == null) {
+            logDebug "Reolink source ${sourceId}: ${cmd} (ch ${channel}) HTTP ok but no usable value -- raw: ${result?.toString()?.take(300)}"
+        } else {
+            logDebug "Reolink source ${sourceId}: ${cmd} (ch ${channel}) succeeded"
+        }
+        return value
     } catch (e) {
         log.warn "Reolink cmd ${cmd} failed for source ${sourceId} ch ${channel}: ${e.message}"
+        return null
     }
-    return firstResultValue(result, src)
 }
 
 // ---------- Discovery ----------
