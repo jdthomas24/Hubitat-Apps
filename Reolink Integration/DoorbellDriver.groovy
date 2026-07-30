@@ -1,9 +1,13 @@
 /**
  * Reolink Doorbell (Component Driver)
- * Version: 1.2.1 -- kept in sync with the parent app's version.
+ * Version: 1.2.2 -- kept in sync with the parent app's version.
  * Same delegation pattern as Reolink Camera, plus a "visitor" (button press)
  * event so Rule Machine can trigger straight off "pushed 1" for a doorbell ring,
  * separate from AI person/motion detection.
+ *
+ * No functional change from 1.2.1 -- see the app's 1.2.2 notes for the
+ * snapshot relay fix. This driver still just displays whatever URL the app
+ * hands back via receiveSnapshotUrl().
  */
 metadata {
     definition(name: "Reolink Doorbell", namespace: "jdthomas24", author: "Jason", component: true) {
