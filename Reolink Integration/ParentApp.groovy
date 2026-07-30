@@ -1,6 +1,6 @@
 /**
  * Reolink Integration (Parent App)
- * Version: 1.1.2
+ * Version: 1.2.0
  *
  * Architecture notes:
  *  - A "source" is anything that answers the Reolink HTTP/JSON API: a standalone
@@ -36,7 +36,7 @@ definition(
     singleThreaded: true
 )
 
-@Field static final String APP_VERSION = "1.1.2"
+@Field static final String APP_VERSION = "1.2.0"
 
 preferences {
     page(name: "mainPage")
@@ -149,6 +149,8 @@ def tipsPage() {
             paragraph "<b>Asleep</b> -- the last poll got no response at all."
             paragraph "For a battery device, asleep is normal, not an error -- it just hasn't checked in since " +
                 "its last event or self-wake."
+            paragraph "⚠️ For a <b>wired/PoE device</b>, asleep is NOT normal -- it means a poll genuinely got " +
+                "no response, which points to a real connectivity or load issue worth investigating."
             paragraph "Motion/person/vehicle/etc. keep their last-known value when this happens, rather than " +
                 "resetting to inactive."
         }
@@ -160,11 +162,19 @@ def tipsPage() {
             paragraph "Use <b>ptzGoToPreset</b> with that same ID any time you want it to return there."
         }
         section {
+            paragraph pillHeader("PTZ calibration")
+            paragraph "⚠️ <b>Only applies to PTZ-capable cameras</b> (e.g. Trackmix, E1 Zoom). Non-PTZ cameras " +
+                "will just return an error if you try it -- harmless, but there's nothing to calibrate."
+            paragraph "Use <b>calibratePtz</b> if preset recall starts drifting off target over time. Check " +
+                "progress with <b>checkPtzCalibrationStatus</b> -- Required means it hasn't been calibrated, " +
+                "Running means it's in progress (takes a few seconds), Done means it's ready."
+        }
+        section {
             paragraph pillHeader("Confidence level on newer commands")
             paragraph "<b>Confirmed working</b> against real hardware: PtzCtrl -- move, and ToPos (preset recall)."
             paragraph "<b>Built but not yet tested</b> against this setup's actual firmware: SetPtzPreset " +
                 "(save), SetWhiteLed (spotlight), SetIrLights (night vision), AudioAlarmPlay (siren), " +
-                "GetBatteryInfo (battery %)."
+                "GetBatteryInfo (battery %), PtzCheck/GetPtzCheckState (calibration)."
             paragraph "These are built from consistent patterns across several independent Reolink API " +
                 "references. If one doesn't work as expected, check Logs with debug on -- the exact response " +
                 "usually points to which field name needs adjusting for this device."
@@ -558,6 +568,22 @@ def componentCheckBattery(child) {
     def channel = child.getDataValue("channel") as Integer
     def battInfo = reolinkApiCall(sourceId, "GetBatteryInfo", [:], channel)
     child.receiveBatteryInfo(battInfo)
+}
+
+def componentCalibratePtz(child) {
+    def sourceId = child.getDataValue("sourceId") as Integer
+    def channel = child.getDataValue("channel") as Integer
+    reolinkApiCall(sourceId, "PtzCheck", [:], channel)
+    logDebug "Reolink source ${sourceId} ch ${channel}: PTZ calibration triggered"
+}
+
+def componentCheckPtzCalibrationStatus(child) {
+    def sourceId = child.getDataValue("sourceId") as Integer
+    def channel = child.getDataValue("channel") as Integer
+    def result = reolinkApiCall(sourceId, "GetPtzCheckState", [:], channel)
+    def state = result?.PtzCheckState
+    logDebug "Reolink source ${sourceId} ch ${channel}: PTZ calibration state = ${state}"
+    child.receivePtzCalibrationState(state)
 }
 
 def componentSetPollInterval(child, Integer seconds) {
