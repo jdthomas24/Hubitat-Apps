@@ -8,6 +8,9 @@
  * No functional change from 1.2.1 -- see the app's 1.2.2/1.2.3 notes for the
  * snapshot relay fix. This driver still just displays whatever URL the app
  * hands back via receiveSnapshotUrl().
+ * Also (still 1.2.3): added an inline description under pollIntervalSec
+ * clarifying that it, not a dashboard tile's own refresh rate, controls
+ * snapshot image freshness.
  */
 metadata {
     definition(name: "Reolink Doorbell", namespace: "jdthomas24", author: "Jason", component: true) {
@@ -26,7 +29,10 @@ metadata {
         command "setPollInterval", [[name: "seconds", type: "NUMBER"]]
     }
     preferences {
-        input name: "pollIntervalSec", type: "number", title: "Poll interval (sec)", defaultValue: 5
+        input name: "pollIntervalSec", type: "number", title: "Poll interval (sec)", defaultValue: 5,
+            description: "Controls how often this device is polled AND how often its snapshot image refreshes. " +
+                "A dashboard tile's own refresh rate does NOT make the image any fresher than this -- it just " +
+                "re-displays whatever was last cached at this interval."
     }
 }
 def installed() {
