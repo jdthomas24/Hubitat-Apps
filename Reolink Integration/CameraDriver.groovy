@@ -71,7 +71,7 @@ metadata {
 }
 
 def refresh() {
-    parent?.componentRefresh(this)
+    parent?.componentRefresh(this, device.deviceNetworkId)
 }
 
 def takeSnapshot() {
@@ -79,44 +79,44 @@ def takeSnapshot() {
 }
 
 def ptz(direction) {
-    parent?.componentPtz(this, direction)
+    parent?.componentPtz(this, direction, device.deviceNetworkId)
 }
 
 def ptzGoToPreset(presetId) {
-    parent?.componentPtzGoToPreset(this, presetId as Integer)
+    parent?.componentPtzGoToPreset(this, presetId as Integer, device.deviceNetworkId)
 }
 
 def savePresetHere(presetId, name = null) {
-    parent?.componentSavePreset(this, presetId as Integer, name)
+    parent?.componentSavePreset(this, presetId as Integer, name, device.deviceNetworkId)
 }
 
 def spotlightOn() {
-    parent?.componentSetSpotlight(this, true)
+    parent?.componentSetSpotlight(this, true, device.deviceNetworkId)
     sendEvent(name: "spotlight", value: "on")
 }
 
 def spotlightOff() {
-    parent?.componentSetSpotlight(this, false)
+    parent?.componentSetSpotlight(this, false, device.deviceNetworkId)
     sendEvent(name: "spotlight", value: "off")
 }
 
 def setNightVision(mode) {
-    parent?.componentSetNightVision(this, mode)
+    parent?.componentSetNightVision(this, mode, device.deviceNetworkId)
     sendEvent(name: "nightVision", value: mode)
 }
 
 def sirenOn() {
-    parent?.componentSetSiren(this, true)
+    parent?.componentSetSiren(this, true, device.deviceNetworkId)
     sendEvent(name: "siren", value: "on")
 }
 
 def sirenOff() {
-    parent?.componentSetSiren(this, false)
+    parent?.componentSetSiren(this, false, device.deviceNetworkId)
     sendEvent(name: "siren", value: "off")
 }
 
 def checkBattery() {
-    parent?.componentCheckBattery(this)
+    parent?.componentCheckBattery(this, device.deviceNetworkId)
 }
 
 /** Called by the app after GetBatteryInfo. Field names are a TODO -- see app comment. */
@@ -127,11 +127,11 @@ def receiveBatteryInfo(battInfo) {
 }
 
 def calibratePtz() {
-    parent?.componentCalibratePtz(this)
+    parent?.componentCalibratePtz(this, device.deviceNetworkId)
 }
 
 def checkPtzCalibrationStatus() {
-    parent?.componentCheckPtzCalibrationStatus(this)
+    parent?.componentCheckPtzCalibrationStatus(this, device.deviceNetworkId)
 }
 
 /** Called by the app after GetPtzCheckState. 0=required, 1=running, 2=done. */
@@ -141,11 +141,11 @@ def receivePtzCalibrationState(state) {
 }
 
 def setPollInterval(seconds) {
-    parent?.componentSetPollInterval(this, seconds as Integer)
+    parent?.componentSetPollInterval(this, seconds as Integer, device.deviceNetworkId)
 }
 
 def setSnapshotInterval(seconds) {
-    parent?.componentSetSnapshotInterval(this, seconds as Integer)
+    parent?.componentSetSnapshotInterval(this, seconds as Integer, device.deviceNetworkId)
 }
 
 /** Called by the app after it polls GetAiState/GetMdState for this channel. */
