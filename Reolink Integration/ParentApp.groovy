@@ -598,9 +598,18 @@ def componentRefresh(child) {
  * app's own local relay endpoint (see mappings + handleSnapshotRequest()
  * below), NOT at the camera directly -- so the URL never goes stale, no
  * matter how often a dashboard tile refreshes or how long the token lives.
+ *
+ * dni is now passed explicitly by the driver (via its own device.deviceNetworkId)
+ * rather than read off child.deviceNetworkId. Found in the field: a driver's
+ * "this" reference reliably exposes methods like getDataValue(), but does NOT
+ * reliably expose deviceNetworkId as a property when passed into another app's
+ * method this way -- child?.deviceNetworkId was silently coming back null,
+ * building a broken "/snap/null" URL. child.deviceNetworkId is kept as a
+ * fallback only for callers that haven't been updated to pass dni explicitly.
  */
-def componentTakeSnapshot(child) {
-    if (!child?.deviceNetworkId) {
+def componentTakeSnapshot(child, String dni = null) {
+    def effectiveDni = dni ?: child?.deviceNetworkId
+    if (!effectiveDni) {
         log.warn "Reolink Integration: componentTakeSnapshot() called with a device that has no deviceNetworkId, refusing to build a snapshot URL"
         return
     }
@@ -612,8 +621,8 @@ def componentTakeSnapshot(child) {
             return
         }
     }
-    def url = "${getFullLocalApiServerUrl()}/snap/${child.deviceNetworkId}?access_token=${state.accessToken}"
-    logDebug "Reolink ${child.deviceNetworkId}: snapshot URL built (local relay endpoint, not camera-direct)"
+    def url = "${getFullLocalApiServerUrl()}/snap/${effectiveDni}?access_token=${state.accessToken}"
+    logDebug "Reolink ${effectiveDni}: snapshot URL built (local relay endpoint, not camera-direct)"
     child.receiveSnapshotUrl(url)
 }
 
