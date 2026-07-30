@@ -1,6 +1,6 @@
 /**
  * Reolink Integration (Parent App)
- * Version: 1.2.1
+ * Version: 1.2.2
  *
  * Architecture notes:
  *  - A "source" is anything that answers the Reolink HTTP/JSON API: a standalone
@@ -20,6 +20,17 @@
  * TODO markers throughout mark spots that need exact command/param names
  * verified against your firmware's API guide (GetMdState / GetAiState /
  * GetChannelstatus / Snap / PtzCtrl / Login field names can drift by version).
+ *
+ * v1.2.2 -- Fixed dashboard snapshot tiles going to a broken-image icon on
+ * refresh (rspCode -6 "please login first"). The old snapshotUrl had the
+ * camera's session token baked directly into a static URL that the dashboard
+ * tile just kept re-fetching on its own timer -- fine on first load, broken
+ * forever once that token expired or got invalidated by another client. The
+ * fix: snapshotUrl now points at a local relay endpoint on this app instead
+ * (/snap/:dni). Every dashboard refresh hits the hub, the hub fetches a fresh
+ * snapshot from the camera at that moment (with the same rspCode -6
+ * relogin-and-retry protection reolinkApiCall() already has), and streams the
+ * image back. No token is ever exposed to or cached by the browser.
  */
 
 import groovy.transform.Field
@@ -33,16 +44,25 @@ definition(
     menu: "Integrations", // groups this app under the "Integrations" section of Add User App
     iconUrl: "",
     iconX2Url: "",
-    singleThreaded: true
+    singleThreaded: true,
+    oauth: true // required for createAccessToken()/local endpoint access used by the snapshot relay
 )
 
-@Field static final String APP_VERSION = "1.2.1"
+@Field static final String APP_VERSION = "1.2.2"
 
 preferences {
     page(name: "mainPage")
     page(name: "addSourcePage")
     page(name: "discoverPage")
     page(name: "tipsPage")
+}
+
+// Local (non-cloud) endpoint the dashboard image tile hits on every refresh.
+// See componentTakeSnapshot() / handleSnapshotRequest() below.
+mappings {
+    path("/snap/:dni") {
+        action: [GET: "handleSnapshotRequest"]
+    }
 }
 
 def mainPage() {
@@ -168,6 +188,13 @@ def tipsPage() {
             paragraph "Use <b>calibratePtz</b> if preset recall starts drifting off target over time. Check " +
                 "progress with <b>checkPtzCalibrationStatus</b> -- Required means it hasn't been calibrated, " +
                 "Running means it's in progress (takes a few seconds), Done means it's ready."
+        }
+        section {
+            paragraph pillHeader("Snapshot tiles on dashboards")
+            paragraph "Snapshot URLs point at a local relay endpoint on this app, not directly at the camera. " +
+                "Every dashboard refresh fetches a brand new image from the camera at that moment, so the " +
+                "tile can't go stale or hit a broken-image icon from an expired session, even at a 2-3 " +
+                "second refresh interval."
         }
         section {
             paragraph pillHeader("Confidence level on newer commands")
@@ -496,6 +523,15 @@ def updated() { initialize() }
 
 def initialize() {
     unschedule()
+    if (!state.accessToken) {
+        try {
+            createAccessToken()
+            logDebug "Access token created for local snapshot relay endpoint"
+        } catch (e) {
+            log.warn "Reolink Integration: could not create access token (needed for dashboard snapshot tiles) -- ${e.message}. " +
+                "If this persists, check that OAuth is enabled for this app under Apps Code."
+        }
+    }
     initializePolling()
     if (debugLogging) {
         runIn(5400, "disableDebugLogging")
@@ -543,14 +579,95 @@ def componentRefresh(child) {
     pollChild([dni: child.deviceNetworkId])
 }
 
+/**
+ * Builds the dashboard-facing snapshot URL. As of 1.2.2 this points at this
+ * app's own local relay endpoint (see mappings + handleSnapshotRequest()
+ * below), NOT at the camera directly -- so the URL never goes stale, no
+ * matter how often a dashboard tile refreshes or how long the token lives.
+ */
 def componentTakeSnapshot(child) {
+    if (!state.accessToken) {
+        try {
+            createAccessToken()
+        } catch (e) {
+            log.warn "Reolink Integration: no access token available, snapshot relay endpoint will not work -- ${e.message}"
+            return
+        }
+    }
+    def url = "${getFullLocalApiServerUrl()}/snap/${child.deviceNetworkId}?access_token=${state.accessToken}"
+    logDebug "Reolink ${child.deviceNetworkId}: snapshot URL built (local relay endpoint, not camera-direct)"
+    child.receiveSnapshotUrl(url)
+}
+
+/**
+ * Handler for GET /snap/:dni?access_token=... -- called fresh by the browser
+ * every time a dashboard image tile refreshes. Fetches a brand new snapshot
+ * from the camera right now and streams the bytes straight back, so the
+ * tile can never be looking at an expired-token URL.
+ */
+def handleSnapshotRequest() {
+    def dni = params?.dni
+    def child = dni ? getChildDevice(dni) : null
+    if (!child) {
+        render status: 404, data: "Unknown device: ${dni}", contentType: "text/plain"
+        return
+    }
     def sourceId = child.getDataValue("sourceId") as Integer
     def channel = child.getDataValue("channel") as Integer
     def src = getSource(sourceId)
+    if (!src) {
+        render status: 404, data: "Unknown source for device ${dni}", contentType: "text/plain"
+        return
+    }
+
+    def imageBytes = fetchSnapshotBytes(src, sourceId, channel)
+    if (imageBytes == null) {
+        render status: 502, data: "Snapshot fetch failed, check app logs with debug on", contentType: "text/plain"
+        return
+    }
+    render contentType: "image/jpeg", data: imageBytes
+}
+
+/** Fetches a live snapshot, retrying once with a forced fresh login on auth failure. */
+private byte[] fetchSnapshotBytes(src, sourceId, channel) {
     def token = reolinkLogin(sourceId)
-    def url = "https://${src.host}:${src.port}/cgi-bin/api.cgi?cmd=Snap&channel=${channel}&token=${token}"
-    logDebug "Reolink source ${sourceId} ch ${channel}: snapshot URL built, token expires in ${(src.tokenExpires - now()) / 1000}s"
-    child.receiveSnapshotUrl(url)
+    def bytes = doFetchSnapshot(src, sourceId, token, channel)
+    if (bytes == null) {
+        logDebug "Reolink source ${sourceId} ch ${channel}: snapshot fetch failed, forcing re-login and retrying once"
+        src.token = null
+        src.tokenExpires = 0
+        def freshToken = reolinkLogin(sourceId)
+        if (freshToken) {
+            bytes = doFetchSnapshot(src, sourceId, freshToken, channel)
+        }
+    }
+    return bytes
+}
+
+/**
+ * Low-level Snap GET. On success the camera returns raw JPEG bytes. On
+ * failure (e.g. rspCode -6) it returns a small JSON error payload instead --
+ * TODO: verify this content-type-based detection against your hub's actual
+ * HTTPBuilder behavior; if resp.data doesn't come back as raw bytes for the
+ * image case, this may need to read resp.data as an InputStream explicitly.
+ */
+private byte[] doFetchSnapshot(src, sourceId, token, channel) {
+    def uri = "https://${src.host}:${src.port}/cgi-bin/api.cgi?cmd=Snap&channel=${channel}&token=${token}"
+    byte[] result = null
+    try {
+        httpGet([uri: uri, ignoreSSLIssues: true, timeout: 10]) { resp ->
+            def ct = resp?.contentType?.toString()?.toLowerCase() ?: ""
+            if (ct.contains("json")) {
+                def raw = resp?.data?.toString()
+                logDebug "Reolink source ${sourceId} ch ${channel}: snapshot request returned JSON instead of an image -- ${raw?.take(300)}"
+            } else {
+                result = resp?.data?.bytes
+            }
+        }
+    } catch (e) {
+        log.warn "Reolink snapshot fetch failed for source ${sourceId} ch ${channel}: ${e.message}"
+    }
+    return result
 }
 
 def componentPtz(child, String direction) {
