@@ -1,12 +1,12 @@
 {
     "packageName": "Reolink Integration",
-    "releaseNotes": "v1.2.1 -- Diagnostic logging fix. reolinkApiCall() previously logged every call as 'succeeded' whenever the HTTP request itself didn't error, even if the camera returned no usable value -- masking real issues on devices intermittently failing to return AI/motion state. Now logs the raw response body when a call gets an HTTP response but no usable value. No functional/behavior change, improves debug visibility only. Also includes v1.2.0 (PTZ calibration via calibratePtz/checkPtzCalibrationStatus, reorganized device page command grouping with model-dependent notes), v1.1.2 (debug logging for token lifecycle and poll transitions), and v1.1.1 (fixed a polling scheduler bug that could trip Hubitat's excessive-hub-load protection).",
+    "releaseNotes": "v1.2.2 -- Fixed dashboard snapshot tiles going to a broken image icon on refresh. The old snapshot URL had the camera's session token baked directly into it, so it worked on first load but broke as soon as that token expired or got invalidated by another client logging into the camera (rspCode -6). Snapshot URL now points at a local relay endpoint on the app instead, so every dashboard refresh fetches a brand new image from the camera at that moment, no matter how long the tile has been open or how often it refreshes. This adds an OAuth requirement to the app (needed for the local endpoint) -- HPM will enable it automatically on update, but if a snapshot ever 404s after updating, check that OAuth is enabled for this app under Apps Code.",
     "documentationLink": "https://github.com/jdthomas24/Hubitat-Apps-Drivers/tree/main/Reolink%20Integration",
     "communityLink": "https://github.com/jdthomas24/Hubitat-Apps-Drivers/tree/main/Reolink%20Integration",
     "author": "jdthomas24",
-    "version": "1.2.1",
+    "version": "1.2.2",
     "minimumHEVersion": "2.3.0",
-    "dateReleased": "2026-07-27",
+    "dateReleased": "2026-07-30",
     "category": "Integrations",
     "tags": "Cameras & Video",
     "apps": [
@@ -16,7 +16,7 @@
             "namespace": "jdthomas24",
             "location": "https://raw.githubusercontent.com/jdthomas24/Hubitat-Apps-Drivers/main/Reolink%20Integration/ParentApp.groovy",
             "required": true,
-            "oauth": false,
+            "oauth": true,
             "description": "Manages Reolink sources (standalone cameras, NVRs, Home Hubs) and creates camera/doorbell child devices."
         }
     ],
