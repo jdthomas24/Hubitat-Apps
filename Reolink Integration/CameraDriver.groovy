@@ -63,7 +63,7 @@ def refresh() {
 }
 
 def takeSnapshot() {
-    parent?.componentTakeSnapshot(this)
+    parent?.componentTakeSnapshot(this, device.deviceNetworkId)
 }
 
 def ptz(direction) {
