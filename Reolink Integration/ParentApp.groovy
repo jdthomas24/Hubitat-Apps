@@ -77,6 +77,21 @@
  * devices going forward -- existing devices already on the wrong interval
  * need their poll interval corrected by hand (device page, or the
  * setPollInterval command).
+ *
+ * Also (still 1.2.3): full audit of every componentX(child, ...) callback
+ * after componentSetPollInterval turned out to have the same underlying bug
+ * as the deviceNetworkId issue, just on updateSetting() instead. Every
+ * driver command that calls into this app now passes its own
+ * device.deviceNetworkId explicitly, and every componentX callback resolves
+ * a proper reference via the new resolveChild() helper instead of operating
+ * on the raw driver-passed "this". Confirmed broken via this path so far:
+ * deviceNetworkId (property), updateSetting() (method). Confirmed working:
+ * getDataValue(), user-defined driver methods like receiveSnapshotUrl(). This
+ * also caught componentRefresh(), which was silently doing nothing on every
+ * refresh command (pollChild(dni: null) getChildDevice()'s to null and
+ * no-ops) -- unrelated to anything from this session, this one predates all
+ * of 1.2.2/1.2.3 and just never surfaced because nobody had reason to notice
+ * a refresh silently failing.
  */
 
 import groovy.transform.Field
@@ -705,10 +720,37 @@ private String snapshotFileName(dni) {
     "reolink-snap-${dni}.jpg"
 }
 
+/**
+ * Resolves a proper app-side child device reference via getChildDevice(),
+ * given a dni passed explicitly from the driver (device.deviceNetworkId).
+ * Falls back to the raw passed reference only for callers that haven't been
+ * updated to pass dni yet.
+ *
+ * Why this exists: a driver's raw "this" reference does not reliably support
+ * every platform-provided device method/property when called externally by
+ * this app. Confirmed broken so far: deviceNetworkId (property) and
+ * updateSetting() (method, throws MissingMethodException). Confirmed working
+ * in the field: getDataValue() and user-defined driver methods like
+ * receiveSnapshotUrl()/receiveBatteryInfo() (ordinary Groovy method dispatch,
+ * not platform-injected). Rather than track which specific calls happen to
+ * work on the raw reference, every componentX callback now resolves through
+ * here whenever a dni is available, closing off the whole risk class at once.
+ */
+private resolveChild(child, String dni) {
+    def effectiveDni = dni ?: child?.deviceNetworkId
+    return effectiveDni ? (getChildDevice(effectiveDni) ?: child) : child
+}
+
 // ---------- Component callbacks (children call these via parent.X()) ----------
 
-def componentRefresh(child) {
-    pollChild([dni: child.deviceNetworkId])
+/** dni passed explicitly (device.deviceNetworkId from the driver) -- see resolveChild(). */
+def componentRefresh(child, String dni = null) {
+    def effectiveDni = dni ?: child?.deviceNetworkId
+    if (!effectiveDni) {
+        log.warn "Reolink Integration: componentRefresh() called with a device that has no deviceNetworkId"
+        return
+    }
+    pollChild([dni: effectiveDni])
 }
 
 /**
@@ -741,12 +783,13 @@ def componentTakeSnapshot(child, String dni = null) {
             return
         }
     }
-    def sourceId = child.getDataValue("sourceId") as Integer
-    def channel = child.getDataValue("channel") as Integer
-    cacheSnapshot(child, sourceId, channel)
+    def c = resolveChild(child, dni)
+    def sourceId = c.getDataValue("sourceId") as Integer
+    def channel = c.getDataValue("channel") as Integer
+    cacheSnapshot(c, sourceId, channel)
     def url = "${getFullLocalApiServerUrl()}/snap/${effectiveDni}?access_token=${state.accessToken}"
     logDebug "Reolink ${effectiveDni}: snapshot URL built (local relay endpoint, cache refreshed on demand)"
-    child.receiveSnapshotUrl(url)
+    c.receiveSnapshotUrl(url)
 }
 
 /**
@@ -833,75 +876,96 @@ private byte[] doFetchSnapshot(src, sourceId, token, channel) {
     return result
 }
 
-def componentPtz(child, String direction) {
-    def sourceId = child.getDataValue("sourceId") as Integer
-    def channel = child.getDataValue("channel") as Integer
+def componentPtz(child, String direction, String dni = null) {
+    def c = resolveChild(child, dni)
+    def sourceId = c.getDataValue("sourceId") as Integer
+    def channel = c.getDataValue("channel") as Integer
     reolinkApiCall(sourceId, "PtzCtrl", [op: direction, speed: 32], channel)
 }
 
-def componentPtzGoToPreset(child, Integer presetId) {
-    def sourceId = child.getDataValue("sourceId") as Integer
-    def channel = child.getDataValue("channel") as Integer
+def componentPtzGoToPreset(child, Integer presetId, String dni = null) {
+    def c = resolveChild(child, dni)
+    def sourceId = c.getDataValue("sourceId") as Integer
+    def channel = c.getDataValue("channel") as Integer
     reolinkApiCall(sourceId, "PtzCtrl", [op: "ToPos", id: presetId, speed: 32], channel)
 }
 
-def componentSavePreset(child, Integer presetId, String name) {
-    def sourceId = child.getDataValue("sourceId") as Integer
-    def channel = child.getDataValue("channel") as Integer
+def componentSavePreset(child, Integer presetId, String name, String dni = null) {
+    def c = resolveChild(child, dni)
+    def sourceId = c.getDataValue("sourceId") as Integer
+    def channel = c.getDataValue("channel") as Integer
     reolinkApiCall(sourceId, "SetPtzPreset",
         [PtzPreset: [channel: channel, enable: 1, id: presetId, name: name ?: "Preset${presetId}"]], null)
 }
 
-def componentSetSpotlight(child, Boolean on) {
-    def sourceId = child.getDataValue("sourceId") as Integer
-    def channel = child.getDataValue("channel") as Integer
+def componentSetSpotlight(child, Boolean on, String dni = null) {
+    def c = resolveChild(child, dni)
+    def sourceId = c.getDataValue("sourceId") as Integer
+    def channel = c.getDataValue("channel") as Integer
     reolinkApiCall(sourceId, "SetWhiteLed", [WhiteLed: [channel: channel, state: (on ? 1 : 0)]], null)
 }
 
-def componentSetNightVision(child, String mode) {
-    def sourceId = child.getDataValue("sourceId") as Integer
-    def channel = child.getDataValue("channel") as Integer
+def componentSetNightVision(child, String mode, String dni = null) {
+    def c = resolveChild(child, dni)
+    def sourceId = c.getDataValue("sourceId") as Integer
+    def channel = c.getDataValue("channel") as Integer
     reolinkApiCall(sourceId, "SetIrLights", [IrLights: [channel: channel, state: mode]], null)
 }
 
-def componentSetSiren(child, Boolean on) {
-    def sourceId = child.getDataValue("sourceId") as Integer
-    def channel = child.getDataValue("channel") as Integer
+def componentSetSiren(child, Boolean on, String dni = null) {
+    def c = resolveChild(child, dni)
+    def sourceId = c.getDataValue("sourceId") as Integer
+    def channel = c.getDataValue("channel") as Integer
     reolinkApiCall(sourceId, "AudioAlarmPlay", [alarm_mode: "manul", manual_switch: (on ? 1 : 0), times: 2], channel)
 }
 
-def componentCheckBattery(child) {
-    def sourceId = child.getDataValue("sourceId") as Integer
-    def channel = child.getDataValue("channel") as Integer
+def componentCheckBattery(child, String dni = null) {
+    def c = resolveChild(child, dni)
+    def sourceId = c.getDataValue("sourceId") as Integer
+    def channel = c.getDataValue("channel") as Integer
     def battInfo = reolinkApiCall(sourceId, "GetBatteryInfo", [:], channel)
-    child.receiveBatteryInfo(battInfo)
+    c.receiveBatteryInfo(battInfo)
 }
 
-def componentCalibratePtz(child) {
-    def sourceId = child.getDataValue("sourceId") as Integer
-    def channel = child.getDataValue("channel") as Integer
+def componentCalibratePtz(child, String dni = null) {
+    def c = resolveChild(child, dni)
+    def sourceId = c.getDataValue("sourceId") as Integer
+    def channel = c.getDataValue("channel") as Integer
     reolinkApiCall(sourceId, "PtzCheck", [:], channel)
     logDebug "Reolink source ${sourceId} ch ${channel}: PTZ calibration triggered"
 }
 
-def componentCheckPtzCalibrationStatus(child) {
-    def sourceId = child.getDataValue("sourceId") as Integer
-    def channel = child.getDataValue("channel") as Integer
+def componentCheckPtzCalibrationStatus(child, String dni = null) {
+    def c = resolveChild(child, dni)
+    def sourceId = c.getDataValue("sourceId") as Integer
+    def channel = c.getDataValue("channel") as Integer
     def result = reolinkApiCall(sourceId, "GetPtzCheckState", [:], channel)
     def state = result?.PtzCheckState
     logDebug "Reolink source ${sourceId} ch ${channel}: PTZ calibration state = ${state}"
-    child.receivePtzCalibrationState(state)
+    c.receivePtzCalibrationState(state)
 }
 
-def componentSetPollInterval(child, Integer seconds) {
-    child.updateSetting("pollIntervalSec", [type: "number", value: seconds])
-    logDebug "Set poll interval for ${child.deviceNetworkId} to ${seconds}s"
+/** dni resolved via resolveChild() -- see that method's doc comment for why. */
+def componentSetPollInterval(child, Integer seconds, String dni = null) {
+    def c = resolveChild(child, dni)
+    if (!c) {
+        log.warn "Reolink Integration: componentSetPollInterval() could not resolve a device"
+        return
+    }
+    c.updateSetting("pollIntervalSec", [type: "number", value: seconds])
+    logDebug "Set poll interval for ${c.deviceNetworkId ?: dni} to ${seconds}s"
 }
 
-def componentSetSnapshotInterval(child, Integer seconds) {
-    child.updateSetting("snapshotIntervalSec", [type: "number", value: seconds])
-    logDebug "Set snapshot interval for ${child.deviceNetworkId} to ${seconds}s"
-    scheduleChildSnapshot(child)
+/** dni resolved via resolveChild() -- see that method's doc comment for why. */
+def componentSetSnapshotInterval(child, Integer seconds, String dni = null) {
+    def c = resolveChild(child, dni)
+    if (!c) {
+        log.warn "Reolink Integration: componentSetSnapshotInterval() could not resolve a device"
+        return
+    }
+    c.updateSetting("snapshotIntervalSec", [type: "number", value: seconds])
+    logDebug "Set snapshot interval for ${c.deviceNetworkId ?: dni} to ${seconds}s"
+    scheduleChildSnapshot(c)
 }
 
 // ---------- Logging ----------
