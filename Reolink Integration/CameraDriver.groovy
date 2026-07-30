@@ -1,6 +1,6 @@
 /**
  * Reolink Camera (Component Driver)
- * Version: 1.2.3 -- kept in sync with the parent app's version.
+ * Version: 1.2.4 -- kept in sync with the parent app's version.
  * Thin device: no HTTP of its own. Everything delegates to the parent app via
  * parent.componentX(this, ...). The app knows which source/channel this device
  * maps to (stored as data values sourceId/channel) and does the actual API call.
@@ -14,6 +14,14 @@
  * clarifying that it, not a dashboard tile's own refresh rate, controls
  * snapshot image freshness -- came up after a user assumed the tile's
  * refresh setting alone would keep the image live.
+ *
+ * v1.2.4 -- parseReolinkState()/markAsleep() now only call sendEvent() when
+ * a value actually changed, instead of unconditionally on every poll. Found
+ * after a user on a lower-spec hub (base C-8, vs. a C-8 Pro on the hub this
+ * was developed against) hit repeated "excessive hub load" errors on this
+ * method -- 6 unconditional sendEvent() calls every poll (every 3s on a
+ * wired camera) is real, avoidable load, more likely to trip Hubitat's
+ * governor on a hub with less headroom. See sendIfChanged() below.
  */
 metadata {
     definition(name: "Reolink Camera", namespace: "jdthomas24", author: "Jason", component: true) {
@@ -150,19 +158,36 @@ def setSnapshotInterval(seconds) {
 
 /** Called by the app after it polls GetAiState/GetMdState for this channel. */
 def parseReolinkState(aiState, mdState) {
-    sendEvent(name: "sleepStatus", value: "awake")
+    sendIfChanged("sleepStatus", "awake")
 
     // TODO map real field names once GetAiState/GetMdState payloads are confirmed
     def motionActive = mdState?.state == 1
-    sendEvent(name: "motion", value: motionActive ? "active" : "inactive")
+    sendIfChanged("motion", motionActive ? "active" : "inactive")
 
     ["people", "vehicle", "dog_cat"].each { key ->
         def attr = key == "people" ? "person" : (key == "dog_cat" ? "pet" : key)
         def active = aiState?.getAt(key)?.alarm_state == 1
-        sendEvent(name: attr, value: active ? "active" : "inactive")
+        sendIfChanged(attr, active ? "active" : "inactive")
     }
     def pkgActive = aiState?.package?.alarm_state == 1
-    sendEvent(name: "package", value: pkgActive ? "active" : "inactive")
+    sendIfChanged("package", pkgActive ? "active" : "inactive")
+}
+
+/**
+ * Only calls sendEvent() when the value actually changed from the device's
+ * current state. Found in the field: parseReolinkState() was calling
+ * sendEvent() unconditionally for 6 attributes on EVERY poll (every 3s for a
+ * wired camera), whether or not anything changed. sendEvent() isn't free --
+ * event history, subscribed rule evaluation, etc. -- and a hub with less
+ * headroom (e.g. a base C-8 vs. a C-8 Pro) can trip Hubitat's own
+ * "excessive hub load" protection on that volume of calls where a
+ * higher-spec hub doesn't. This cuts sendEvent() volume to only what
+ * actually changes, on every hub regardless of spec.
+ */
+private void sendIfChanged(String name, value) {
+    if (device.currentValue(name)?.toString() != value?.toString()) {
+        sendEvent(name: name, value: value)
+    }
 }
 
 /**
@@ -173,7 +198,7 @@ def parseReolinkState(aiState, mdState) {
  * since "no response" isn't the same as "no longer detected."
  */
 def markAsleep() {
-    sendEvent(name: "sleepStatus", value: "asleep")
+    sendIfChanged("sleepStatus", "asleep")
 }
 
 def receiveSnapshotUrl(url) {
