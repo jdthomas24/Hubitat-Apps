@@ -1,6 +1,6 @@
 /**
  * Reolink Doorbell (Component Driver)
- * Version: 1.2.3 -- kept in sync with the parent app's version.
+ * Version: 1.2.4 -- kept in sync with the parent app's version.
  * Same delegation pattern as Reolink Camera, plus a "visitor" (button press)
  * event so Rule Machine can trigger straight off "pushed 1" for a doorbell ring,
  * separate from AI person/motion detection.
@@ -11,6 +11,9 @@
  * Also (still 1.2.3): added an inline description under pollIntervalSec
  * clarifying that it, not a dashboard tile's own refresh rate, controls
  * snapshot image freshness.
+ *
+ * v1.2.4 -- see camera driver's 1.2.4 note -- same sendIfChanged() fix
+ * applied here to cut redundant sendEvent() load on lower-spec hubs.
  */
 metadata {
     definition(name: "Reolink Doorbell", namespace: "jdthomas24", author: "Jason", component: true) {
@@ -57,25 +60,31 @@ def setSnapshotInterval(seconds) {
 }
 /** Called by the app after it polls GetAiState/GetMdState/visitor state for this channel. */
 def parseReolinkState(aiState, mdState) {
-    sendEvent(name: "sleepStatus", value: "awake")
+    sendIfChanged("sleepStatus", "awake")
     // TODO confirm the visitor/doorbell-press field name in your firmware's GetAiState/GetMdState payload
     def visitorPressed = aiState?.visitor?.alarm_state == 1
     if (visitorPressed) {
         sendEvent(name: "pushed", value: "1", isStateChange: true)
     }
     def motionActive = mdState?.state == 1
-    sendEvent(name: "motion", value: motionActive ? "active" : "inactive")
+    sendIfChanged("motion", motionActive ? "active" : "inactive")
     ["people", "vehicle", "dog_cat"].each { key ->
         def attr = key == "people" ? "person" : (key == "dog_cat" ? "pet" : key)
         def active = aiState?.getAt(key)?.alarm_state == 1
-        sendEvent(name: attr, value: active ? "active" : "inactive")
+        sendIfChanged(attr, active ? "active" : "inactive")
     }
     def pkgActive = aiState?.package?.alarm_state == 1
-    sendEvent(name: "package", value: pkgActive ? "active" : "inactive")
+    sendIfChanged("package", pkgActive ? "active" : "inactive")
+}
+/** See camera driver for why this exists -- cuts redundant sendEvent() calls to reduce load on lower-spec hubs. */
+private void sendIfChanged(String name, value) {
+    if (device.currentValue(name)?.toString() != value?.toString()) {
+        sendEvent(name: name, value: value)
+    }
 }
 /** Called by the app when a poll gets no response -- see camera driver for the reasoning. */
 def markAsleep() {
-    sendEvent(name: "sleepStatus", value: "asleep")
+    sendIfChanged("sleepStatus", "asleep")
 }
 def receiveSnapshotUrl(url) {
     sendEvent(name: "snapshotUrl", value: url)
