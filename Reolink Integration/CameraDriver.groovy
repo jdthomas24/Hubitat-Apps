@@ -38,6 +38,7 @@ metadata {
         command "takeSnapshot"
         command "checkBattery", [[name: "Battery-mode devices only"]]
         command "setPollInterval", [[name: "seconds", type: "NUMBER"]]
+        command "setSnapshotInterval", [[name: "seconds", type: "NUMBER"]]
 
         // ---- PTZ (pan/tilt/zoom cameras only, e.g. Trackmix, E1 Zoom) ----
         command "ptz", [[name: "direction", type: "ENUM",
@@ -59,9 +60,13 @@ metadata {
     }
     preferences {
         input name: "pollIntervalSec", type: "number", title: "Poll interval (sec)", defaultValue: 30,
-            description: "Controls how often this device is polled AND how often its snapshot image refreshes. " +
-                "A dashboard tile's own refresh rate does NOT make the image any fresher than this -- it just " +
-                "re-displays whatever was last cached at this interval."
+            description: "Controls how often motion/AI state is polled. Does NOT control snapshot image " +
+                "freshness -- see Snapshot interval below."
+        input name: "snapshotIntervalSec", type: "number", title: "Snapshot interval (sec)", defaultValue: 30,
+            description: "Controls how often the cached dashboard snapshot image refreshes. A dashboard tile's " +
+                "own refresh rate does NOT make the image any fresher than this -- it just re-displays whatever " +
+                "was last cached at this interval. Kept separate from poll interval so motion detection can " +
+                "stay fast without forcing a full image download that often."
     }
 }
 
@@ -137,6 +142,10 @@ def receivePtzCalibrationState(state) {
 
 def setPollInterval(seconds) {
     parent?.componentSetPollInterval(this, seconds as Integer)
+}
+
+def setSnapshotInterval(seconds) {
+    parent?.componentSetSnapshotInterval(this, seconds as Integer)
 }
 
 /** Called by the app after it polls GetAiState/GetMdState for this channel. */
