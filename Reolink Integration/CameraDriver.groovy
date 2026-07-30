@@ -1,6 +1,6 @@
 /**
  * Reolink Camera (Component Driver)
- * Version: 1.1.2 -- kept in sync with the parent app's version.
+ * Version: 1.2.0 -- kept in sync with the parent app's version.
  * Thin device: no HTTP of its own. Everything delegates to the parent app via
  * parent.componentX(this, ...). The app knows which source/channel this device
  * maps to (stored as data values sourceId/channel) and does the actual API call.
@@ -22,6 +22,7 @@ metadata {
         attribute "spotlight", "enum", ["on", "off"]
         attribute "nightVision", "enum", ["auto", "on", "off"]
         attribute "siren", "enum", ["on", "off"]
+        attribute "ptzCalibrationStatus", "enum", ["unknown", "required", "running", "done"]
 
         command "takeSnapshot"
         command "ptz", [[name: "direction", type: "ENUM",
@@ -37,6 +38,8 @@ metadata {
         command "sirenOn"
         command "sirenOff"
         command "checkBattery"
+        command "calibratePtz", [[name: "PTZ cameras only -- recalibrates pan/tilt to fix preset drift over time"]]
+        command "checkPtzCalibrationStatus"
         command "setPollInterval", [[name: "seconds", type: "NUMBER"]]
     }
     preferences {
@@ -98,6 +101,20 @@ def receiveBatteryInfo(battInfo) {
     // TODO confirm field names once seen against a real battery-mode device
     def pct = battInfo?.batteryPercent ?: battInfo?.batteryPercentage
     if (pct != null) sendEvent(name: "battery", value: pct)
+}
+
+def calibratePtz() {
+    parent?.componentCalibratePtz(this)
+}
+
+def checkPtzCalibrationStatus() {
+    parent?.componentCheckPtzCalibrationStatus(this)
+}
+
+/** Called by the app after GetPtzCheckState. 0=required, 1=running, 2=done. */
+def receivePtzCalibrationState(state) {
+    def statusMap = [0: "required", 1: "running", 2: "done"]
+    sendEvent(name: "ptzCalibrationStatus", value: statusMap[state] ?: "unknown")
 }
 
 def setPollInterval(seconds) {
