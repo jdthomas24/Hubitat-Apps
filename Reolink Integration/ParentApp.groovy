@@ -1,6 +1,6 @@
 /**
  * Reolink Integration (Parent App)
- * Version: 1.2.2
+ * Version: 1.2.3
  *
  * Architecture notes:
  *  - A "source" is anything that answers the Reolink HTTP/JSON API: a standalone
@@ -31,6 +31,15 @@
  * snapshot from the camera at that moment (with the same rspCode -6
  * relogin-and-retry protection reolinkApiCall() already has), and streams the
  * image back. No token is ever exposed to or cached by the browser.
+ *
+ * v1.2.3 -- Fixed the 1.2.2 relay endpoint itself returning a blank white
+ * image instead of the snapshot. doFetchSnapshot() was reading resp.data.bytes
+ * directly, but for a binary response Hubitat's httpGet hands back resp.data
+ * as a raw InputStream, which has no .bytes property -- so that line was
+ * silently returning null/empty instead of the image, while render() still
+ * responded 200 with the right content-type, producing a blank page rather
+ * than an obvious error. Now explicitly drains the InputStream into a byte
+ * array via ByteArrayOutputStream before rendering.
  */
 
 import groovy.transform.Field
@@ -48,7 +57,7 @@ definition(
     oauth: true // required for createAccessToken()/local endpoint access used by the snapshot relay
 )
 
-@Field static final String APP_VERSION = "1.2.2"
+@Field static final String APP_VERSION = "1.2.3"
 
 preferences {
     page(name: "mainPage")
@@ -645,11 +654,12 @@ private byte[] fetchSnapshotBytes(src, sourceId, channel) {
 }
 
 /**
- * Low-level Snap GET. On success the camera returns raw JPEG bytes. On
- * failure (e.g. rspCode -6) it returns a small JSON error payload instead --
- * TODO: verify this content-type-based detection against your hub's actual
- * HTTPBuilder behavior; if resp.data doesn't come back as raw bytes for the
- * image case, this may need to read resp.data as an InputStream explicitly.
+ * Low-level Snap GET. On success the camera returns raw JPEG bytes as an
+ * InputStream on resp.data -- NOT something with a usable .bytes property,
+ * so it has to be drained explicitly (this was the 1.2.2 bug: relying on
+ * resp.data.bytes silently produced null/empty and rendered as a blank
+ * white page instead of an error). On failure (e.g. rspCode -6) the camera
+ * returns a small JSON error payload instead, detected via content-type.
  */
 private byte[] doFetchSnapshot(src, sourceId, token, channel) {
     def uri = "https://${src.host}:${src.port}/cgi-bin/api.cgi?cmd=Snap&channel=${channel}&token=${token}"
@@ -660,8 +670,14 @@ private byte[] doFetchSnapshot(src, sourceId, token, channel) {
             if (ct.contains("json")) {
                 def raw = resp?.data?.toString()
                 logDebug "Reolink source ${sourceId} ch ${channel}: snapshot request returned JSON instead of an image -- ${raw?.take(300)}"
-            } else {
-                result = resp?.data?.bytes
+            } else if (resp?.data != null) {
+                def bos = new ByteArrayOutputStream()
+                bos << resp.data
+                result = bos.toByteArray()
+                if (!result || result.length == 0) {
+                    logDebug "Reolink source ${sourceId} ch ${channel}: snapshot stream drained to 0 bytes"
+                    result = null
+                }
             }
         }
     } catch (e) {
