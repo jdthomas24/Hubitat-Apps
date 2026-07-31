@@ -1,6 +1,6 @@
 /**
  * Reolink Integration (Parent App)
- * Version: 1.2.5
+ * Version: 1.3.0
  *
  * Architecture notes:
  *  - A "source" is anything that answers the Reolink HTTP/JSON API: a standalone
@@ -21,106 +21,55 @@
  * verified against your firmware's API guide (GetMdState / GetAiState /
  * GetChannelstatus / Snap / PtzCtrl / Login field names can drift by version).
  *
- * v1.2.2 -- Fixed dashboard snapshot tiles going to a broken-image icon on
- * refresh (rspCode -6 "please login first"). The old snapshotUrl had the
- * camera's session token baked directly into a static URL that the dashboard
- * tile just kept re-fetching on its own timer -- fine on first load, broken
- * forever once that token expired or got invalidated by another client. The
- * fix: snapshotUrl now points at a local relay endpoint on this app instead
- * (/snap/:dni). Every dashboard refresh hits the hub, the hub fetches a fresh
- * snapshot from the camera at that moment (with the same rspCode -6
- * relogin-and-retry protection reolinkApiCall() already has), and streams the
- * image back. No token is ever exposed to or cached by the browser.
+ * Full version history prior to 1.3.0 (the 1.1.x scheduler/logging plumbing,
+ * the 1.2.x snapshot relay redesign, the central scheduler rewrite, sendEvent
+ * gating, and tiered logging) is in the GitHub commit history and past
+ * release notes -- not duplicated here. This header only documents the
+ * CURRENT version going forward, trimmed down from the full inline changelog
+ * that used to live here (it had grown to roughly 10% of this file's total
+ * lines with no benefit to anyone running the current version).
  *
- * v1.2.3 -- Fixed the 1.2.2 relay endpoint itself returning a blank white
- * image instead of the snapshot. doFetchSnapshot() was reading resp.data.bytes
- * directly, but for a binary response Hubitat's httpGet hands back resp.data
- * as a raw InputStream, which has no .bytes property -- so that line was
- * silently returning null/empty instead of the image, while render() still
- * responded 200 with the right content-type, producing a blank page rather
- * than an obvious error. Now explicitly drains the InputStream into a byte
- * array via ByteArrayOutputStream before rendering.
- * Also: componentTakeSnapshot() now guards against a null/missing
- * deviceNetworkId instead of silently building a broken "/snap/null" URL,
- * and handleSnapshotRequest() explicitly detects and logs a null/blank dni
- * in the request path so a stale cached URL from before this fix shows up
- * clearly in the logs instead of just a blank page. Both drivers' takeSnapshot()
- * now pass device.deviceNetworkId explicitly rather than relying on the app to
- * read deviceNetworkId off the driver's "this" reference, which doesn't
- * reliably expose it.
- * Also: the camera is now only ever fetched from pollChild()'s normal poll
- * cycle (and once, immediately, on a manual takeSnapshot); the result is
- * cached to local hub file storage via uploadHubFile(), and the relay
- * endpoint just serves that cached file, no camera round-trip in the request
- * path at all.
- * Also: snapshot caching now runs on its OWN interval (snapshotIntervalSec,
- * device preference, defaults to 30s), decoupled from pollIntervalSec.
- * Also: fixed createSelectedChildren() unconditionally applying
- * defaultBatteryPoll to every newly created device, wired or battery.
- * Discovery now tags each channel as battery or wired (via guessIsBattery(),
- * using GetBatteryInfo as the signal), and the correct default gets applied
- * at creation time.
- * Also: full audit of every componentX(child, ...) callback -- every driver
- * command that calls into this app now passes its own device.deviceNetworkId
- * explicitly, and every componentX callback resolves a proper reference via
- * resolveChild() instead of operating on the raw driver-passed "this".
- * Also: fixed a scheduling bug where scheduleChildPoll()/scheduleChildSnapshot()
- * shared a single handler name across all devices, so Hubitat's overwrite:true
- * canceled every OTHER device's pending timer whenever one device rescheduled.
- * Replaced with a single central scheduler (schedulerTick(), ticking every 1s)
- * tracking each device's own due time independently in state.
- * Also: made the scheduler self-healing -- resumes automatically after a hub
- * reboot (systemStart subscription), and each device is processed in its own
- * try/catch so one device's failure can't silently stop every device at once.
- * Also: removed the app-level "Default poll interval" settings entirely --
- * poll/snapshot interval is a device-only concept now, full stop.
- *
- * v1.2.4 -- No app-side change; version bump to match the drivers. Both
- * component drivers' parseReolinkState()/markAsleep() now only call
- * sendEvent() when a value actually changed, instead of unconditionally on
- * every poll (6 calls every 3s per wired camera regardless of whether
- * anything changed). Found after a user on a lower-spec hub (base C-8, vs.
- * a C-8 Pro on the hub this was developed against) hit repeated "excessive
- * hub load" errors on parseReolinkState() even after every 1.2.3 scheduling
- * fix landed -- a hub with less headroom trips Hubitat's load governor on
- * the same call volume a faster hub handles fine.
- *
- * v1.2.5 -- Same underlying problem as 1.2.4, applied to LOGGING instead of
- * events. With 4 devices polling every few seconds, routine "reusing cached
- * token" / "succeeded" / "marking awake" lines were firing on every single
- * poll cycle even when nothing changed or was worth seeing -- dozens of log
- * lines every few seconds, burying anything actually diagnostic (like a
- * device's session getting invalidated by a competing client, or a genuine
- * sleep transition) in routine noise.
- *
- * Replaced the single "Enable debug logging" bool with a 3-level logLevel
- * setting:
- *   - Errors Only (default): warnings/errors only (unconditional log.warn
- *     calls, always on regardless of this setting -- unchanged from before).
- *     Matches the old debug-logging-off behavior, so an existing install
- *     that never touched the debug toggle sees no change in log volume
- *     after updating.
- *   - Normal: Errors Only, plus meaningful one-time events and
- *     STATE TRANSITIONS -- a fresh login, a device flipping asleep<->awake,
- *     a child created/removed, a config change via a set-interval command,
- *     a hub reboot resuming polling. Routine "still succeeded, nothing
- *     changed" polls don't log at all.
- *   - Full: everything, including every routine poll step (token reuse,
- *     each individual API call succeeding), for actively chasing something
- *     intermittent.
- *
- * pollChildNow() now checks the child's current sleepStatus before deciding
- * whether "marking awake"/"marking asleep" is a real transition (Normal) or
- * a repeat of the same state (Full only) -- the same idea as the drivers'
- * sendIfChanged(), just applied to log lines instead of events.
- *
- * Full auto-reverts to Normal after 60 minutes (was 90 min under the old
- * single debug toggle) so it's safe to leave on temporarily to catch
- * something intermittent without it staying noisy indefinitely. Errors Only
- * and Normal have no timer -- neither is noisy enough to need one.
+ * v1.3.0 --
+ *  1. Discovery now runs automatically the first time you open a source's
+ *     Discover page, instead of requiring a manual "Run discovery now" click
+ *     first. The button is still there (relabeled "Re-run discovery") for
+ *     refreshing an NVR/Home Hub's channel list later, e.g. after pairing a
+ *     new camera to it.
+ *  2. Capability auto-detection via Reolink's GetAbility API. Each child
+ *     device now gets a read-only supportedFeatures attribute, populated
+ *     automatically at discovery/creation time and refreshable via a new
+ *     Check Abilities command. This does NOT hide or disable any commands --
+ *     Hubitat has no way to dynamically remove commands from an individual
+ *     device instance -- it's purely informational, so you can tell at a
+ *     glance whether e.g. a fixed camera actually has PTZ before trying it,
+ *     instead of it just silently erroring. Built from real GetAbility data
+ *     gathered across 7 cameras spanning 5 models and multiple firmware
+ *     years (2021-2024) -- see fetchAbilityChnList()/computeSupportedFeatures()
+ *     for the confirmed field mappings and the defensive handling for keys
+ *     that are missing entirely (older firmware) or named differently
+ *     depending on firmware version (e.g. supportAiDogCat vs supportAiAnimal).
+ *     Package detection's real field name is still unconfirmed (no doorbell
+ *     tested yet against this codebase) -- handled with a defensive
+ *     name-pattern scan rather than a hardcoded guess, so it can pick up the
+ *     real key once confirmed without a code change. Battery-status detection
+ *     via GetAbility's battery/batAnalysis fields is also unconfirmed against
+ *     a real battery device yet -- guessIsBattery() (GetBatteryInfo-based)
+ *     remains the source of truth for batteryMode for now; this is a
+ *     candidate for consolidation once tested against real hardware.
+ *  3. Clarified battery-device documentation on the Tips page: local
+ *     HTTP/HTTPS/ONVIF access is a firmware-level exclusion across Reolink's
+ *     ENTIRE battery-powered product line (confirmed via Reolink's own
+ *     community forum), not something that varies by power source -- even a
+ *     battery-class device running continuously on a DC adapter still has no
+ *     local API, because the firmware itself never includes that server
+ *     stack on battery models. This applies to the Gen 2 doorbell
+ *     specifically as much as any other battery device. The only way to get
+ *     data from a battery-class device is through whatever Home Hub/NVR it's
+ *     paired to.
  */
 
 import groovy.transform.Field
+
 
 definition(
     name: "Reolink Integration",
@@ -135,7 +84,7 @@ definition(
     oauth: true // required for createAccessToken()/local endpoint access used by the snapshot relay
 )
 
-@Field static final String APP_VERSION = "1.2.5"
+@Field static final String APP_VERSION = "1.3.0"
 
 @Field static final List LOG_LEVELS = ["Errors Only", "Normal", "Full"]
 
@@ -254,9 +203,14 @@ def tipsPage() {
         }
         section {
             paragraph pillHeader("Devices that won't work standalone")
-            paragraph "⚠️ <b>Battery-class cameras/doorbells</b> (Argus line, Doorbell Battery). No local " +
-                "HTTP/ONVIF server standalone, even in \"Wired Power Mode\" -- that setting only changes " +
-                "charging, not the network API."
+            paragraph "⚠️ <b>Battery-class cameras/doorbells</b> (Argus line, Doorbell Battery, Gen 2 " +
+                "doorbells). This is a <b>deliberate, permanent firmware exclusion across Reolink's entire " +
+                "battery-powered product line</b> -- confirmed via Reolink's own community forum, not a " +
+                "quirk of any specific unit."
+            paragraph "It does NOT depend on how the device is powered. Even a battery-class device running " +
+                "continuously on a DC adapter (not just trickle-charging) still has no local HTTP/ONVIF API, " +
+                "because the firmware itself never includes that server stack on battery models. \"Wired " +
+                "Power Mode\" in the Reolink app only changes charging behavior, never the network API."
             paragraph "They only become reachable once paired to a Home Hub or NVR. Add the Hub/NVR as the " +
                 "source instead, and the device shows up as one of its channels."
             paragraph "⚠️ <b>E1, E1 Pro, and Lumus</b> -- Reolink's own docs on whether these support local " +
@@ -337,6 +291,27 @@ def tipsPage() {
                 "temporarily and you'll see continuous poll activity."
         }
         section {
+            paragraph pillHeader("Supported Features (new in v1.3.0)")
+            paragraph "Every device now has a read-only <b>supportedFeatures</b> attribute, populated " +
+                "automatically at discovery time from the camera's own reported capabilities (Reolink's " +
+                "GetAbility API) -- e.g. \"PTZ, Spotlight, Person Detection, Vehicle Detection, Pet " +
+                "Detection\" for a full-featured PTZ camera with a light, or just \"Person Detection, " +
+                "Vehicle Detection\" for a basic fixed camera with no PTZ or light."
+            paragraph "⚠️ This is informational only -- it does NOT hide or disable any commands. Hubitat " +
+                "has no way to remove a command from an individual device instance, so every command still " +
+                "appears on every device regardless of what supportedFeatures says. Trying a command the " +
+                "device doesn't actually support (e.g. PTZ on a fixed camera) will just harmlessly error, " +
+                "same as before -- check supportedFeatures first to know what's actually worth trying."
+            paragraph "Use the <b>Check Abilities</b> command any time to refresh this -- useful after a " +
+                "firmware update that might add a capability, or for a device created before this feature " +
+                "existed."
+            paragraph "Package detection is doorbell-specific (cameras don't have it) and its exact field " +
+                "name is still being confirmed against real doorbell hardware -- it may not always show up " +
+                "correctly on every doorbell yet. Battery-status detection isn't part of this feature yet " +
+                "either (still relies on the existing wired/battery detection at discovery time, unrelated " +
+                "to supportedFeatures)."
+        }
+        section {
             paragraph pillHeader("Confidence level on newer commands")
             paragraph "<b>Confirmed working</b> against real hardware: PtzCtrl -- move, and ToPos (preset recall)."
             paragraph "<b>Built but not yet tested</b> against this setup's actual firmware: SetPtzPreset " +
@@ -389,7 +364,12 @@ def discoverPage(params) {
     state.currentDiscoverySourceId = sourceId
     def src = getSource(sourceId)
 
-    if (params?.run && src) {
+    // Auto-run discovery the first time this source's Discover page is opened
+    // (no cached results yet for this source), in addition to an explicit
+    // "Re-run discovery" click. Removes the old requirement to manually run
+    // discovery once before anything showed up after adding a source.
+    def alreadyCachedForThisSource = (state.lastDiscoverySourceId == sourceId)
+    if (src && (params?.run || !alreadyCachedForThisSource)) {
         state.lastDiscovery = discoverChannels(sourceId)
         state.lastDiscoverySourceId = sourceId
     }
@@ -423,13 +403,10 @@ def discoverPage(params) {
             }
         } else {
             section {
-                href name: "runDiscovery", title: "Run discovery now",
-                    description: "Calls the source and lists available channels",
+                href name: "runDiscovery", title: "Re-run discovery",
+                    description: "Discovery already ran automatically when this page opened. Use this to " +
+                        "refresh the channel list, e.g. after pairing a new camera to an NVR/Home Hub.",
                     page: "discoverPage", params: [sourceId: sourceId, run: true]
-
-                if (!params?.run && !cachedForThisSource) {
-                    paragraph "No discovery results yet for this source -- tap 'Run discovery now' above."
-                }
 
                 if (state.lastDiscoveryError) {
                     paragraph "⚠️ ${state.lastDiscoveryError}"
@@ -608,6 +585,11 @@ def discoverChannels(sourceId) {
     def channels = []
     state.lastDiscoveryError = null
 
+    // One GetAbility call per source covers ALL channels at once (the response
+    // includes an abilityChn[] array indexed by channel) -- confirmed against
+    // real hardware, so this is NOT called again per-channel below.
+    def abilityChnList = fetchAbilityChnList(sourceId)
+
     if (!src.isHub) {
         def info = reolinkApiCall(sourceId, "GetDevInfo")
         if (info == null) {
@@ -617,7 +599,8 @@ def discoverChannels(sourceId) {
             return channels
         }
         channels << [channel: 0, name: info?.DevInfo?.name ?: src.label, deviceType: guessDeviceType(info),
-            isBattery: guessIsBattery(sourceId, 0)]
+            isBattery: guessIsBattery(sourceId, 0),
+            supportedFeatures: computeSupportedFeatures(abilityChnList?.getAt(0))]
     } else {
         def status = reolinkApiCall(sourceId, "GetChannelstatus")
         if (status == null) {
@@ -627,7 +610,8 @@ def discoverChannels(sourceId) {
         status?.status?.each { ch ->
             if (ch.online) {
                 channels << [channel: ch.channel, name: ch.name ?: "Channel ${ch.channel}", deviceType: guessDeviceType(ch),
-                    isBattery: guessIsBattery(sourceId, ch.channel)]
+                    isBattery: guessIsBattery(sourceId, ch.channel),
+                    supportedFeatures: computeSupportedFeatures(abilityChnList?.getAt(ch.channel as Integer))]
             }
         }
     }
@@ -643,14 +627,105 @@ private String guessDeviceType(info) {
  * Battery vs wired isn't reported directly by GetDevInfo/GetChannelstatus, so
  * this uses GetBatteryInfo as a signal instead: a battery-class device
  * answers it with real data, a wired/PoE device returns nothing usable.
- * TODO: verify this holds across all channel types (standalone vs behind a
- * Hub/NVR) once tested against real battery hardware -- if a wired device
- * ever answers GetBatteryInfo with a non-null placeholder value, this will
- * misclassify it and default it to the loose battery poll interval.
+ * TODO: GetAbility's battery/batAnalysis fields are a candidate to replace
+ * this once tested against a real battery device -- every camera tested so
+ * far (7 across 5 models) is wired, so battery/batAnalysis have only ever
+ * shown permit:0, an unconfirmed negative case. guessIsBattery() remains the
+ * source of truth for batteryMode until that's verified against real
+ * hardware, to avoid swapping a working heuristic for an untested one.
  */
 private Boolean guessIsBattery(sourceId, channel) {
     def batt = reolinkApiCall(sourceId, "GetBatteryInfo", [:], channel)
     return batt != null
+}
+
+/**
+ * Fetches GetAbility for a source and returns the abilityChn[] array (one
+ * entry per channel, index-aligned with the channel number). Returns null on
+ * failure or an unexpected response shape -- callers must handle that by
+ * falling back to an empty/unknown feature set, not by failing discovery
+ * entirely, since capability detection is informational and should never
+ * block a device from being creatable.
+ *
+ * Confirmed against real hardware (7 cameras, 5 models, firmware 2021-2024):
+ * a single GetAbility call with no channel param returns ALL channels' data
+ * at once under value.Ability.abilityChn[] -- calling it per-channel would
+ * be redundant, every call returns the same full array regardless of any
+ * channel param.
+ */
+private List fetchAbilityChnList(sourceId) {
+    def src = getSource(sourceId)
+    def result = reolinkApiCall(sourceId, "GetAbility", [User: [userName: src?.username]])
+    def abilityChn = result?.Ability?.abilityChn
+    if (!(abilityChn instanceof List)) {
+        logFull "Reolink source ${sourceId}: GetAbility did not return the expected " +
+            "Ability.abilityChn[] shape -- capability detection unavailable for this source"
+        return null
+    }
+    return abilityChn
+}
+
+/** Safe lookup: treats a missing key the SAME as permit:0/unsupported. Confirmed necessary -- older firmware omits some keys entirely rather than reporting them as unsupported (e.g. supportPtzCalibration was entirely absent on a 2021-firmware camera that had it present in 2024 firmware on the same model). */
+private int abilityPermit(Map abilityChn, String key) {
+    return (abilityChn?.getAt(key)?.permit ?: 0) as int
+}
+
+/**
+ * Maps GetAbility data to a human-readable feature list for the
+ * supportedFeatures device attribute. Confirmed against real hardware across
+ * 7 cameras / 5 models / firmware 2021-2024:
+ *   - PTZ: ptzCtrl > 0. The exact permit value varies by camera (1 on a
+ *     pan-tilt-only E1 Pro, 7 on full PTZ cameras) but >0 vs 0 reliably
+ *     splits PTZ-capable from fixed cameras every time tested.
+ *   - PTZ Calibration: supportPtzCalibration > 0, checked INDEPENDENTLY of
+ *     PTZ presence -- confirmed NOT implied by having PTZ (a full-PTZ camera
+ *     showed permit:0 here while a lesser pan-tilt-only camera showed
+ *     support for it).
+ *   - Spotlight: supportFLswitch > 0, NOT the top-level floodLight key --
+ *     floodLight stayed permit:0 on every camera tested including ones
+ *     confirmed to have a physical spotlight; supportFLswitch differentiated
+ *     correctly on every camera (present on 3 confirmed-spotlight cameras,
+ *     absent on E1 Pro which has none). Independently corroborated by a
+ *     Reolink community report of floodLight being unreliable even on
+ *     genuine floodlight hardware.
+ *   - Siren: alarmAudio > 0. Every camera tested had this until an older
+ *     basic model (RLC-410W, no built-in speaker) finally gave a real
+ *     negative case (permit:0, "talk" key absent entirely) -- confirms this
+ *     field is trustworthy, not just uniformly present by coincidence.
+ *   - Person / Vehicle: supportAiPeople / supportAiVehicle > 0.
+ *   - Pet: supportAiDogCat OR supportAiAnimal > 0 -- field NAME varies by
+ *     firmware (older firmware uses one, newer sometimes reports both
+ *     simultaneously), so both are checked rather than picking one.
+ *   - Package: field name UNCONFIRMED -- no doorbell tested yet against this
+ *     codebase (package detection is doorbell-specific, cameras don't have
+ *     it at all, which is why no camera tested ever showed a package-related
+ *     key). Handled with a defensive scan for any key name containing
+ *     "ackage" rather than a hardcoded guess, so a future doorbell test can
+ *     confirm the real name without requiring a code change here.
+ *   - Basic/older models (e.g. RLC-410W) can be missing entire FAMILIES of
+ *     keys (no AI keys at all, predating that feature) -- abilityPermit()'s
+ *     missing-key-as-0 handling covers this correctly.
+ *
+ * Deliberately NOT included: battery status (see guessIsBattery() TODO,
+ * unconfirmed against real hardware), NVR/Home Hub channel-specific ability
+ * behavior (untested -- everything confirmed so far is a directly-connected
+ * standalone camera).
+ */
+private List<String> computeSupportedFeatures(Map abilityChn) {
+    if (abilityChn == null) return []
+    def features = []
+    if (abilityPermit(abilityChn, "ptzCtrl") > 0) features << "PTZ"
+    if (abilityPermit(abilityChn, "supportPtzCalibration") > 0) features << "PTZ Calibration"
+    if (abilityPermit(abilityChn, "supportFLswitch") > 0) features << "Spotlight"
+    if (abilityPermit(abilityChn, "alarmAudio") > 0) features << "Siren"
+    if (abilityPermit(abilityChn, "supportAiPeople") > 0) features << "Person Detection"
+    if (abilityPermit(abilityChn, "supportAiVehicle") > 0) features << "Vehicle Detection"
+    if (abilityPermit(abilityChn, "supportAiDogCat") > 0 || abilityPermit(abilityChn, "supportAiAnimal") > 0) {
+        features << "Pet Detection"
+    }
+    def packageKey = abilityChn.keySet().find { it.toLowerCase().contains("ackage") }
+    if (packageKey && abilityPermit(abilityChn, packageKey) > 0) features << "Package Detection"
+    return features
 }
 
 // ---------- Child creation ----------
@@ -675,7 +750,8 @@ def createSelectedChildren(sourceId) {
             // setPollInterval) -- these are just the one-time defaults applied at creation.
             def pollDefault = ch.isBattery ? DEFAULT_BATTERY_POLL_SEC : DEFAULT_WIRED_POLL_SEC
             child.updateSetting("pollIntervalSec", [type: "number", value: pollDefault])
-            logNormal "Created child ${dni} (${driverName}), poll interval defaulted to ${pollDefault}s (${ch.isBattery ? 'battery' : 'wired'})"
+            child.receiveSupportedFeatures(ch.supportedFeatures ?: [])
+            logNormal "Created child ${dni} (${driverName}), poll interval defaulted to ${pollDefault}s (${ch.isBattery ? 'battery' : 'wired'}), features: ${ch.supportedFeatures ? ch.supportedFeatures.join(', ') : 'none detected'}"
         } else if (!wantIt && existing) {
             deleteChildDevice(dni)
             forgetSchedulingState(dni)
@@ -1143,6 +1219,22 @@ def componentCheckBattery(child, String dni = null) {
     def channel = c.getDataValue("channel") as Integer
     def battInfo = reolinkApiCall(sourceId, "GetBatteryInfo", [:], channel)
     c.receiveBatteryInfo(battInfo)
+}
+
+/**
+ * Manual recheck for a single device's supportedFeatures attribute -- useful
+ * after a firmware update that might add capabilities, or if the device was
+ * created before this feature existed. Re-fetches GetAbility fresh rather
+ * than relying on anything cached from the original discovery.
+ */
+def componentCheckAbilities(child, String dni = null) {
+    def c = resolveChild(child, dni)
+    def sourceId = c.getDataValue("sourceId") as Integer
+    def channel = c.getDataValue("channel") as Integer
+    def abilityChnList = fetchAbilityChnList(sourceId)
+    def features = computeSupportedFeatures(abilityChnList?.getAt(channel))
+    c.receiveSupportedFeatures(features)
+    logNormal "Reolink source ${sourceId} ch ${channel}: capabilities rechecked -- ${features ? features.join(', ') : 'none detected'}"
 }
 
 def componentCalibratePtz(child, String dni = null) {
