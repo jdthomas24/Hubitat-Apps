@@ -1,14 +1,14 @@
 /**
  * Reolink Camera (Component Driver)
- * Version: 1.2.5 -- kept in sync with the parent app's version.
+ * Version: 1.3.0 -- kept in sync with the parent app's version.
  * Thin device: no HTTP of its own. Everything delegates to the parent app via
  * parent.componentX(this, ...). The app knows which source/channel this device
  * maps to (stored as data values sourceId/channel) and does the actual API call.
  *
- * No functional change from 1.2.4 -- v1.2.5 is an app-side-only change (tiered
- * Errors Only / Normal / Full logging on the app, replacing the old single
- * debug toggle). This driver's own logic, including the sendIfChanged() event
- * gating added in 1.2.4, is unchanged.
+ * v1.3.0 -- added the supportedFeatures attribute and checkAbilities command
+ * (see receiveSupportedFeatures() below). Populated by the app from Reolink's
+ * GetAbility API, informational only -- see the app's Tips page for details.
+ * No other functional change from 1.2.5.
  *
  * v1.2.4 -- parseReolinkState()/markAsleep() now only call sendEvent() when
  * a value actually changed, instead of unconditionally on every poll. Found
@@ -36,10 +36,12 @@ metadata {
         attribute "nightVision", "enum", ["auto", "on", "off"]
         attribute "siren", "enum", ["on", "off"]
         attribute "ptzCalibrationStatus", "enum", ["unknown", "required", "running", "done"]
+        attribute "supportedFeatures", "string"
 
         // ---- Core ----
         command "takeSnapshot"
         command "checkBattery", [[name: "Battery-mode devices only"]]
+        command "checkAbilities", [[name: "Refreshes the supportedFeatures attribute from the camera's current GetAbility data"]]
         command "setPollInterval", [[name: "seconds", type: "NUMBER"]]
         command "setSnapshotInterval", [[name: "seconds", type: "NUMBER"]]
 
@@ -127,6 +129,21 @@ def receiveBatteryInfo(battInfo) {
     // TODO confirm field names once seen against a real battery-mode device
     def pct = battInfo?.batteryPercent ?: battInfo?.batteryPercentage
     if (pct != null) sendEvent(name: "battery", value: pct)
+}
+
+def checkAbilities() {
+    parent?.componentCheckAbilities(this, device.deviceNetworkId)
+}
+
+/**
+ * Called by the app after GetAbility, both at discovery/creation time and on
+ * a manual checkAbilities command. Informational only -- see the app's Tips
+ * page ("Supported Features") for what this does and doesn't mean. Does NOT
+ * hide or disable any command on this device; Hubitat has no way to do that
+ * for an individual device instance.
+ */
+def receiveSupportedFeatures(List features) {
+    sendEvent(name: "supportedFeatures", value: features ? features.join(", ") : "None detected")
 }
 
 def calibratePtz() {
