@@ -1,14 +1,15 @@
 /**
  * Reolink Doorbell (Component Driver)
- * Version: 1.2.5 -- kept in sync with the parent app's version.
+ * Version: 1.3.0 -- kept in sync with the parent app's version.
  * Same delegation pattern as Reolink Camera, plus a "visitor" (button press)
  * event so Rule Machine can trigger straight off "pushed 1" for a doorbell ring,
  * separate from AI person/motion detection.
  *
- * No functional change from 1.2.4 -- v1.2.5 is an app-side-only change (tiered
- * Errors Only / Normal / Full logging on the app, replacing the old single
- * debug toggle). This driver's own logic, including the sendIfChanged() event
- * gating added in 1.2.4, is unchanged.
+ * v1.3.0 -- added the supportedFeatures attribute and checkAbilities command
+ * (see receiveSupportedFeatures() below), same as the camera driver. Package
+ * detection's exact GetAbility field name is still being confirmed against
+ * real doorbell hardware -- see the app's Tips page. No other functional
+ * change from 1.2.5.
  *
  * v1.2.4 -- see camera driver's 1.2.4 note -- same sendIfChanged() fix
  * applied here to cut redundant sendEvent() load on lower-spec hubs.
@@ -26,7 +27,9 @@ metadata {
         attribute "snapshotUrl", "string"
         attribute "batteryMode", "enum", ["wired", "battery", "unknown"]
         attribute "sleepStatus", "enum", ["awake", "asleep", "unknown"]
+        attribute "supportedFeatures", "string"
         command "takeSnapshot"
+        command "checkAbilities", [[name: "Refreshes the supportedFeatures attribute from the doorbell's current GetAbility data"]]
         command "setPollInterval", [[name: "seconds", type: "NUMBER"]]
         command "setSnapshotInterval", [[name: "seconds", type: "NUMBER"]]
     }
@@ -55,6 +58,19 @@ def setPollInterval(seconds) {
 }
 def setSnapshotInterval(seconds) {
     parent?.componentSetSnapshotInterval(this, seconds as Integer, device.deviceNetworkId)
+}
+def checkAbilities() {
+    parent?.componentCheckAbilities(this, device.deviceNetworkId)
+}
+/**
+ * Called by the app after GetAbility, both at discovery/creation time and on
+ * a manual checkAbilities command. Informational only -- see the app's Tips
+ * page ("Supported Features") for what this does and doesn't mean. Does NOT
+ * hide or disable any command on this device; Hubitat has no way to do that
+ * for an individual device instance.
+ */
+def receiveSupportedFeatures(List features) {
+    sendEvent(name: "supportedFeatures", value: features ? features.join(", ") : "None detected")
 }
 /** Called by the app after it polls GetAiState/GetMdState/visitor state for this channel. */
 def parseReolinkState(aiState, mdState) {
