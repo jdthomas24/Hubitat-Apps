@@ -1,6 +1,6 @@
 /**
  * Reolink Integration (Parent App)
- * Version: 1.3.0
+ * Version: 1.3.1
  *
  * Architecture notes:
  *  - A "source" is anything that answers the Reolink HTTP/JSON API: a standalone
@@ -66,6 +66,24 @@
  *     specifically as much as any other battery device. The only way to get
  *     data from a battery-class device is through whatever Home Hub/NVR it's
  *     paired to.
+ *
+ * v1.3.1 -- Fixed a bug in the doorbell driver: it declares capability
+ * "PushableButton" (needed for the pushed/numberOfButtons attributes so
+ * Rule Machine can trigger on a doorbell press), but never implemented the
+ * push() command the capability requires. Declaring a capability adds its
+ * commands to the device page -- it does NOT auto-implement them. This
+ * meant clicking Push on the device's Commands tab (or anything else
+ * calling push()) threw a MissingMethodException. Added push(buttonNumber)
+ * and routed the real doorbell-press event through it instead of
+ * duplicating the same sendEvent() call in two places.
+ * Also (still v1.3.1): fixed computeSupportedFeatures() under-reporting a
+ * doorbell's light. Doorbells report their light under a DIFFERENT ability
+ * key (supportDoorbellLight) than cameras do (supportFLswitch) -- confirmed
+ * against a real wired doorbell. Now checks both. Also confirmed
+ * supportAiPackage as the real package-detection field name against that
+ * same doorbell (the v1.3.0 defensive "ackage"-substring scan already
+ * caught it correctly with no code change needed, kept in place as a
+ * safety net for any differently-named variant).
  */
 
 import groovy.transform.Field
@@ -84,7 +102,7 @@ definition(
     oauth: true // required for createAccessToken()/local endpoint access used by the snapshot relay
 )
 
-@Field static final String APP_VERSION = "1.3.0"
+@Field static final String APP_VERSION = "1.3.1"
 
 @Field static final List LOG_LEVELS = ["Errors Only", "Normal", "Full"]
 
@@ -681,13 +699,18 @@ private int abilityPermit(Map abilityChn, String key) {
  *     PTZ presence -- confirmed NOT implied by having PTZ (a full-PTZ camera
  *     showed permit:0 here while a lesser pan-tilt-only camera showed
  *     support for it).
- *   - Spotlight: supportFLswitch > 0, NOT the top-level floodLight key --
- *     floodLight stayed permit:0 on every camera tested including ones
- *     confirmed to have a physical spotlight; supportFLswitch differentiated
- *     correctly on every camera (present on 3 confirmed-spotlight cameras,
- *     absent on E1 Pro which has none). Independently corroborated by a
- *     Reolink community report of floodLight being unreliable even on
- *     genuine floodlight hardware.
+ *   - Spotlight/Light: supportFLswitch > 0 OR supportDoorbellLight > 0, NOT
+ *     the top-level floodLight key -- floodLight stayed permit:0 on every
+ *     device tested including ones confirmed to have a physical light;
+ *     supportFLswitch differentiated correctly on every CAMERA tested
+ *     (present on confirmed-spotlight cameras, absent on E1 Pro which has
+ *     none). Independently corroborated by a Reolink community report of
+ *     floodLight being unreliable even on genuine floodlight hardware.
+ *     DOORBELLS use a separate key, supportDoorbellLight, instead of
+ *     supportFLswitch (confirmed against a real wired doorbell) -- both are
+ *     checked so this reports correctly on either device type. Whether the
+ *     existing spotlightOn/spotlightOff (SetWhiteLed) commands actually
+ *     control a doorbell's light the same way is still unconfirmed/untested.
  *   - Siren: alarmAudio > 0. Every camera tested had this until an older
  *     basic model (RLC-410W, no built-in speaker) finally gave a real
  *     negative case (permit:0, "talk" key absent entirely) -- confirms this
@@ -696,12 +719,12 @@ private int abilityPermit(Map abilityChn, String key) {
  *   - Pet: supportAiDogCat OR supportAiAnimal > 0 -- field NAME varies by
  *     firmware (older firmware uses one, newer sometimes reports both
  *     simultaneously), so both are checked rather than picking one.
- *   - Package: field name UNCONFIRMED -- no doorbell tested yet against this
- *     codebase (package detection is doorbell-specific, cameras don't have
- *     it at all, which is why no camera tested ever showed a package-related
- *     key). Handled with a defensive scan for any key name containing
- *     "ackage" rather than a hardcoded guess, so a future doorbell test can
- *     confirm the real name without requiring a code change here.
+ *   - Package: supportAiPackage > 0 -- confirmed against a real doorbell
+ *     (package detection is doorbell-specific; cameras don't have it at all,
+ *     which is why no camera tested ever showed this key). Still matched via
+ *     a defensive "ackage"-substring scan rather than the literal key name,
+ *     since that already caught the real name correctly and costs nothing
+ *     to leave in place as a safety net for any differently-named variant.
  *   - Basic/older models (e.g. RLC-410W) can be missing entire FAMILIES of
  *     keys (no AI keys at all, predating that feature) -- abilityPermit()'s
  *     missing-key-as-0 handling covers this correctly.
@@ -716,7 +739,9 @@ private List<String> computeSupportedFeatures(Map abilityChn) {
     def features = []
     if (abilityPermit(abilityChn, "ptzCtrl") > 0) features << "PTZ"
     if (abilityPermit(abilityChn, "supportPtzCalibration") > 0) features << "PTZ Calibration"
-    if (abilityPermit(abilityChn, "supportFLswitch") > 0) features << "Spotlight"
+    if (abilityPermit(abilityChn, "supportFLswitch") > 0 || abilityPermit(abilityChn, "supportDoorbellLight") > 0) {
+        features << "Spotlight"
+    }
     if (abilityPermit(abilityChn, "alarmAudio") > 0) features << "Siren"
     if (abilityPermit(abilityChn, "supportAiPeople") > 0) features << "Person Detection"
     if (abilityPermit(abilityChn, "supportAiVehicle") > 0) features << "Vehicle Detection"
