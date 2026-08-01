@@ -1,15 +1,29 @@
 /**
  * Reolink Doorbell (Component Driver)
- * Version: 1.3.0 -- kept in sync with the parent app's version.
+ * Version: 1.3.1 -- kept in sync with the parent app's version.
  * Same delegation pattern as Reolink Camera, plus a "visitor" (button press)
  * event so Rule Machine can trigger straight off "pushed 1" for a doorbell ring,
  * separate from AI person/motion detection.
  *
+ * v1.3.1 -- Fixed a bug: this driver declares capability "PushableButton"
+ * (needed for the pushed/numberOfButtons attributes) but never implemented
+ * the push() command the capability requires. Declaring a capability adds
+ * its commands to the device page -- it does NOT auto-implement them, so
+ * clicking Push on the Commands tab (or any app/rule calling push()) threw
+ * a MissingMethodException. Added push(buttonNumber) below and routed the
+ * real doorbell-press event through it instead of duplicating the same
+ * sendEvent() call in two places.
+ * Also (still v1.3.1, app-side): fixed the app's supportedFeatures
+ * detection under-reporting a doorbell's light -- doorbells report it under
+ * supportDoorbellLight, not supportFLswitch like cameras do. No change
+ * needed in this driver file for that fix, noted here for the version
+ * history.
+ *
  * v1.3.0 -- added the supportedFeatures attribute and checkAbilities command
  * (see receiveSupportedFeatures() below), same as the camera driver. Package
- * detection's exact GetAbility field name is still being confirmed against
- * real doorbell hardware -- see the app's Tips page. No other functional
- * change from 1.2.5.
+ * detection's exact GetAbility field name (supportAiPackage) has since been
+ * confirmed against real doorbell hardware. No other functional change from
+ * 1.2.5.
  *
  * v1.2.4 -- see camera driver's 1.2.4 note -- same sendIfChanged() fix
  * applied here to cut redundant sendEvent() load on lower-spec hubs.
@@ -63,6 +77,17 @@ def checkAbilities() {
     parent?.componentCheckAbilities(this, device.deviceNetworkId)
 }
 /**
+ * Required by the PushableButton capability -- declaring the capability adds
+ * the Push command/attributes to the device page, but does NOT auto-implement
+ * this method; without it, clicking Push (or any app/rule calling push())
+ * throws MissingMethodException. Untyped buttonNumber parameter deliberately
+ * -- Hubitat's own Commands-tab test UI can pass this as a String rather than
+ * a Number, and a typed/coerced parameter would reject that.
+ */
+def push(buttonNumber) {
+    sendEvent(name: "pushed", value: buttonNumber, isStateChange: true)
+}
+/**
  * Called by the app after GetAbility, both at discovery/creation time and on
  * a manual checkAbilities command. Informational only -- see the app's Tips
  * page ("Supported Features") for what this does and doesn't mean. Does NOT
@@ -78,7 +103,7 @@ def parseReolinkState(aiState, mdState) {
     // TODO confirm the visitor/doorbell-press field name in your firmware's GetAiState/GetMdState payload
     def visitorPressed = aiState?.visitor?.alarm_state == 1
     if (visitorPressed) {
-        sendEvent(name: "pushed", value: "1", isStateChange: true)
+        push(1)
     }
     def motionActive = mdState?.state == 1
     sendIfChanged("motion", motionActive ? "active" : "inactive")
