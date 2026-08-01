@@ -1,13 +1,13 @@
 /**
  * Reolink Camera (Component Driver)
- * Version: 1.3.1 -- kept in sync with the parent app's version.
+ * Version: 1.3.2 -- kept in sync with the parent app's version.
  * Thin device: no HTTP of its own. Everything delegates to the parent app via
  * parent.componentX(this, ...). The app knows which source/channel this device
  * maps to (stored as data values sourceId/channel) and does the actual API call.
  *
- * No functional change to THIS driver from 1.3.0 -- v1.3.1's fixes are the
- * doorbell driver's missing push() command and an app-side supportedFeatures
- * fix for doorbell lighting. Version bumped here only to stay in sync.
+ * No functional change to THIS driver from 1.3.1 -- v1.3.2 is an app-side-only
+ * fix (PTZ Calibration detection false negative, see the app's version
+ * history). Version bumped here only to stay in sync.
  *
  * v1.3.0 -- added the supportedFeatures attribute and checkAbilities command
  * (see receiveSupportedFeatures() below). Populated by the app from Reolink's
