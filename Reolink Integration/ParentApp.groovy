@@ -1,6 +1,6 @@
 /**
  * Reolink Integration (Parent App)
- * Version: 1.3.1
+ * Version: 1.3.2
  *
  * Architecture notes:
  *  - A "source" is anything that answers the Reolink HTTP/JSON API: a standalone
@@ -84,6 +84,17 @@
  * same doorbell (the v1.3.0 defensive "ackage"-substring scan already
  * caught it correctly with no code change needed, kept in place as a
  * safety net for any differently-named variant).
+ *
+ * v1.3.2 -- Fixed a false negative in PTZ Calibration detection.
+ * supportPtzCalibration (the field it was gated on) reported permit:0 on
+ * Jason's Back Porch camera, but he confirmed that camera can actually be
+ * calibrated via the Reolink app -- the field was simply wrong on the exact
+ * camera the original reasoning was built from. Switched the primary signal
+ * to supportPtzCheck (the ability flag for GetPtzCheckState, the actual API
+ * checkPtzCalibrationStatus calls), which was nonzero on every PTZ camera
+ * tested and zero/absent on every non-PTZ camera -- a clean match with real
+ * calibration availability. supportPtzCalibration is now only OR'd in as a
+ * safety net, not the primary signal. See computeSupportedFeatures().
  */
 
 import groovy.transform.Field
@@ -102,7 +113,7 @@ definition(
     oauth: true // required for createAccessToken()/local endpoint access used by the snapshot relay
 )
 
-@Field static final String APP_VERSION = "1.3.1"
+@Field static final String APP_VERSION = "1.3.2"
 
 @Field static final List LOG_LEVELS = ["Errors Only", "Normal", "Full"]
 
@@ -695,10 +706,19 @@ private int abilityPermit(Map abilityChn, String key) {
  *   - PTZ: ptzCtrl > 0. The exact permit value varies by camera (1 on a
  *     pan-tilt-only E1 Pro, 7 on full PTZ cameras) but >0 vs 0 reliably
  *     splits PTZ-capable from fixed cameras every time tested.
- *   - PTZ Calibration: supportPtzCalibration > 0, checked INDEPENDENTLY of
- *     PTZ presence -- confirmed NOT implied by having PTZ (a full-PTZ camera
- *     showed permit:0 here while a lesser pan-tilt-only camera showed
- *     support for it).
+ *   - PTZ Calibration: supportPtzCheck > 0 OR supportPtzCalibration > 0.
+ *     CORRECTED: originally gated on supportPtzCalibration alone, based on
+ *     E1 Pro showing both fields agreeing (6 and 7). That reasoning was
+ *     wrong -- Jason confirmed the Back Porch camera CAN actually be
+ *     calibrated via the Reolink app in real life, despite its
+ *     supportPtzCalibration showing permit:0 -- a genuine false negative on
+ *     the exact camera that reasoning was built from. supportPtzCheck (the
+ *     ability flag for GetPtzCheckState, the actual API
+ *     checkPtzCalibrationStatus calls) was nonzero on every PTZ camera
+ *     tested and zero/absent on every non-PTZ camera -- a clean match with
+ *     real calibration availability. supportPtzCalibration is now OR'd in
+ *     only as a safety net in case some other camera has the reverse
+ *     problem, not trusted as the primary signal.
  *   - Spotlight/Light: supportFLswitch > 0 OR supportDoorbellLight > 0, NOT
  *     the top-level floodLight key -- floodLight stayed permit:0 on every
  *     device tested including ones confirmed to have a physical light;
@@ -738,7 +758,9 @@ private List<String> computeSupportedFeatures(Map abilityChn) {
     if (abilityChn == null) return []
     def features = []
     if (abilityPermit(abilityChn, "ptzCtrl") > 0) features << "PTZ"
-    if (abilityPermit(abilityChn, "supportPtzCalibration") > 0) features << "PTZ Calibration"
+    if (abilityPermit(abilityChn, "supportPtzCheck") > 0 || abilityPermit(abilityChn, "supportPtzCalibration") > 0) {
+        features << "PTZ Calibration"
+    }
     if (abilityPermit(abilityChn, "supportFLswitch") > 0 || abilityPermit(abilityChn, "supportDoorbellLight") > 0) {
         features << "Spotlight"
     }
