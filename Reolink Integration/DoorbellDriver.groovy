@@ -1,9 +1,14 @@
 /**
  * Reolink Doorbell (Component Driver)
- * Version: 1.3.1 -- kept in sync with the parent app's version.
+ * Version: 1.3.2 -- kept in sync with the parent app's version.
  * Same delegation pattern as Reolink Camera, plus a "visitor" (button press)
  * event so Rule Machine can trigger straight off "pushed 1" for a doorbell ring,
  * separate from AI person/motion detection.
+ *
+ * No functional change to THIS driver from 1.3.1 -- v1.3.2 is an app-side-only
+ * fix (PTZ Calibration detection false negative, see the app's version
+ * history; also not specific to doorbells). Version bumped here only to stay
+ * in sync.
  *
  * v1.3.1 -- Fixed a bug: this driver declares capability "PushableButton"
  * (needed for the pushed/numberOfButtons attributes) but never implemented
