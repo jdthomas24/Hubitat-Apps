@@ -1,12 +1,12 @@
 {
     "packageName": "Reolink Integration",
-    "releaseNotes": "v1.3.0 -- Discovery now runs automatically on first open (no more manual 'Run discovery now' click). Added a read-only supportedFeatures attribute (PTZ, Spotlight, Siren, Person/Vehicle/Pet Detection, etc.), populated from Reolink's GetAbility API and refreshable via a new Check Abilities command -- informational only, does not hide any commands. Clarified that local API access is unavailable for all battery-powered devices (including the Gen 2 doorbell) regardless of power source. Trimmed in-file changelog history. Also includes v1.2.5 (fixed excessive hub load from unconditional sendEvent() calls; replaced debug logging with Errors Only / Normal / Full log levels), v1.2.3 (snapshot tile fixes, self-healing scheduler, per-device poll/snapshot intervals), v1.2.2 (fixed snapshot tiles breaking on token expiry), v1.2.1 (diagnostic logging fix), and v1.2.0 (PTZ calibration support).",
+    "releaseNotes": "v1.3.1 -- Fixed a bug in the doorbell driver: it declares the PushableButton capability but never implemented the push() command, so clicking Push on the Commands tab (or any app/rule calling it) threw a MissingMethodException. Also fixed supportedFeatures under-reporting a doorbell's light -- doorbells report it under a different ability key (supportDoorbellLight) than cameras do (supportFLswitch); now checks both. Confirmed supportAiPackage as the real package-detection field name against real doorbell hardware. Also includes v1.3.0 (auto-discovery on first open, new supportedFeatures attribute from Reolink's GetAbility API, clarified battery-device docs).",
     "documentationLink": "https://github.com/jdthomas24/Hubitat-Apps-Drivers/tree/main/Reolink%20Integration",
     "communityLink": "https://github.com/jdthomas24/Hubitat-Apps-Drivers/tree/main/Reolink%20Integration",
     "author": "jdthomas24",
-    "version": "1.3.0",
+    "version": "1.3.1",
     "minimumHEVersion": "2.3.0",
-    "dateReleased": "2026-07-31",
+    "dateReleased": "2026-08-01",
     "category": "Integrations",
     "tags": "Cameras & Video",
     "apps": [
