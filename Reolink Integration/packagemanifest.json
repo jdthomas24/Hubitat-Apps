@@ -1,10 +1,10 @@
 {
     "packageName": "Reolink Integration",
-    "releaseNotes": "v1.3.1 -- Fixed a bug in the doorbell driver: it declares the PushableButton capability but never implemented the push() command, so clicking Push on the Commands tab (or any app/rule calling it) threw a MissingMethodException. Also fixed supportedFeatures under-reporting a doorbell's light -- doorbells report it under a different ability key (supportDoorbellLight) than cameras do (supportFLswitch); now checks both. Confirmed supportAiPackage as the real package-detection field name against real doorbell hardware. Also includes v1.3.0 (auto-discovery on first open, new supportedFeatures attribute from Reolink's GetAbility API, clarified battery-device docs).",
+    "releaseNotes": "v1.3.2 -- Fixed a false negative in PTZ Calibration detection: switched the primary signal from supportPtzCalibration to supportPtzCheck, which matched real calibration availability on every camera tested (supportPtzCalibration is now just a secondary safety-net check). Also includes v1.3.1 (fixed doorbell driver missing the push() command; fixed supportedFeatures under-reporting doorbell lighting; confirmed supportAiPackage as the real package-detection field).",
     "documentationLink": "https://github.com/jdthomas24/Hubitat-Apps-Drivers/tree/main/Reolink%20Integration",
     "communityLink": "https://github.com/jdthomas24/Hubitat-Apps-Drivers/tree/main/Reolink%20Integration",
     "author": "jdthomas24",
-    "version": "1.3.1",
+    "version": "1.3.2",
     "minimumHEVersion": "2.3.0",
     "dateReleased": "2026-08-01",
     "category": "Integrations",
