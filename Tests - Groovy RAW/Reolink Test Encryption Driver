@@ -1,0 +1,265 @@
+/**
+ * Reolink Encryption Test Tool (STANDALONE -- NOT part of the Reolink Integration app)
+ *
+ * ============================================================================
+ * WHAT THIS IS FOR
+ * ============================================================================
+ * One specific user's E1 Outdoor WiFi camera works fine live in the Reolink
+ * phone app, but every GetAiState/GetMdState call from our integration comes
+ * back as a garbled, unparseable response -- shaped exactly like base64 AES
+ * ciphertext. The integration currently (wrongly) reports this as the camera
+ * "going to sleep," when it's actually responding every time, just in a
+ * format we're not decoding.
+ *
+ * Documented research on a DIFFERENT Reolink camera (RLC-520A) found that
+ * some Reolink firmware encrypts local API traffic using AES-CFB-128 with a
+ * fixed IV, and an AES key derived per-session from a proper HTTP
+ * Digest-style login handshake (not the simplified single-step login our
+ * production app currently uses).
+ *
+ * This tool tests TWO things against this specific camera, independently:
+ *  1. TEST A (testSimpleLoginThenGetState) -- reproduces our current
+ *     production behavior as a baseline/control: simple login, then
+ *     GetAiState. Expected to show the same garbled response we're already
+ *     seeing in the real logs.
+ *  2. TEST B (testDigestLoginThenGetState) -- does the FULL proper login
+ *     handshake (pre-login challenge -> digest response -> derives an AES
+ *     key the same way Reolink's own web client does) and THEN calls
+ *     GetAiState. If this camera just needed the proper login to switch to
+ *     plaintext responses, this alone might fix it with no AES work needed.
+ *     If the response is STILL garbled even after a proper login, this tool
+ *     then attempts to AES-CFB decrypt it using the key derived during that
+ *     same login, to confirm whether that's the missing piece instead.
+ *
+ * Completely separate from the production app -- own login, own token, own
+ * state. Cannot affect any existing source or child device. No credentials
+ * or keys are ever logged, only response shapes/content.
+ *
+ * ============================================================================
+ * HOW TO USE
+ * ============================================================================
+ *  1. Drivers Code > New Driver > paste this in > Save.
+ *  2. Devices > Add Device > Virtual > "Reolink Encryption Test Tool" > Save.
+ *  3. Fill in Preferences: this camera's IP, port, username, password.
+ *  4. Run "Test A: Simple Login" first (the baseline/control).
+ *  5. Run "Test B: Digest Login" next.
+ *  6. Compare the two GetAiState results in Logs. If Test B comes back as
+ *     readable JSON where Test A didn't, the proper login alone fixes it.
+ *     If Test B is still garbled, check whether the "AES DECRYPT ATTEMPT"
+ *     log line right after it produced readable JSON -- if so, decryption
+ *     is the missing piece and worth building into the real app.
+ * ============================================================================
+ */
+metadata {
+    definition(name: "Reolink Encryption Test Tool", namespace: "jdthomas24", author: "Jason") {
+        capability "Actuator"
+        command "testSimpleLoginThenGetState", [[name: "TEST A (baseline/control) -- our current production login method"]]
+        command "testDigestLoginThenGetState", [[name: "TEST B -- proper digest-challenge login, then attempts AES decrypt if still garbled"]]
+    }
+    preferences {
+        input name: "host", type: "text", title: "Camera IP address"
+        input name: "port", type: "number", title: "HTTPS port", defaultValue: 443
+        input name: "username", type: "text", title: "Username"
+        input name: "password", type: "password", title: "Password"
+    }
+}
+
+def installed() {}
+def updated() {}
+
+// ============================================================================
+// TEST A -- baseline/control, mirrors the production app's current login
+// ============================================================================
+def testSimpleLoginThenGetState() {
+    log.info "===== TEST A (simple login, baseline): START ====="
+    def body = [[cmd: "Login", param: [User: [userName: username, password: password]]]]
+    def token = null
+    try {
+        httpPost([uri: loginUri(), ignoreSSLIssues: true, requestContentType: "application/json",
+                  body: groovy.json.JsonOutput.toJson(body), timeout: 10]) { resp ->
+            def raw = resp?.data?.toString()
+            def parsed = raw ? new groovy.json.JsonSlurper().parseText(raw) : null
+            token = parsed?.getAt(0)?.value?.Token?.name
+        }
+    } catch (e) {
+        log.warn "TEST A: simple login failed -- ${e.message}"
+        log.info "===== TEST A: END (login failed) ====="
+        return
+    }
+    if (!token) {
+        log.warn "TEST A: simple login returned no token"
+        log.info "===== TEST A: END (no token) ====="
+        return
+    }
+    log.info "TEST A: simple login succeeded, token acquired"
+    callGetAiStateRaw(token, "TEST A")
+    log.info "===== TEST A: END ====="
+}
+
+// ============================================================================
+// TEST B -- proper digest-challenge login + AES key derivation, then GetAiState
+// ============================================================================
+def testDigestLoginThenGetState() {
+    log.info "===== TEST B (digest login): START ====="
+
+    // Step 1: pre-login. A minimal Login request (no credentials) should make
+    // the camera respond with a WWW-Authenticate header containing a nonce,
+    // if this camera supports/requires the digest-challenge flow at all.
+    def nonce = null
+    try {
+        def preLoginBody = [[cmd: "Login", action: 0, param: [Version: 1]]]
+        httpPost([uri: loginUri(), ignoreSSLIssues: true, requestContentType: "application/json",
+                  body: groovy.json.JsonOutput.toJson(preLoginBody), timeout: 10]) { resp ->
+            log.info "TEST B: pre-login HTTP status ${resp.status}"
+            def authHeader = resp?.headers?.'WWW-Authenticate'?.toString()
+            log.info "TEST B: pre-login WWW-Authenticate header -- ${authHeader ?: '(none present)'}"
+            if (authHeader) {
+                def m = (authHeader =~ /nonce="([^"]+)"/)
+                if (m.find()) nonce = m.group(1)
+            }
+        }
+    } catch (e) {
+        log.warn "TEST B: pre-login request failed -- ${e.message}"
+    }
+
+    if (!nonce) {
+        log.warn "TEST B: no nonce found in pre-login response -- this camera may not support/require the " +
+            "digest-challenge flow, or the header shape differs from what was expected. Cannot continue Test B."
+        log.info "===== TEST B: END (no nonce) ====="
+        return
+    }
+    log.info "TEST B: nonce obtained from pre-login challenge"
+
+    // Step 2: build the digest response and a client cnonce, derive the AES
+    // key the same way, then send the real login.
+    def cnonce = randomHex(48)
+    def realm = "IPC"
+    def method = "POST"
+    def uri = "cgi-bin/api.cgi?cmd=Login"
+    def nc = "00000001"
+    def qop = "auth"
+
+    def ha1 = md5Hex("${username}:${realm}:${password}")
+    def ha2 = md5Hex("${method}:${uri}")
+    def digestResponse = md5Hex("${ha1}:${nonce}:${nc}:${cnonce}:${qop}:${ha2}")
+
+    def loginBody = [[cmd: "Login", action: 0, param: [
+        Version: 1,
+        Digest: [
+            UserName: username, Realm: realm, Method: method, Uri: uri,
+            Nonce: nonce, Nc: nc, Cnonce: cnonce, Qop: qop, Response: digestResponse
+        ]
+    ]]]
+
+    def token = null
+    try {
+        httpPost([uri: loginUri(), ignoreSSLIssues: true, requestContentType: "application/json",
+                  body: groovy.json.JsonOutput.toJson(loginBody), timeout: 10]) { resp ->
+            def raw = resp?.data?.toString()
+            log.info "TEST B: digest login raw response -- ${raw?.take(300)}"
+            try {
+                def parsed = new groovy.json.JsonSlurper().parseText(raw)
+                token = parsed?.getAt(0)?.value?.Token?.name
+            } catch (e) {
+                log.info "TEST B: digest login response wasn't parseable JSON -- possibly ALSO encrypted, " +
+                    "unlike the simple-login case (see app comment)"
+            }
+        }
+    } catch (e) {
+        log.warn "TEST B: digest login request failed -- ${e.message}"
+    }
+
+    if (!token) {
+        log.warn "TEST B: digest login did not yield a usable token, cannot continue to GetAiState"
+        log.info "===== TEST B: END (login failed) ====="
+        return
+    }
+    log.info "TEST B: digest login succeeded, token acquired"
+
+    // Derive the AES key the same way Reolink's own web client does, in case
+    // the follow-up call is still encrypted and this is needed to read it.
+    def keyHex = md5Hex("${nonce}-${password}-${cnonce}")
+    def aesKeyBytes = keyHex.substring(0, 16).getBytes("UTF-8")
+
+    def rawState = callGetAiStateRaw(token, "TEST B")
+    if (rawState && looksLikeBase64Ciphertext(rawState)) {
+        log.info "TEST B: response still looks encrypted after digest login -- attempting AES-CFB decrypt " +
+            "with the key derived during this same login"
+        attemptAesDecrypt(rawState, aesKeyBytes)
+    }
+
+    log.info "===== TEST B: END ====="
+}
+
+// ============================================================================
+// Shared helpers
+// ============================================================================
+
+private String loginUri() {
+    "https://${host}:${port}/cgi-bin/api.cgi?cmd=Login"
+}
+
+/** Calls GetAiState with the given token and logs the raw response. Returns the raw response body string. */
+private String callGetAiStateRaw(String token, String label) {
+    def uri = "https://${host}:${port}/cgi-bin/api.cgi?cmd=GetAiState&token=${token}"
+    def body = [[cmd: "GetAiState", action: 0, param: [channel: 0]]]
+    String raw = null
+    try {
+        httpPost([uri: uri, ignoreSSLIssues: true, requestContentType: "application/json",
+                  body: groovy.json.JsonOutput.toJson(body), timeout: 10]) { resp ->
+            raw = resp?.data?.toString()
+        }
+        log.info "${label}: GetAiState raw response -- ${raw}"
+        try {
+            new groovy.json.JsonSlurper().parseText(raw)
+            log.info "${label}: GetAiState response IS valid, readable JSON"
+        } catch (e) {
+            log.info "${label}: GetAiState response is NOT valid JSON (${e.message}) -- looks encrypted/garbled"
+        }
+    } catch (e) {
+        log.warn "${label}: GetAiState request failed -- ${e.message}"
+    }
+    return raw
+}
+
+/** Rough heuristic: does this look like base64 ciphertext rather than plain JSON/garbage? */
+private boolean looksLikeBase64Ciphertext(String s) {
+    if (!s || s.trim().startsWith("[") || s.trim().startsWith("{")) return false
+    return s.trim() ==~ /^[A-Za-z0-9+\/=\r\n]+$/
+}
+
+/** Attempts AES-CFB-128 decryption using the fixed IV documented for Reolink's web client. Logs the result either way. */
+private void attemptAesDecrypt(String base64Body, byte[] keyBytes) {
+    try {
+        def ivBytes = "bcswebapp1234567".getBytes("UTF-8")
+        def cipher = javax.crypto.Cipher.getInstance("AES/CFB/NoPadding")
+        def keySpec = new javax.crypto.spec.SecretKeySpec(keyBytes, "AES")
+        def ivSpec = new javax.crypto.spec.IvParameterSpec(ivBytes)
+        cipher.init(javax.crypto.Cipher.DECRYPT_MODE, keySpec, ivSpec)
+        def cipherBytes = base64Body.trim().decodeBase64()
+        def plainBytes = cipher.doFinal(cipherBytes)
+        def plainText = new String(plainBytes, "UTF-8")
+        log.info "AES DECRYPT ATTEMPT: raw decrypted text -- ${plainText}"
+        try {
+            new groovy.json.JsonSlurper().parseText(plainText.trim())
+            log.info "AES DECRYPT ATTEMPT: decrypted text IS valid JSON -- decryption scheme confirmed working!"
+        } catch (e) {
+            log.info "AES DECRYPT ATTEMPT: decrypted text is not valid JSON on its own (${e.message}) -- " +
+                "may have trailing padding bytes, or the key/IV assumptions don't match this camera/firmware"
+        }
+    } catch (e) {
+        log.warn "AES DECRYPT ATTEMPT failed -- ${e.message}"
+    }
+}
+
+private String md5Hex(String input) {
+    def digest = java.security.MessageDigest.getInstance("MD5")
+    def bytes = digest.digest(input.getBytes("UTF-8"))
+    return bytes.collect { String.format("%02x", it) }.join()
+}
+
+private String randomHex(int length) {
+    def chars = "0123456789abcdef"
+    def r = new Random()
+    return (1..length).collect { chars[r.nextInt(chars.length())] }.join()
+}
