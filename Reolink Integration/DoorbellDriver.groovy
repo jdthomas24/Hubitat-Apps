@@ -1,6 +1,9 @@
 /**
  * Reolink Doorbell (Component Driver)
- * Version: 1.3.2 -- kept in sync with the parent app's version.
+ * Version: 1.3.3 -- kept in sync with the parent app's version. No functional
+ * change to this driver -- v1.3.3 is app-side only (retry-on-parse-failure
+ * fix and new Tips docs for a known older-firmware bug). Version bumped
+ * here only to stay in sync.
  * Same delegation pattern as Reolink Camera, plus a "visitor" (button press)
  * event so Rule Machine can trigger straight off "pushed 1" for a doorbell ring,
  * separate from AI person/motion detection.
