@@ -1,12 +1,12 @@
 {
     "packageName": "Reolink Integration",
-    "releaseNotes": "v1.3.2 -- Fixed a false negative in PTZ Calibration detection: switched the primary signal from supportPtzCalibration to supportPtzCheck, which matched real calibration availability on every camera tested (supportPtzCalibration is now just a secondary safety-net check). Also includes v1.3.1 (fixed doorbell driver missing the push() command; fixed supportedFeatures under-reporting doorbell lighting; confirmed supportAiPackage as the real package-detection field).",
+    "releaseNotes": "v1.3.3 -- Fixes for a known older-firmware bug affecting some E1-series cameras (~2021-era firmware): the camera's web server intermittently returns corrupted/garbled data instead of a real response, which the app previously reported as the device being asleep. Now retries once automatically with the same session when this specific failure is detected, reducing false 'asleep' reports. Added a Tips page section explaining the bug, how to recognize it, and remediation steps (toggle HTTP/HTTPS + reboot, or a firmware update via Reolink). Also includes v1.3.2 (fixed a false negative in PTZ Calibration detection) and v1.3.1 (fixed doorbell driver missing the push() command; fixed supportedFeatures under-reporting doorbell lighting).",
     "documentationLink": "https://github.com/jdthomas24/Hubitat-Apps-Drivers/tree/main/Reolink%20Integration",
     "communityLink": "https://github.com/jdthomas24/Hubitat-Apps-Drivers/tree/main/Reolink%20Integration",
     "author": "jdthomas24",
-    "version": "1.3.2",
+    "version": "1.3.3",
     "minimumHEVersion": "2.3.0",
-    "dateReleased": "2026-08-01",
+    "dateReleased": "2026-08-02",
     "category": "Integrations",
     "tags": "Cameras & Video",
     "apps": [
