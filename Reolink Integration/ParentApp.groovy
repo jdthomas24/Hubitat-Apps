@@ -199,7 +199,24 @@ def mainPage() {
                 "minutes</b> -- Errors Only and Normal have no timer, since neither is noisy enough to need one."
         }
         section {
-            href name: "tips", title: "Tips, limitations & what works so far", page: "tipsPage"
+            href name: "tips", title: "Tips, limitations & what works so far", page: "tipsPage",
+                description: "Troubleshooting, known device quirks, and confirmed capabilities"
+        }
+        section("<b>Help & Support</b>") {
+            paragraph rawHtml: true, """
+<div style='padding:4px 0;'>
+  <a href='https://community.hubitat.com/t/release-reolink-integration-cameras-doorbells-nvrs-home-hubs/165352' target='_blank'
+     style='display:block; background:#f8f8f8; border:1px solid #ddd; border-radius:6px; padding:10px 14px; text-decoration:none; color:#333; margin-bottom:6px;'>
+    <span style='font-size:14px;'>\uD83D\uDCAC <b>Hubitat Community Thread</b></span><br>
+    <span style='font-size:12px; color:#888;'>Questions, feedback, bug reports, and release notes</span>
+  </a>
+  <a href='https://www.paypal.com/paypalme/jdthomas24?locale.x=en_US&country.x=US' target='_blank'
+     style='display:block; background:#f8f8f8; border:1px solid #ddd; border-radius:6px; padding:10px 14px; text-decoration:none; color:#333;'>
+    <span style='font-size:14px;'>\u2615 <b>Buy Me a Coffee</b></span><br>
+    <span style='font-size:12px; color:#888;'>Enjoying the app? Any amount is appreciated -- thank you!</span>
+  </a>
+</div>
+"""
         }
         section {
             paragraph "<div style='text-align:center;color:#999;font-size:11px;margin-top:10px;'>" +
