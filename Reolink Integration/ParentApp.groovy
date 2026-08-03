@@ -1,6 +1,6 @@
 /**
  * Reolink Integration (Parent App)
- * Version: 1.3.2
+ * Version: 1.3.3
  *
  * Architecture notes:
  *  - A "source" is anything that answers the Reolink HTTP/JSON API: a standalone
@@ -95,6 +95,31 @@
  * tested and zero/absent on every non-PTZ camera -- a clean match with real
  * calibration availability. supportPtzCalibration is now only OR'd in as a
  * safety net, not the primary signal. See computeSupportedFeatures().
+ *
+ * v1.3.3 -- Two related fixes for a known older-firmware bug (documented
+ * independently on Reddit and in Reolink's own support docs: some E1-series
+ * cameras on ~2021-era firmware have a buggy web server that intermittently
+ * returns corrupted/garbled data instead of a real response, due to a
+ * buffer-handling issue -- not encryption, not a real connectivity problem).
+ * Confirmed via extensive real-device testing: several "garbled" responses
+ * captured were BYTE-FOR-BYTE IDENTICAL across completely different login
+ * sessions hours apart, which genuine per-session encryption could never
+ * produce -- ruling out an earlier encryption hypothesis in favor of this
+ * firmware bug explanation.
+ *  1. doReolinkApiCall() now distinguishes a JSON parse failure (the bug --
+ *     HTTP succeeded, body wasn't valid JSON) from other exceptions (network
+ *     failures, timeouts) via groovy.json.JsonException specifically.
+ *     reolinkApiCall() retries once immediately with the SAME token (not a
+ *     fresh login -- confirmed this isn't an auth problem) when a parse
+ *     failure is flagged, since real-world testing showed a second attempt
+ *     right after a failed one often succeeds. Reduces (but does not fully
+ *     eliminate, since the underlying bug is intermittent) how often an
+ *     affected camera gets wrongly reported as asleep.
+ *  2. Added a new Tips page section documenting the bug, how to recognize
+ *     it (Full-level logs show parse errors, not timeouts), and remediation
+ *     steps in order of effort: toggle HTTP/HTTPS off/on + reboot the camera
+ *     first, then a firmware update via Reolink's Download Center or a
+ *     support request if that doesn't resolve it.
  */
 
 import groovy.transform.Field
@@ -113,7 +138,7 @@ definition(
     oauth: true // required for createAccessToken()/local endpoint access used by the snapshot relay
 )
 
-@Field static final String APP_VERSION = "1.3.2"
+@Field static final String APP_VERSION = "1.3.3"
 
 @Field static final List LOG_LEVELS = ["Errors Only", "Normal", "Full"]
 
@@ -271,6 +296,25 @@ def tipsPage() {
                 "no response, which points to a real connectivity or load issue worth investigating."
             paragraph "Motion/person/vehicle/etc. keep their last-known value when this happens, rather than " +
                 "resetting to inactive."
+        }
+        section {
+            paragraph pillHeader("Known older-firmware bug: false 'asleep' from garbled responses")
+            paragraph "⚠️ Some E1-series cameras on ~2021-era firmware (e.g. build 21120806, v3.0.0.748) have a " +
+                "known bug where the camera's web server intermittently returns corrupted/garbled data instead " +
+                "of a real response -- not encryption, not a real connectivity problem, just bad data back from " +
+                "the camera itself. This app can't tell that apart from a genuinely unreachable device, so it " +
+                "gets reported as <b>asleep</b> even though the camera is actually online and responding."
+            paragraph "How to tell: if a wired/PoE device keeps flipping to asleep with no real pattern, and Full " +
+                "logging shows parse errors on GetAiState/GetMdState rather than plain timeouts, this is likely " +
+                "it rather than an actual network issue."
+            paragraph "Confirmed via a 2021-firmware E1 Outdoor -- newer firmware (e.g. 2024-era, v3.1.0.3429) on " +
+                "the same camera line does not show this problem."
+            paragraph "Two things worth trying, in order: (1) In the Reolink app, turn off HTTP/HTTPS under this " +
+                "camera's Network settings, reboot the camera, then turn HTTP/HTTPS back on -- this reinitializes " +
+                "the camera's web server and can clear it up without a firmware change. (2) If that doesn't help, " +
+                "check for a firmware update for this exact camera/hardware version via the Reolink desktop app's " +
+                "Download Center, or contact Reolink support directly with your model and firmware version. When " +
+                "updating, avoid any 'reset configuration' option unless you actually want to reset the camera."
         }
         section {
             paragraph pillHeader("PTZ")
@@ -581,6 +625,17 @@ def reolinkApiCall(sourceId, String cmd, Map param = [:], Integer channel = null
         if (freshToken) {
             outcome = doReolinkApiCall(src, sourceId, cmd, freshToken, param, channel)
         }
+    } else if (outcome.value == null && outcome.parseFailure) {
+        // Known bug on some older firmware (e.g. 2021-era E1 -- see Tips page):
+        // the camera's web server intermittently returns corrupted/garbled data
+        // instead of a real response, NOT an auth problem, so a fresh LOGIN
+        // wouldn't help -- confirmed via real-world testing that an immediate
+        // retry of the SAME call often succeeds right after a failed one. Retry
+        // once with the same token before giving up; if it fails again, this
+        // poll cycle reports no response as usual.
+        logNormal "Reolink source ${sourceId}: ${cmd} (ch ${channel}) returned unparseable data (known older-firmware " +
+            "bug, see Tips page), retrying once immediately"
+        outcome = doReolinkApiCall(src, sourceId, cmd, token, param, channel)
     }
     return outcome.value
 }
@@ -600,10 +655,18 @@ private Map doReolinkApiCall(src, sourceId, String cmd, String token, Map param,
         } else {
             logFull "Reolink source ${sourceId}: ${cmd} (ch ${channel}) succeeded"
         }
-        return [value: value, rspCode: rspCode]
+        return [value: value, rspCode: rspCode, parseFailure: false]
+    } catch (groovy.json.JsonException e) {
+        // Distinguished from other exceptions below -- this specific exception
+        // type means the HTTP call itself succeeded but the body wasn't valid
+        // JSON (the known older-firmware garbled-response bug). Flagged so the
+        // caller can retry without forcing a fresh login, which wouldn't help
+        // for this specific failure mode.
+        log.warn "Reolink cmd ${cmd} failed for source ${sourceId} ch ${channel}: ${e.message}"
+        return [value: null, rspCode: null, parseFailure: true]
     } catch (e) {
         log.warn "Reolink cmd ${cmd} failed for source ${sourceId} ch ${channel}: ${e.message}"
-        return [value: null, rspCode: null]
+        return [value: null, rspCode: null, parseFailure: false]
     }
 }
 
