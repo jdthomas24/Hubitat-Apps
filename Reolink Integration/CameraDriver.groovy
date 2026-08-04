@@ -1,6 +1,6 @@
 /**
  * Reolink Camera (Component Driver)
- * Version: 1.3.3 -- kept in sync with the parent app's version. No functional
+ * Version: 1.3.4 -- kept in sync with the parent app's version. No functional
  * change to this driver -- v1.3.3 is app-side only (retry-on-parse-failure
  * fix and new Tips docs for a known older-firmware bug). Version bumped
  * here only to stay in sync.
@@ -16,15 +16,6 @@
  * (see receiveSupportedFeatures() below). Populated by the app from Reolink's
  * GetAbility API, informational only -- see the app's Tips page for details.
  * No other functional change from 1.2.5.
- *
- * v1.2.4 -- parseReolinkState()/markAsleep() now only call sendEvent() when
- * a value actually changed, instead of unconditionally on every poll. Found
- * after a user on a lower-spec hub (base C-8, vs. a C-8 Pro on the hub this
- * was developed against) hit repeated "excessive hub load" errors on this
- * method -- 6 unconditional sendEvent() calls every poll (every 3s on a
- * wired camera) is real, avoidable load, more likely to trip Hubitat's
- * governor on a hub with less headroom. See sendIfChanged() below.
- */
 metadata {
     definition(name: "Reolink Camera", namespace: "jdthomas24", author: "Jason", component: true) {
         capability "Motion Sensor"
