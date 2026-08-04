@@ -1,12 +1,12 @@
 {
     "packageName": "Reolink Integration",
-    "releaseNotes": "v1.3.3 -- Fixes for a known older-firmware bug affecting some E1-series cameras (~2021-era firmware): the camera's web server intermittently returns corrupted/garbled data instead of a real response, which the app previously reported as the device being asleep. Now retries once automatically with the same session when this specific failure is detected, reducing false 'asleep' reports. Added a Tips page section explaining the bug, how to recognize it, and remediation steps (toggle HTTP/HTTPS + reboot, or a firmware update via Reolink). Also includes v1.3.2 (fixed a false negative in PTZ Calibration detection) and v1.3.1 (fixed doorbell driver missing the push() command; fixed supportedFeatures under-reporting doorbell lighting).",
+    "releaseNotes": "v1.3.4 -- Fixed connectivity-failure log spam: a single source going unreachable previously logged 2-3 separate warnings every poll cycle for as long as the outage lasted (dozens of near-identical lines for one ongoing problem). Now only the transition into/out of unreachable logs a warning; Full-tier logging still shows every attempt for active troubleshooting. Also added a Help & Support section to the main page (community thread link, support link). Also includes v1.3.3 (retry-once on a known older-firmware bug that intermittently returns garbled data instead of a real response, reducing false 'asleep' reports; new Tips page section documenting it) and v1.3.2 (fixed a false negative in PTZ Calibration detection).",
     "documentationLink": "https://github.com/jdthomas24/Hubitat-Apps-Drivers/tree/main/Reolink%20Integration",
     "communityLink": "https://github.com/jdthomas24/Hubitat-Apps-Drivers/tree/main/Reolink%20Integration",
     "author": "jdthomas24",
-    "version": "1.3.3",
+    "version": "1.3.4",
     "minimumHEVersion": "2.3.0",
-    "dateReleased": "2026-08-02",
+    "dateReleased": "2026-08-04",
     "category": "Integrations",
     "tags": "Cameras & Video",
     "apps": [
