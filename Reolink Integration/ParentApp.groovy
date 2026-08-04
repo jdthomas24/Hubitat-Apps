@@ -1,6 +1,6 @@
 /**
  * Reolink Integration (Parent App)
- * Version: 1.3.3
+ * Version: 1.3.4
  *
  * Architecture notes:
  *  - A "source" is anything that answers the Reolink HTTP/JSON API: a standalone
@@ -120,6 +120,22 @@
  *     steps in order of effort: toggle HTTP/HTTPS off/on + reboot the camera
  *     first, then a firmware update via Reolink's Download Center or a
  *     support request if that doesn't resolve it.
+ *
+ * v1.3.4 -- Two fixes:
+ *  1. Fixed connectivity-failure log spam. A single source going unreachable
+ *     (host down, network issue) previously logged 2-3 separate warnings per
+ *     poll cycle (raw POST failure, a confusing secondary "Cannot invoke
+ *     getAt() on null" from trying to parse a response that never arrived,
+ *     and "no token available") -- and repeated that full cascade every
+ *     poll for as long as the outage lasted, producing dozens of
+ *     near-identical warnings for one ongoing problem. Added
+ *     markSourceUnreachable()/markSourceReachable(), which gate on a
+ *     per-source state flag so only the TRANSITION into/out of unreachable
+ *     logs a warning -- same "log transitions, not steady state" idea as
+ *     sleepStatus/sendIfChanged elsewhere in this app. Full-tier logging
+ *     still shows every individual attempt for active troubleshooting.
+ *  2. Added a Battery-Monitor-style "Help & Support" section to the main
+ *     page: Hubitat Community Thread link and a Buy Me a Coffee link.
  */
 
 import groovy.transform.Field
@@ -138,7 +154,7 @@ definition(
     oauth: true // required for createAccessToken()/local endpoint access used by the snapshot relay
 )
 
-@Field static final String APP_VERSION = "1.3.3"
+@Field static final String APP_VERSION = "1.3.4"
 
 @Field static final List LOG_LEVELS = ["Errors Only", "Normal", "Full"]
 
@@ -559,6 +575,7 @@ def removeSource(id) {
         deleteChildDevice(it.deviceNetworkId)
     }
     state.sources.removeAll { it.id == (id as Integer) }
+    state.sourceUnreachable?.remove(id.toString())
     logNormal "Removed source ${id}"
 }
 
@@ -580,6 +597,13 @@ private String reolinkLogin(sourceId) {
     logFull "Reolink source ${sourceId}: cached token missing/expired, logging in fresh"
     def body = [[cmd: "Login", param: [User: [userName: src.username, password: src.password]]]]
     def resp = reolinkRawPost(src, body)
+    if (resp == null) {
+        // reolinkRawPost() already logged (or suppressed, if this source is
+        // already known-unreachable) the underlying connection failure --
+        // nothing more to log here, and nothing to parse out of a response
+        // that never arrived.
+        return null
+    }
     def first = firstResultValue(resp, src)
     def token = first?.Token?.name
     def leaseSec = (first?.Token?.leaseTime ?: 3600) as Integer
@@ -587,6 +611,7 @@ private String reolinkLogin(sourceId) {
     src.token = token
     src.tokenExpires = now() + (leaseSec * 1000L) - 30000L
     logNormal "Reolink source ${sourceId}: new token acquired, leaseTime=${leaseSec}s"
+    markSourceReachable(sourceId)
     return token
 }
 
@@ -609,7 +634,7 @@ private reolinkRawPost(src, bodyList) {
     try {
         httpPost(params) { resp -> result = parseReolinkResponse(resp) }
     } catch (e) {
-        log.warn "Reolink POST failed for source ${src.id} (${src.host}): ${e.message}"
+        markSourceUnreachable(src.id, "POST failed (${src.host}): ${e.message}")
     }
     return result
 }
@@ -619,11 +644,51 @@ private parseReolinkResponse(resp) {
     return raw ? new groovy.json.JsonSlurper().parseText(raw) : null
 }
 
+/**
+ * A source going unreachable (host down, network issue, etc.) is ONE
+ * condition, not a fresh event every poll cycle -- but before this, every
+ * layer that touched the failure (the raw POST, the "no token" abort, the
+ * response-shape parse) logged its own warning independently, every single
+ * poll, for as long as the outage lasted. A camera down for a few minutes
+ * could produce dozens of near-identical warnings.
+ *
+ * These two helpers gate on a per-source state flag so only the TRANSITION
+ * into/out of unreachable gets logged -- same "log transitions, not steady
+ * state" idea as sleepStatus/sendIfChanged elsewhere in this app. Full-tier
+ * logging still shows every individual attempt via the existing logFull()
+ * calls elsewhere, for anyone actively troubleshooting.
+ */
+private void markSourceUnreachable(sourceId, String reason) {
+    def map = state.sourceUnreachable ?: [:]
+    def key = sourceId.toString()
+    if (map[key] != true) {
+        log.warn "Reolink source ${sourceId}: ${reason} -- further identical warnings for this source are " +
+            "suppressed until it recovers (switch to Full logging to see every attempt)"
+        map[key] = true
+        state.sourceUnreachable = map
+    } else {
+        logFull "Reolink source ${sourceId}: still unreachable -- ${reason}"
+    }
+}
+
+private void markSourceReachable(sourceId) {
+    def map = state.sourceUnreachable ?: [:]
+    def key = sourceId.toString()
+    if (map[key] == true) {
+        logNormal "Reolink source ${sourceId}: connection restored"
+        map[key] = false
+        state.sourceUnreachable = map
+    }
+}
+
 def reolinkApiCall(sourceId, String cmd, Map param = [:], Integer channel = null) {
     def src = getSource(sourceId)
     def token = reolinkLogin(sourceId)
     if (!token) {
-        log.warn "Reolink source ${sourceId}: no token available, aborting ${cmd}"
+        // Login already logged (or suppressed) the actual connection failure
+        // above -- this is just the downstream consequence, not a new fact,
+        // so it only needs Full-tier visibility, not its own warning.
+        logFull "Reolink source ${sourceId}: no token available, aborting ${cmd}"
         return null
     }
 
@@ -672,17 +737,20 @@ private Map doReolinkApiCall(src, sourceId, String cmd, String token, Map param,
         } else {
             logFull "Reolink source ${sourceId}: ${cmd} (ch ${channel}) succeeded"
         }
+        markSourceReachable(sourceId)
         return [value: value, rspCode: rspCode, parseFailure: false]
     } catch (groovy.json.JsonException e) {
         // Distinguished from other exceptions below -- this specific exception
         // type means the HTTP call itself succeeded but the body wasn't valid
-        // JSON (the known older-firmware garbled-response bug). Flagged so the
-        // caller can retry without forcing a fresh login, which wouldn't help
-        // for this specific failure mode.
+        // JSON (the known older-firmware garbled-response bug, not a
+        // connectivity issue). Always logged, not suppressed -- it's
+        // intermittent by nature rather than a sustained outage, so it
+        // doesn't produce the same repeated-spam problem, and each
+        // occurrence is genuinely useful for the Tips-page troubleshooting.
         log.warn "Reolink cmd ${cmd} failed for source ${sourceId} ch ${channel}: ${e.message}"
         return [value: null, rspCode: null, parseFailure: true]
     } catch (e) {
-        log.warn "Reolink cmd ${cmd} failed for source ${sourceId} ch ${channel}: ${e.message}"
+        markSourceUnreachable(sourceId, "cmd ${cmd} (ch ${channel}) failed: ${e.message}")
         return [value: null, rspCode: null, parseFailure: false]
     }
 }
@@ -1253,7 +1321,7 @@ private byte[] fetchSnapshotBytes(src, sourceId, channel) {
     def token = reolinkLogin(sourceId)
     def bytes = doFetchSnapshot(src, sourceId, token, channel)
     if (bytes == null) {
-        logNormal "Reolink source ${sourceId} ch ${channel}: snapshot fetch failed, forcing re-login and retrying once"
+        logFull "Reolink source ${sourceId} ch ${channel}: snapshot fetch failed, forcing re-login and retrying once"
         src.token = null
         src.tokenExpires = 0
         def freshToken = reolinkLogin(sourceId)
@@ -1292,7 +1360,7 @@ private byte[] doFetchSnapshot(src, sourceId, token, channel) {
             }
         }
     } catch (e) {
-        log.warn "Reolink snapshot fetch failed for source ${sourceId} ch ${channel}: ${e.message}"
+        markSourceUnreachable(sourceId, "snapshot fetch (ch ${channel}) failed: ${e.message}")
     }
     return result
 }
