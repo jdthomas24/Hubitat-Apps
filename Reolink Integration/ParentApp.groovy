@@ -134,6 +134,11 @@
  *     logs a warning -- same "log transitions, not steady state" idea as
  *     sleepStatus/sendIfChanged elsewhere in this app. Full-tier logging
  *     still shows every individual attempt for active troubleshooting.
+ *     The "connection restored" message uses log.info (always visible),
+ *     matching the always-visible log.warn used for "went unreachable" --
+ *     it originally used logNormal(), gated behind the Normal/Full logging
+ *     tier, so at the default Errors Only level a source would silently
+ *     recover with no matching log line for the outage warning it did show.
  *  2. Added a Battery-Monitor-style "Help & Support" section to the main
  *     page: Hubitat Community Thread link and a Buy Me a Coffee link.
  */
@@ -675,7 +680,7 @@ private void markSourceReachable(sourceId) {
     def map = state.sourceUnreachable ?: [:]
     def key = sourceId.toString()
     if (map[key] == true) {
-        logNormal "Reolink source ${sourceId}: connection restored"
+        log.info "Reolink source ${sourceId}: connection restored"
         map[key] = false
         state.sourceUnreachable = map
     }
