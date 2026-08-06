@@ -134,7 +134,7 @@ def testWebhookFlow() {
     state.nonce = null
     state.stage = "CONNECTING"
     try {
-        interfaces.rawSocket.connect(host, port as int, byteInterface: false)
+        interfaces.rawSocket.connect(host, port as int, byteInterface: true)
         log.info "Socket connect requested to ${host}:${port}"
     } catch (e) {
         log.warn "===== TEST WEBHOOK FLOW: FAILED to open socket -- ${e.message} ====="
