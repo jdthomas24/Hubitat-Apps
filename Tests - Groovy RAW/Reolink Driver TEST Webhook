@@ -317,21 +317,51 @@ private void processBuffer() {
 private String decryptBody(String bodyHex, String encTypeMarker, int chId) {
     if (!bodyHex) return ""
     byte[] bodyBytes = hexToBytes(bodyHex)
+
+    // Try whichever cipher the marker suggests first.
+    String result = null
     try {
         if (encTypeMarker in ["01dd", "12dd"]) {
-            return new String(xorBaichuan(bodyBytes, chId), "UTF-8")
+            result = new String(xorBaichuan(bodyBytes, chId), "UTF-8")
         } else if (encTypeMarker in ["02dd", "03dd"]) {
-            return new String(aesDecrypt(bodyBytes), "UTF-8")
+            result = new String(aesDecrypt(bodyBytes), "UTF-8")
         } else if (encTypeMarker == "00dd") {
-            return new String(bodyBytes, "UTF-8")
-        } else {
-            log.warn "Unknown encryption type marker '${encTypeMarker}' on received message"
-            return ""
+            result = new String(bodyBytes, "UTF-8")
         }
     } catch (e) {
-        log.warn "Failed to decrypt/decode response body (marker ${encTypeMarker}): ${e.message}"
-        return ""
+        log.debug "Primary decryption attempt (marker ${encTypeMarker}) threw: ${e.message}"
+        result = null
     }
+
+    if (result?.trim()?.startsWith("<?xml")) {
+        return result
+    }
+
+    // Marker was unrecognized, or the indicated cipher didn't yield valid XML --
+    // same defensive fallback the reference library itself uses: try the OTHER
+    // cipher before giving up. Post-login, AES is the default expectation, so
+    // try that first if we haven't already, then Baichuan-XOR.
+    if (encTypeMarker != "02dd" && encTypeMarker != "03dd") {
+        try {
+            def aesTry = new String(aesDecrypt(bodyBytes), "UTF-8")
+            if (aesTry?.trim()?.startsWith("<?xml")) {
+                log.debug "Marker '${encTypeMarker}' was unrecognized/wrong, but AES fallback decryption succeeded"
+                return aesTry
+            }
+        } catch (e) { /* fall through */ }
+    }
+    if (encTypeMarker != "01dd" && encTypeMarker != "12dd") {
+        try {
+            def bcTry = new String(xorBaichuan(bodyBytes, chId), "UTF-8")
+            if (bcTry?.trim()?.startsWith("<?xml")) {
+                log.debug "Marker '${encTypeMarker}' was unrecognized/wrong, but Baichuan-XOR fallback decryption succeeded"
+                return bcTry
+            }
+        } catch (e) { /* fall through */ }
+    }
+
+    log.warn "Unable to decrypt response body with any known cipher (marker was '${encTypeMarker}') -- raw hex: ${bodyHex.take(200)}"
+    return ""
 }
 
 // ============================================================================
