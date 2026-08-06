@@ -1,9 +1,11 @@
 /**
  * Reolink Doorbell (Component Driver)
- * Version: 1.3.4 -- kept in sync with the parent app's version. No functional
- * change to this driver -- v1.3.3 is app-side only (retry-on-parse-failure
- * fix and new Tips docs for a known older-firmware bug). Version bumped
- * here only to stay in sync.
+ * Version: 1.3.5 -- kept in sync with the parent app's version. No functional
+ * change to this driver -- v1.3.5's changes (capability-detection
+ * corrections: doorbell light re-mapped to a new "Status LED" feature
+ * instead of Spotlight, new "Night Vision" feature, permit-or-ver ability
+ * lookup, confirmed battery field name) are all app-side or in
+ * CameraDriver. Version bumped here only to stay in sync.
  * Same delegation pattern as Reolink Camera, plus a "visitor" (button press)
  * event so Rule Machine can trigger straight off "pushed 1" for a doorbell ring,
  * separate from AI person/motion detection.
@@ -136,3 +138,4 @@ def markAsleep() {
 def receiveSnapshotUrl(url) {
     sendEvent(name: "snapshotUrl", value: url)
 }
+
