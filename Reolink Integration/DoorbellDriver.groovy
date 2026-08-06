@@ -138,4 +138,3 @@ def markAsleep() {
 def receiveSnapshotUrl(url) {
     sendEvent(name: "snapshotUrl", value: url)
 }
-
