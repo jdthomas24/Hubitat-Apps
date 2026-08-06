@@ -1,6 +1,6 @@
 /**
  * Reolink Integration (Parent App)
- * Version: 1.3.4
+ * Version: 1.3.5
  *
  * Architecture notes:
  *  - A "source" is anything that answers the Reolink HTTP/JSON API: a standalone
@@ -141,6 +141,32 @@
  *     recover with no matching log line for the outage warning it did show.
  *  2. Added a Battery-Monitor-style "Help & Support" section to the main
  *     page: Hubitat Community Thread link and a Buy Me a Coffee link.
+ *
+ * v1.3.5 -- Capability-detection corrections and additions, cross-checked
+ * against Reolink's own officially-backed reolink_aio library:
+ *  1. CORRECTED a mistake from v1.3.1: supportDoorbellLight was folded into
+ *     the Spotlight feature gate based on real hardware showing it nonzero
+ *     on a doorbell with a light -- but that doorbell's only lights are IR
+ *     night vision and a button/ring status light, no true spotlight.
+ *     Confirmed via reolink_aio that this key actually governs the
+ *     status/ring indicator LED, not illumination. Split into its own
+ *     "Status LED" feature, removed from Spotlight.
+ *  2. Added "Night Vision" feature (ledControl > 0) -- a real prior gap,
+ *     field found via reolink_aio, confirmed against a real doorbell.
+ *  3. Added floodLight back into the Spotlight OR chain as a defensive
+ *     fallback alongside supportFLswitch, matching reolink_aio's own logic,
+ *     even though floodLight alone has stayed unreliable on every device
+ *     tested so far.
+ *  4. abilityPermit() now checks both the "permit" and "ver" sub-fields of
+ *     every GetAbility entry (previously permit only). reolink_aio checks
+ *     ver exclusively; these move together on every field tested except
+ *     ptzType, where permit stays 0 on confirmed PTZ cameras but ver
+ *     correctly shows nonzero -- avoided in our case by keying PTZ presence
+ *     off ptzCtrl instead, but checking both closes off the same risk for
+ *     any other field not yet tested against divergent hardware.
+ *  5. Confirmed (not a guess) the battery percentage field name via
+ *     reolink_aio: Battery.batteryPercent. See CameraDriver's
+ *     receiveBatteryInfo().
  */
 
 import groovy.transform.Field
@@ -159,7 +185,7 @@ definition(
     oauth: true // required for createAccessToken()/local endpoint access used by the snapshot relay
 )
 
-@Field static final String APP_VERSION = "1.3.4"
+@Field static final String APP_VERSION = "1.3.5"
 
 @Field static final List LOG_LEVELS = ["Errors Only", "Normal", "Full"]
 
@@ -405,9 +431,10 @@ def tipsPage() {
             paragraph pillHeader("Supported Features (new in v1.3.0)")
             paragraph "Every device now has a read-only <b>supportedFeatures</b> attribute, populated " +
                 "automatically at discovery time from the camera's own reported capabilities (Reolink's " +
-                "GetAbility API) -- e.g. \"PTZ, Spotlight, Person Detection, Vehicle Detection, Pet " +
-                "Detection\" for a full-featured PTZ camera with a light, or just \"Person Detection, " +
-                "Vehicle Detection\" for a basic fixed camera with no PTZ or light."
+                "GetAbility API) -- e.g. \"PTZ, Spotlight, Night Vision, Person Detection, Vehicle Detection, " +
+                "Pet Detection\" for a full-featured PTZ camera with a light, or \"Night Vision, Status LED, " +
+                "Person Detection, Vehicle Detection, Package Detection\" for a doorbell with IR night vision " +
+                "and a button light but no true spotlight."
             paragraph "⚠️ This is informational only -- it does NOT hide or disable any commands. Hubitat " +
                 "has no way to remove a command from an individual device instance, so every command still " +
                 "appears on every device regardless of what supportedFeatures says. Trying a command the " +
@@ -847,43 +874,63 @@ private List fetchAbilityChnList(sourceId) {
     return abilityChn
 }
 
-/** Safe lookup: treats a missing key the SAME as permit:0/unsupported. Confirmed necessary -- older firmware omits some keys entirely rather than reporting them as unsupported (e.g. supportPtzCalibration was entirely absent on a 2021-firmware camera that had it present in 2024 firmware on the same model). */
+/**
+ * Safe lookup: treats a missing key the SAME as unsupported. Confirmed
+ * necessary -- older firmware omits some keys entirely rather than
+ * reporting them as unsupported (e.g. supportPtzCalibration was entirely
+ * absent on a 2021-firmware camera that had it present in 2024 firmware on
+ * the same model).
+ *
+ * Checks BOTH the "permit" and "ver" sub-fields, not permit alone. Every
+ * GetAbility entry has both. Reolink's own officially-backed reolink_aio
+ * library checks "ver" exclusively; we'd been checking "permit" exclusively.
+ * These move together on every field tested EXCEPT ptzType, where permit
+ * stays 0 even on confirmed PTZ cameras while ver correctly shows nonzero --
+ * we avoided that specific divergence by keying PTZ presence off ptzCtrl
+ * instead of ptzType, but there's no guarantee some other field doesn't
+ * diverge the same way on hardware not yet tested. Checking both costs
+ * nothing and closes off that whole risk class.
+ */
 private int abilityPermit(Map abilityChn, String key) {
-    return (abilityChn?.getAt(key)?.permit ?: 0) as int
+    def entry = abilityChn?.getAt(key)
+    def permit = (entry?.permit ?: 0) as int
+    def ver = (entry?.ver ?: 0) as int
+    return Math.max(permit, ver)
 }
 
 /**
  * Maps GetAbility data to a human-readable feature list for the
  * supportedFeatures device attribute. Confirmed against real hardware across
- * 7 cameras / 5 models / firmware 2021-2024:
- *   - PTZ: ptzCtrl > 0. The exact permit value varies by camera (1 on a
+ * 8+ cameras / 6+ models / firmware 2021-2024, cross-checked against
+ * Reolink's own officially-backed reolink_aio library:
+ *   - PTZ: ptzCtrl > 0. The exact value varies by camera (1 on a
  *     pan-tilt-only E1 Pro, 7 on full PTZ cameras) but >0 vs 0 reliably
  *     splits PTZ-capable from fixed cameras every time tested.
- *   - PTZ Calibration: supportPtzCheck > 0 OR supportPtzCalibration > 0.
- *     CORRECTED: originally gated on supportPtzCalibration alone, based on
- *     E1 Pro showing both fields agreeing (6 and 7). That reasoning was
- *     wrong -- Jason confirmed the Back Porch camera CAN actually be
- *     calibrated via the Reolink app in real life, despite its
- *     supportPtzCalibration showing permit:0 -- a genuine false negative on
- *     the exact camera that reasoning was built from. supportPtzCheck (the
- *     ability flag for GetPtzCheckState, the actual API
- *     checkPtzCalibrationStatus calls) was nonzero on every PTZ camera
- *     tested and zero/absent on every non-PTZ camera -- a clean match with
- *     real calibration availability. supportPtzCalibration is now OR'd in
- *     only as a safety net in case some other camera has the reverse
- *     problem, not trusted as the primary signal.
- *   - Spotlight/Light: supportFLswitch > 0 OR supportDoorbellLight > 0, NOT
- *     the top-level floodLight key -- floodLight stayed permit:0 on every
- *     device tested including ones confirmed to have a physical light;
- *     supportFLswitch differentiated correctly on every CAMERA tested
- *     (present on confirmed-spotlight cameras, absent on E1 Pro which has
- *     none). Independently corroborated by a Reolink community report of
- *     floodLight being unreliable even on genuine floodlight hardware.
- *     DOORBELLS use a separate key, supportDoorbellLight, instead of
- *     supportFLswitch (confirmed against a real wired doorbell) -- both are
- *     checked so this reports correctly on either device type. Whether the
- *     existing spotlightOn/spotlightOff (SetWhiteLed) commands actually
- *     control a doorbell's light the same way is still unconfirmed/untested.
+ *   - PTZ Calibration: supportPtzCheck > 0 OR supportPtzCalibration > 0 --
+ *     confirmed a false negative on supportPtzCalibration alone (real-world
+ *     contradicted it), switched supportPtzCheck to primary. This EXACT OR
+ *     pattern is independently confirmed in reolink_aio's own capability
+ *     logic.
+ *   - Spotlight: supportFLswitch > 0 OR floodLight > 0. Camera-only --
+ *     confirmed no camera or doorbell tested actually maps a true
+ *     spotlight/floodlight to supportDoorbellLight (see Night Vision /
+ *     Status LED below for what that key actually means on a doorbell).
+ *     floodLight alone stayed 0 on every device tested including confirmed
+ *     spotlight-equipped ones (independently corroborated by a Reolink
+ *     community report of floodLight being unreliable even on genuine
+ *     floodlight hardware) but reolink_aio's own logic ORs it in alongside
+ *     supportFLswitch, so it's kept as a defensive fallback in case some
+ *     future device reports it correctly.
+ *   - Night Vision (IR): ledControl > 0 -- field found via reolink_aio,
+ *     previously unmapped. Confirmed against a real doorbell that has an IR
+ *     light but no spotlight.
+ *   - Status LED: supportDoorbellLight > 0 -- CORRECTED. Originally (v1.3.1)
+ *     folded into the Spotlight gate based on real hardware showing it
+ *     nonzero on a doorbell with a light -- but that doorbell's only lights
+ *     are IR (night vision) and a button/ring status light, no true
+ *     spotlight. Confirmed via reolink_aio that this key governs the
+ *     status/ring indicator LED (grouped with powerLed/indicatorLight in
+ *     their code), not illumination. Split into its own feature.
  *   - Siren: alarmAudio > 0. Every camera tested had this until an older
  *     basic model (RLC-410W, no built-in speaker) finally gave a real
  *     negative case (permit:0, "talk" key absent entirely) -- confirms this
@@ -914,9 +961,11 @@ private List<String> computeSupportedFeatures(Map abilityChn) {
     if (abilityPermit(abilityChn, "supportPtzCheck") > 0 || abilityPermit(abilityChn, "supportPtzCalibration") > 0) {
         features << "PTZ Calibration"
     }
-    if (abilityPermit(abilityChn, "supportFLswitch") > 0 || abilityPermit(abilityChn, "supportDoorbellLight") > 0) {
+    if (abilityPermit(abilityChn, "supportFLswitch") > 0 || abilityPermit(abilityChn, "floodLight") > 0) {
         features << "Spotlight"
     }
+    if (abilityPermit(abilityChn, "ledControl") > 0) features << "Night Vision"
+    if (abilityPermit(abilityChn, "supportDoorbellLight") > 0) features << "Status LED"
     if (abilityPermit(abilityChn, "alarmAudio") > 0) features << "Siren"
     if (abilityPermit(abilityChn, "supportAiPeople") > 0) features << "Person Detection"
     if (abilityPermit(abilityChn, "supportAiVehicle") > 0) features << "Vehicle Detection"
