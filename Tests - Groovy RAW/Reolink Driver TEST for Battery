@@ -1,0 +1,533 @@
+/**
+ * Reolink Webhook Test Tool (STANDALONE -- NOT part of the Reolink Integration app)
+ *
+ * ============================================================================
+ * WHAT THIS IS FOR
+ * ============================================================================
+ * Tests whether we can register a local webhook URL with a battery-class
+ * Reolink device (camera or doorbell) behind a Home Hub/NVR, using Reolink's
+ * proprietary "Baichuan" TCP protocol (port 9000 by default) -- the same
+ * mechanism Reolink's own phone app uses for instant motion/doorbell
+ * notifications on battery devices, confirmed 100% local (no Reolink cloud
+ * involved) by reading the officially-backed reolink_aio library's source.
+ *
+ * This is step 1 of 2. This driver only handles the OUTBOUND side: connect,
+ * log in, check the device supports webhooks, register a URL. It does NOT
+ * receive events -- for that you need a companion test APP with a webhook
+ * receiver endpoint (planned as a separate deliverable), since Hubitat
+ * drivers can only be TCP CLIENTS (no listening socket), and only APPS can
+ * expose local HTTP endpoints (via mappings{}).
+ *
+ * Completely standalone -- own login/session, no dependency on the
+ * production Reolink Integration app, cannot affect any existing source or
+ * child device. No credentials are ever logged.
+ *
+ * ============================================================================
+ * PROTOCOL NOTES (for future reference / debugging)
+ * ============================================================================
+ * Every detail below was confirmed directly from reolink_aio's source
+ * (baichuan.py, util.py, base_protocol.py, xmls.py) -- not guessed.
+ *
+ * Header (little-endian), 20 or 24 bytes depending on message class:
+ *   bytes[0:4]   magic: f0 de bc 0a (HEADER_MAGIC)
+ *   bytes[4:8]   cmd_id
+ *   bytes[8:12]  body length
+ *   bytes[12:16] message id: byte 0 = channel id (250=host), bytes 1-3 = counter
+ *   bytes[16:18] on OUTGOING messages: always "0000". On INCOMING messages:
+ *                the actual encryption-type marker (00dd=unencrypted,
+ *                01dd/12dd=Baichuan-XOR-encrypted, 02dd/03dd=AES-encrypted)
+ *   bytes[18:20] message class: "1464"=24-byte header (normal), "1466"=20-byte
+ *                header (some responses), "1465"=used ONLY for the very first
+ *                bare nonce request (20-byte header, no payload_offset field)
+ *   bytes[20:24] payload_offset (ONLY present for 24-byte "1464"/"0000" header)
+ *
+ * Two ciphers, used at different stages -- NOT interchangeable:
+ *   - Baichuan's own simple XOR cipher (encrypt/decrypt are the same
+ *     function, XOR is symmetric): byte ^ XML_KEY[(offset+idx) % 8] ^ offset,
+ *     where offset = the channel id (250 for host-level commands). Used ONLY
+ *     for the login step itself.
+ *   - AES-CFB-128, fixed IV "0123456789abcdef" (literal ASCII bytes, NOT the
+ *     IV found during the earlier HTTP-side encryption investigation -- a
+ *     different fixed IV for this different protocol). Key = first 16 chars
+ *     of md5Modern("{nonce}-{password}"), used as raw UTF-8 bytes. Used for
+ *     every authenticated command AFTER login succeeds.
+ *
+ * "md5Modern" is NOT a plain MD5 hex digest: take the standard 32-char lower
+ * case MD5 hex digest, truncate to the first 31 characters, uppercase it.
+ * (Then, for the AES key specifically, truncate THAT 31-char result to 16.)
+ *
+ * Full one-shot sequence for a battery device:
+ *   1. cmd_id=1, no body (bare header, message class 1465) -> get a nonce
+ *      from the response, derive the AES key
+ *   2. cmd_id=1, Baichuan-XOR-encrypted body (LOGIN_XML with md5Modern-hashed
+ *      username/password) -> log in
+ *   3. cmd_id=199, no body, AES-encrypted -> confirm the "webhook" ability
+ *      field is present (only meaningful once already known to be battery)
+ *   4. cmd_id=807, AES-encrypted body (WEBHOOK_PUSH XML with our URL) ->
+ *      register the webhook
+ *   5. cmd_id=806, no body, AES-encrypted -> verify the registration took
+ *   6. cmd_id=2, AES-encrypted body (LOGOUT_XML, plaintext creds -- fine,
+ *      channel is encrypted) -> logout, then close the socket
+ *
+ * ============================================================================
+ * HOW TO USE
+ * ============================================================================
+ *  1. Drivers Code > New Driver > paste this in > Save.
+ *  2. Devices > Add Device > Virtual > "Reolink Webhook Test Tool" > Save.
+ *  3. Fill in Preferences: the Home Hub Pro's IP, Baichuan port (9000
+ *     default), username, password, and the webhook URL (leave blank for
+ *     now until the companion receiver app exists -- registration will
+ *     still complete, you just won't see the resulting events yet).
+ *  4. Run "Test Webhook Flow" on the Commands tab, watch Logs.
+ * ============================================================================
+ */
+import groovy.transform.Field
+import java.security.MessageDigest
+import javax.crypto.Cipher
+import javax.crypto.spec.SecretKeySpec
+import javax.crypto.spec.IvParameterSpec
+
+metadata {
+    definition(name: "Reolink Webhook Test Tool", namespace: "jdthomas24", author: "Jason") {
+        capability "Actuator"
+        command "testWebhookFlow"
+    }
+    preferences {
+        input name: "host", type: "text", title: "Home Hub Pro / device IP address"
+        input name: "port", type: "number", title: "Baichuan TCP port", defaultValue: 9000
+        input name: "username", type: "text", title: "Username"
+        input name: "password", type: "password", title: "Password"
+        input name: "webhookUrl", type: "text", title: "Webhook URL to register",
+            description: "Leave blank to just test the handshake/capability check without registering a real URL yet"
+    }
+}
+
+@Field static final String HEADER_MAGIC_HEX = "f0debc0a"
+@Field static final List<Integer> XML_KEY = [0x1F, 0x2D, 0x3C, 0x4B, 0x5A, 0x69, 0x78, 0xFF]
+@Field static final byte[] AES_IV_BYTES = "0123456789abcdef".getBytes("UTF-8")
+@Field static final int HOST_CH_ID = 250
+
+@Field static final String LOGIN_XML =
+    '<?xml version="1.0" encoding="UTF-8" ?><body><LoginUser version="1.1"><userName>%s</userName>' +
+    '<password>%s</password><userVer>1</userVer></LoginUser><LoginNet version="1.1"><type>LAN</type>' +
+    '<udpPort>0</udpPort></LoginNet></body>'
+
+@Field static final String LOGOUT_XML =
+    '<?xml version="1.0" encoding="UTF-8" ?><body><LoginUser version="1.1"><userName>%s</userName>' +
+    '<password>%s</password><userVer>1</userVer></LoginUser></body>'
+
+@Field static final String WEBHOOK_PUSH_XML =
+    '<?xml version="1.0" encoding="UTF-8" ?><body><HaCfg version="1.1"><enable>%s</enable>' +
+    '<url>%s</url><verify_cert>0</verify_cert></HaCfg></body>'
+
+def installed() {}
+def updated() {}
+
+// ============================================================================
+// Entry point
+// ============================================================================
+def testWebhookFlow() {
+    log.info "===== TEST WEBHOOK FLOW: START ====="
+    state.messIdCounter = 0
+    state.rxBufferHex = ""
+    state.aesKeyHex = null
+    state.nonce = null
+    state.stage = "CONNECTING"
+    try {
+        interfaces.rawSocket.connect(host, port as int, byteInterface: false)
+        log.info "Socket connect requested to ${host}:${port}"
+    } catch (e) {
+        log.warn "===== TEST WEBHOOK FLOW: FAILED to open socket -- ${e.message} ====="
+        state.stage = null
+        return
+    }
+    // give the connect a moment, then kick off the nonce request; if the
+    // socket genuinely isn't open yet this send will throw and we'll know
+    runIn(1, "sendNonceRequest")
+    runIn(15, "flowTimeoutCheck")
+}
+
+def socketStatus(String status) {
+    log.info "Socket status: ${status}"
+    if (status?.contains("error") || status?.contains("close")) {
+        if (state.stage && state.stage != "DONE") {
+            log.warn "===== TEST WEBHOOK FLOW: socket closed/errored mid-flow (stage was ${state.stage}) ====="
+        }
+        state.stage = null
+    }
+}
+
+def flowTimeoutCheck() {
+    if (state.stage && state.stage != "DONE") {
+        log.warn "===== TEST WEBHOOK FLOW: TIMED OUT waiting for a response (stuck at stage ${state.stage}) ====="
+        try { interfaces.rawSocket.close() } catch (e) { }
+        state.stage = null
+    }
+}
+
+// ============================================================================
+// Step 1: nonce request (cmd_id=1, no body, special 20-byte "1465" header)
+// ============================================================================
+def sendNonceRequest() {
+    state.stage = "AWAITING_NONCE"
+    def messId = nextMessId()
+    byte[] header = buildHeader1465(1, HOST_CH_ID, messId)
+    log.info "Step 1/5: sending nonce request (cmd_id=1)"
+    sendRaw(header)
+}
+
+// ============================================================================
+// Step 2: login (cmd_id=1, Baichuan-XOR body)
+// ============================================================================
+def sendLoginRequest() {
+    state.stage = "AWAITING_LOGIN"
+    def userHash = md5Modern("${username}${state.nonce}")
+    def passHash = md5Modern("${password}${state.nonce}")
+    String xml = String.format(LOGIN_XML, userHash, passHash)
+    byte[] bodyBytes = xml.getBytes("UTF-8")
+    byte[] encBody = xorBaichuan(bodyBytes, HOST_CH_ID)
+    def messId = nextMessId()
+    byte[] header = buildHeader1464(1, bodyBytes.length, HOST_CH_ID, messId, 0)
+    log.info "Step 2/5: sending login request (cmd_id=1, Baichuan-encrypted)"
+    sendRaw(header + encBody)
+}
+
+// ============================================================================
+// Step 3: ability check (cmd_id=199, no body, AES)
+// ============================================================================
+def sendAbilityCheck() {
+    state.stage = "AWAITING_ABILITY"
+    def messId = nextMessId()
+    byte[] header = buildHeader1464(199, 0, HOST_CH_ID, messId, 0)
+    log.info "Step 3/5: sending ability check (cmd_id=199)"
+    sendRaw(header)
+}
+
+// ============================================================================
+// Step 4: register webhook (cmd_id=807, AES body)
+// ============================================================================
+def sendWebhookRegister() {
+    state.stage = "AWAITING_WEBHOOK_REG"
+    String url = webhookUrl ?: ""
+    String xml = String.format(WEBHOOK_PUSH_XML, "1", url)
+    byte[] bodyBytes = xml.getBytes("UTF-8")
+    byte[] encBody = aesEncrypt(bodyBytes)
+    def messId = nextMessId()
+    byte[] header = buildHeader1464(807, bodyBytes.length, HOST_CH_ID, messId, 0)
+    log.info "Step 4/5: registering webhook URL (cmd_id=807) -- ${url ?: '(blank, testing handshake only)'}"
+    sendRaw(header + encBody)
+}
+
+// ============================================================================
+// Step 5: verify (cmd_id=806, no body, AES)
+// ============================================================================
+def sendVerify() {
+    state.stage = "AWAITING_VERIFY"
+    def messId = nextMessId()
+    byte[] header = buildHeader1464(806, 0, HOST_CH_ID, messId, 0)
+    log.info "Step 5/5: verifying webhook registration (cmd_id=806)"
+    sendRaw(header)
+}
+
+// ============================================================================
+// Step 6: logout + close
+// ============================================================================
+def sendLogoutAndClose() {
+    state.stage = "DONE"
+    try {
+        String xml = String.format(LOGOUT_XML, username, password)
+        byte[] bodyBytes = xml.getBytes("UTF-8")
+        byte[] encBody = aesEncrypt(bodyBytes)
+        def messId = nextMessId()
+        byte[] header = buildHeader1464(2, bodyBytes.length, HOST_CH_ID, messId, 0)
+        sendRaw(header + encBody)
+    } catch (e) {
+        log.debug "Logout send failed (non-fatal): ${e.message}"
+    }
+    runIn(1, "closeSocket")
+}
+
+def closeSocket() {
+    try { interfaces.rawSocket.close() } catch (e) { }
+    log.info "===== TEST WEBHOOK FLOW: END ====="
+}
+
+// ============================================================================
+// Incoming data -- Hubitat delivers raw socket bytes as a hex string here.
+// Buffers across calls (state.rxBufferHex) since one Baichuan message can
+// arrive split across multiple parse() invocations, or multiple messages
+// could arrive in one invocation -- same problem reolink_aio's
+// bc_data_received()/parse_bc_data() solve in Python, reimplemented here
+// against Hubitat's hex-string delivery instead of raw Python bytes.
+// ============================================================================
+def parse(String message) {
+    if (!message) return
+    state.rxBufferHex = (state.rxBufferHex ?: "") + message
+    processBuffer()
+}
+
+private void processBuffer() {
+    String hex = state.rxBufferHex ?: ""
+    // Need at least the first 20 bytes (40 hex chars) to read a header.
+    if (hex.length() < 40) return
+
+    if (hex.substring(0, 8).toLowerCase() != HEADER_MAGIC_HEX) {
+        log.warn "Received data with invalid magic header (${hex.substring(0, 8)}), dropping buffer"
+        state.rxBufferHex = ""
+        return
+    }
+
+    int cmdId = leHexToInt(hex.substring(8, 16))
+    int bodyLen = leHexToInt(hex.substring(16, 24))
+    int chId = Integer.parseInt(hex.substring(24, 26), 16)
+    String encTypeMarker = hex.substring(32, 36).toLowerCase()
+    String messageClass = hex.substring(36, 40).toLowerCase()
+
+    int headerLenBytes
+    int payloadOffset
+    if (messageClass == "1466") {
+        headerLenBytes = 20
+        payloadOffset = bodyLen
+    } else if (messageClass == "1464" || messageClass == "0000") {
+        headerLenBytes = 24
+        if (hex.length() < 48) return  // need the payload_offset field too
+        payloadOffset = leHexToInt(hex.substring(40, 48))
+        if (payloadOffset == 0) payloadOffset = bodyLen
+    } else {
+        log.warn "Received unknown message class '${messageClass}', dropping buffer"
+        state.rxBufferHex = ""
+        return
+    }
+
+    int totalHexNeeded = (headerLenBytes + bodyLen) * 2
+    if (hex.length() < totalHexNeeded) return  // wait for the rest
+
+    String bodyHex = hex.substring(headerLenBytes * 2, totalHexNeeded)
+    state.rxBufferHex = hex.substring(totalHexNeeded)  // leave any extra message(s) for the next pass
+
+    String bodyText = decryptBody(bodyHex, encTypeMarker, chId)
+    handleMessage(cmdId, bodyText)
+
+    // handle multiple messages received in one read
+    if (state.rxBufferHex?.length() >= 40) {
+        processBuffer()
+    }
+}
+
+private String decryptBody(String bodyHex, String encTypeMarker, int chId) {
+    if (!bodyHex) return ""
+    byte[] bodyBytes = hexToBytes(bodyHex)
+    try {
+        if (encTypeMarker in ["01dd", "12dd"]) {
+            return new String(xorBaichuan(bodyBytes, chId), "UTF-8")
+        } else if (encTypeMarker in ["02dd", "03dd"]) {
+            return new String(aesDecrypt(bodyBytes), "UTF-8")
+        } else if (encTypeMarker == "00dd") {
+            return new String(bodyBytes, "UTF-8")
+        } else {
+            log.warn "Unknown encryption type marker '${encTypeMarker}' on received message"
+            return ""
+        }
+    } catch (e) {
+        log.warn "Failed to decrypt/decode response body (marker ${encTypeMarker}): ${e.message}"
+        return ""
+    }
+}
+
+// ============================================================================
+// Response routing -- advances the state machine based on what we were
+// waiting for (state.stage) and what just arrived.
+// ============================================================================
+private void handleMessage(int cmdId, String bodyText) {
+    log.info "Received cmd_id ${cmdId}, stage was ${state.stage} -- body: ${bodyText?.take(300)}"
+
+    switch (state.stage) {
+        case "AWAITING_NONCE":
+            def nonce = findXmlValue(bodyText, "nonce")
+            if (!nonce) {
+                log.warn "===== TEST WEBHOOK FLOW: no nonce found in response, cannot continue ====="
+                state.stage = null
+                return
+            }
+            state.nonce = nonce
+            state.aesKeyHex = bytesToHex(deriveAesKey(nonce, password))
+            log.info "Nonce obtained, AES key derived"
+            sendLoginRequest()
+            break
+
+        case "AWAITING_LOGIN":
+            log.info "Login response received -- assuming success (no error thrown means status 200/201/300)"
+            sendAbilityCheck()
+            break
+
+        case "AWAITING_ABILITY":
+            def webhookAbility = findXmlValue(bodyText, "webhook")
+            def supported = (webhookAbility != null) && (webhookAbility.trim() != "0") && (webhookAbility.trim() != "")
+            log.info "Webhook ability field: '${webhookAbility}' -- ${supported ? 'SUPPORTED' : 'NOT reported as supported (or field not found)'}"
+            if (!supported) {
+                log.warn "===== TEST WEBHOOK FLOW: this device/firmware does not report webhook support -- stopping here ====="
+                sendLogoutAndClose()
+                return
+            }
+            if (!webhookUrl) {
+                log.info "No webhook URL configured -- handshake and capability check both succeeded, stopping before registration"
+                sendLogoutAndClose()
+                return
+            }
+            sendWebhookRegister()
+            break
+
+        case "AWAITING_WEBHOOK_REG":
+            log.info "Webhook registration response received, verifying..."
+            sendVerify()
+            break
+
+        case "AWAITING_VERIFY":
+            def enable = findXmlValue(bodyText, "enable")
+            def url = findXmlValue(bodyText, "url")
+            log.info "Verify response -- enable=${enable}, url=${url}"
+            if (enable == "1" && url == webhookUrl) {
+                log.info "===== TEST WEBHOOK FLOW: SUCCESS -- webhook registered and verified! ====="
+            } else {
+                log.warn "===== TEST WEBHOOK FLOW: verify response did not match what we registered ====="
+            }
+            sendLogoutAndClose()
+            break
+
+        default:
+            log.debug "Received message while not expecting one (stage=${state.stage}), ignoring"
+    }
+}
+
+// ============================================================================
+// Low-level helpers
+// ============================================================================
+private int nextMessId() {
+    state.messIdCounter = ((state.messIdCounter ?: 0) + 1) % 16777216
+    return state.messIdCounter
+}
+
+private void sendRaw(byte[] data) {
+    interfaces.rawSocket.sendMessage(bytesToHex(data))
+}
+
+/** Special 20-byte header used ONLY for the initial bare nonce request. No body, no payload_offset field. */
+private byte[] buildHeader1465(int cmdId, int chId, int messId) {
+    byte[] magic = hexToBytes(HEADER_MAGIC_HEX)
+    byte[] cmdIdB = intToBytesLE(cmdId, 4)
+    byte[] messLenB = intToBytesLE(0, 4)
+    byte[] messIdB = buildMessIdBytes(chId, messId)
+    byte[] encAndClass = hexToBytes("12dc1465")
+    return magic + cmdIdB + messLenB + messIdB + encAndClass
+}
+
+/** Standard 24-byte header used for every message from login onward. */
+private byte[] buildHeader1464(int cmdId, int bodyLen, int chId, int messId, int payloadOffset) {
+    byte[] magic = hexToBytes(HEADER_MAGIC_HEX)
+    byte[] cmdIdB = intToBytesLE(cmdId, 4)
+    byte[] messLenB = intToBytesLE(bodyLen, 4)
+    byte[] messIdB = buildMessIdBytes(chId, messId)
+    byte[] statusAndClass = hexToBytes("00001464")
+    byte[] payloadOffB = intToBytesLE(payloadOffset, 4)
+    return magic + cmdIdB + messLenB + messIdB + statusAndClass + payloadOffB
+}
+
+private byte[] buildMessIdBytes(int chId, int messId) {
+    byte[] out = new byte[4]
+    out[0] = (byte)(chId & 0xFF)
+    byte[] counter = intToBytesLE(messId, 3)
+    out[1] = counter[0]; out[2] = counter[1]; out[3] = counter[2]
+    return out
+}
+
+private byte[] intToBytesLE(int value, int numBytes) {
+    byte[] out = new byte[numBytes]
+    for (int i = 0; i < numBytes; i++) {
+        out[i] = (byte)((value >> (8 * i)) & 0xFF)
+    }
+    return out
+}
+
+private int leHexToInt(String hex) {
+    // hex is little-endian byte order as a hex string; reverse byte order before parsing
+    int numBytes = hex.length() / 2
+    long value = 0
+    for (int i = numBytes - 1; i >= 0; i--) {
+        int b = Integer.parseInt(hex.substring(i * 2, i * 2 + 2), 16)
+        value = (value << 8) | b
+    }
+    return (int) value
+}
+
+/** encrypt_baichuan/decrypt_baichuan from util.py -- symmetric XOR cipher, same function serves both directions. */
+private byte[] xorBaichuan(byte[] buf, int offset) {
+    offset = offset % 256
+    byte[] out = new byte[buf.length]
+    for (int idx = 0; idx < buf.length; idx++) {
+        int key = XML_KEY[(offset + idx) % XML_KEY.size()]
+        int b = (buf[idx] & 0xFF) ^ key ^ offset
+        out[idx] = (byte)(b & 0xFF)
+    }
+    return out
+}
+
+private byte[] aesEncrypt(byte[] body) {
+    if (!body || body.length == 0) return new byte[0]
+    def cipher = Cipher.getInstance("AES/CFB/NoPadding")
+    def keySpec = new SecretKeySpec(hexToBytes(state.aesKeyHex), "AES")
+    def ivSpec = new IvParameterSpec(AES_IV_BYTES)
+    cipher.init(Cipher.ENCRYPT_MODE, keySpec, ivSpec)
+    return cipher.doFinal(body)
+}
+
+private byte[] aesDecrypt(byte[] body) {
+    if (!body || body.length == 0) return new byte[0]
+    def cipher = Cipher.getInstance("AES/CFB/NoPadding")
+    def keySpec = new SecretKeySpec(hexToBytes(state.aesKeyHex), "AES")
+    def ivSpec = new IvParameterSpec(AES_IV_BYTES)
+    cipher.init(Cipher.DECRYPT_MODE, keySpec, ivSpec)
+    return cipher.doFinal(body)
+}
+
+/**
+ * md5_str_modern from util.py -- NOT a plain MD5 hex digest. Standard 32-char
+ * lowercase hex digest, truncated to the first 31 characters, uppercased.
+ */
+private String md5Modern(String input) {
+    def digest = MessageDigest.getInstance("MD5")
+    def bytes = digest.digest(input.getBytes("UTF-8"))
+    def hex = bytes.collect { String.format("%02x", it & 0xFF) }.join()
+    return hex.substring(0, 31).toUpperCase()
+}
+
+/** AES key = first 16 chars of md5Modern("{nonce}-{password}"), used as raw UTF-8 bytes. */
+private byte[] deriveAesKey(String nonce, String pw) {
+    String keyStr = md5Modern("${nonce}-${pw}").substring(0, 16)
+    return keyStr.getBytes("UTF-8")
+}
+
+private byte[] hexToBytes(String hex) {
+    if (!hex) return new byte[0]
+    byte[] result = new byte[hex.length() / 2]
+    for (int i = 0; i < result.length; i++) {
+        result[i] = (byte) Integer.parseInt(hex.substring(i * 2, i * 2 + 2), 16)
+    }
+    return result
+}
+
+private String bytesToHex(byte[] bytes) {
+    return bytes.collect { String.format("%02x", it & 0xFF) }.join()
+}
+
+/** Generic recursive XML tag finder -- handles arbitrary nesting without needing to know the exact response structure, since Reolink's response shapes for these commands aren't documented in xmls.py (that file only has request templates). */
+private String findXmlValue(String xml, String tagName) {
+    if (!xml) return null
+    try {
+        def root = new XmlSlurper().parseText(xml)
+        def node = root.depthFirst().find { it.name() == tagName }
+        return node?.text()?.trim()
+    } catch (e) {
+        log.warn "Failed to parse XML looking for <${tagName}>: ${e.message} -- raw: ${xml?.take(200)}"
+        return null
+    }
+}
