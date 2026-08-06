@@ -368,8 +368,23 @@ private String decryptBody(String bodyHex, String encTypeMarker, int chId) {
 // Response routing -- advances the state machine based on what we were
 // waiting for (state.stage) and what just arrived.
 // ============================================================================
+/** Maps each stage to the ONLY cmd_id that should be allowed to advance it. Anything else arriving while in that stage is a stray unsolicited push (the device sends these on its own -- floodlight status, sleep status, etc.) and must be ignored, not mistaken for the real answer. */
+@Field static final Map<String, Integer> STAGE_EXPECTED_CMD_ID = [
+    "AWAITING_NONCE": 1,
+    "AWAITING_LOGIN": 1,
+    "AWAITING_ABILITY": 199,
+    "AWAITING_WEBHOOK_REG": 807,
+    "AWAITING_VERIFY": 806
+]
+
 private void handleMessage(int cmdId, String bodyText) {
     log.info "Received cmd_id ${cmdId}, stage was ${state.stage} -- body: ${escapeForLog(bodyText?.take(300))}"
+
+    Integer expectedCmdId = STAGE_EXPECTED_CMD_ID[state.stage]
+    if (expectedCmdId != null && cmdId != expectedCmdId) {
+        log.debug "cmd_id ${cmdId} does not match what stage ${state.stage} is waiting for (expected ${expectedCmdId}) -- unsolicited push, ignoring, still waiting"
+        return
+    }
 
     switch (state.stage) {
         case "AWAITING_NONCE":
