@@ -339,7 +339,7 @@ private String decryptBody(String bodyHex, String encTypeMarker, int chId) {
 // waiting for (state.stage) and what just arrived.
 // ============================================================================
 private void handleMessage(int cmdId, String bodyText) {
-    log.info "Received cmd_id ${cmdId}, stage was ${state.stage} -- body: ${bodyText?.take(300)}"
+    log.info "Received cmd_id ${cmdId}, stage was ${state.stage} -- body: ${escapeForLog(bodyText?.take(300))}"
 
     switch (state.stage) {
         case "AWAITING_NONCE":
@@ -361,6 +361,10 @@ private void handleMessage(int cmdId, String bodyText) {
             break
 
         case "AWAITING_ABILITY":
+            // Full, untruncated, HTML-escaped dump -- need to actually SEE the real
+            // field names for this hub-relayed channel rather than guess further.
+            log.info "FULL ability response (escaped for log display):"
+            log.info escapeForLog(bodyText)
             def webhookAbility = findXmlValue(bodyText, "webhook")
             def supported = (webhookAbility != null) && (webhookAbility.trim() != "0") && (webhookAbility.trim() != "")
             log.info "Webhook ability field: '${webhookAbility}' -- ${supported ? 'SUPPORTED' : 'NOT reported as supported (or field not found)'}"
@@ -526,6 +530,12 @@ private String bytesToHex(byte[] bytes) {
 }
 
 /** Generic recursive XML tag finder -- handles arbitrary nesting without needing to know the exact response structure, since Reolink's response shapes for these commands aren't documented in xmls.py (that file only has request templates). */
+/** Hubitat's log viewer renders as HTML -- raw '<tag>' sequences get silently swallowed as if they were markup. Escape for display only; parsing elsewhere always uses the real unescaped string. */
+private String escapeForLog(String s) {
+    if (!s) return s
+    return s.replace("<", "&lt;").replace(">", "&gt;")
+}
+
 private String findXmlValue(String xml, String tagName) {
     if (!xml) return null
     try {
