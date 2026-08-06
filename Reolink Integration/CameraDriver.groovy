@@ -1,9 +1,12 @@
 /**
  * Reolink Camera (Component Driver)
- * Version: 1.3.4 -- kept in sync with the parent app's version. No functional
- * change to this driver -- v1.3.3 is app-side only (retry-on-parse-failure
- * fix and new Tips docs for a known older-firmware bug). Version bumped
- * here only to stay in sync.
+ * Version: 1.3.5 -- kept in sync with the parent app's version.
+ *
+ * v1.3.5 -- confirmed (not a guess) the battery percentage field name via
+ * Reolink's officially-backed reolink_aio library: Battery.batteryPercent.
+ * See receiveBatteryInfo() below. All other v1.3.5 changes are app-side
+ * only (capability-detection corrections, see the app's version history).
+ *
  * Thin device: no HTTP of its own. Everything delegates to the parent app via
  * parent.componentX(this, ...). The app knows which source/channel this device
  * maps to (stored as data values sourceId/channel) and does the actual API call.
@@ -131,9 +134,14 @@ def checkBattery() {
     parent?.componentCheckBattery(this, device.deviceNetworkId)
 }
 
-/** Called by the app after GetBatteryInfo. Field names are a TODO -- see app comment. */
+/**
+ * Called by the app after GetBatteryInfo. Field name confirmed via Reolink's
+ * own officially-backed reolink_aio library: response value is
+ * Battery.batteryPercent. Not yet confirmed against real battery hardware
+ * in THIS codebase (no battery device tested standalone yet), so the
+ * batteryPercentage fallback is kept just in case a firmware variant uses it.
+ */
 def receiveBatteryInfo(battInfo) {
-    // TODO confirm field names once seen against a real battery-mode device
     def pct = battInfo?.batteryPercent ?: battInfo?.batteryPercentage
     if (pct != null) sendEvent(name: "battery", value: pct)
 }
