@@ -1,12 +1,12 @@
 {
     "packageName": "Reolink Integration",
-    "releaseNotes": "v1.3.4 -- Fixed connectivity-failure log spam: a single source going unreachable previously logged 2-3 separate warnings every poll cycle for as long as the outage lasted (dozens of near-identical lines for one ongoing problem). Now only the transition into/out of unreachable logs a warning; Full-tier logging still shows every attempt for active troubleshooting. Also added a Help & Support section to the main page (community thread link, support link). Also includes v1.3.3 (retry-once on a known older-firmware bug that intermittently returns garbled data instead of a real response, reducing false 'asleep' reports; new Tips page section documenting it) and v1.3.2 (fixed a false negative in PTZ Calibration detection).",
+    "releaseNotes": "v1.3.5 -- Capability-detection corrections, cross-checked against Reolink's own officially-backed reolink_aio library: corrected a v1.3.1 mistake where the doorbell's status/ring LED (supportDoorbellLight) was mis-mapped to the Spotlight feature -- split into its own 'Status LED' feature. Added a new 'Night Vision' feature (a real prior gap). Added floodLight back as a defensive Spotlight fallback. Ability lookups now check both the 'permit' and 'ver' sub-fields instead of permit alone, closing off a risk class where they could diverge. Confirmed (not guessed) the battery percentage field name. Also includes v1.3.4 (fixed connectivity-failure log spam; both the 'went unreachable' warning and 'connection restored' message are now always visible regardless of Log Level) and v1.3.3 (retry-once on a known older-firmware bug reducing false 'asleep' reports).",
     "documentationLink": "https://github.com/jdthomas24/Hubitat-Apps-Drivers/tree/main/Reolink%20Integration",
     "communityLink": "https://github.com/jdthomas24/Hubitat-Apps-Drivers/tree/main/Reolink%20Integration",
     "author": "jdthomas24",
-    "version": "1.3.4",
+    "version": "1.3.5",
     "minimumHEVersion": "2.3.0",
-    "dateReleased": "2026-08-04",
+    "dateReleased": "2026-08-06",
     "category": "Integrations",
     "tags": "Cameras & Video",
     "apps": [
