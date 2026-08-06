@@ -189,7 +189,7 @@ def sendLoginRequest() {
     def messId = nextMessId()
     byte[] header = buildHeader1464(1, bodyBytes.length, HOST_CH_ID, messId, 0)
     log.info "Step 2/5: sending login request (cmd_id=1, Baichuan-encrypted)"
-    sendRaw(header + encBody)
+    sendRaw(concatBytes(header, encBody))
 }
 
 // ============================================================================
@@ -215,7 +215,7 @@ def sendWebhookRegister() {
     def messId = nextMessId()
     byte[] header = buildHeader1464(807, bodyBytes.length, HOST_CH_ID, messId, 0)
     log.info "Step 4/5: registering webhook URL (cmd_id=807) -- ${url ?: '(blank, testing handshake only)'}"
-    sendRaw(header + encBody)
+    sendRaw(concatBytes(header, encBody))
 }
 
 // ============================================================================
@@ -240,7 +240,7 @@ def sendLogoutAndClose() {
         byte[] encBody = aesEncrypt(bodyBytes)
         def messId = nextMessId()
         byte[] header = buildHeader1464(2, bodyBytes.length, HOST_CH_ID, messId, 0)
-        sendRaw(header + encBody)
+        sendRaw(concatBytes(header, encBody))
     } catch (e) {
         log.debug "Logout send failed (non-fatal): ${e.message}"
     }
@@ -418,7 +418,7 @@ private byte[] buildHeader1465(int cmdId, int chId, int messId) {
     byte[] messLenB = intToBytesLE(0, 4)
     byte[] messIdB = buildMessIdBytes(chId, messId)
     byte[] encAndClass = hexToBytes("12dc1465")
-    return magic + cmdIdB + messLenB + messIdB + encAndClass
+    return concatBytes(magic, cmdIdB, messLenB, messIdB, encAndClass)
 }
 
 /** Standard 24-byte header used for every message from login onward. */
@@ -429,7 +429,7 @@ private byte[] buildHeader1464(int cmdId, int bodyLen, int chId, int messId, int
     byte[] messIdB = buildMessIdBytes(chId, messId)
     byte[] statusAndClass = hexToBytes("00001464")
     byte[] payloadOffB = intToBytesLE(payloadOffset, 4)
-    return magic + cmdIdB + messLenB + messIdB + statusAndClass + payloadOffB
+    return concatBytes(magic, cmdIdB, messLenB, messIdB, statusAndClass, payloadOffB)
 }
 
 private byte[] buildMessIdBytes(int chId, int messId) {
@@ -438,6 +438,12 @@ private byte[] buildMessIdBytes(int chId, int messId) {
     byte[] counter = intToBytesLE(messId, 3)
     out[1] = counter[0]; out[2] = counter[1]; out[3] = counter[2]
     return out
+}
+
+private byte[] concatBytes(byte[]... arrays) {
+    def out = new java.io.ByteArrayOutputStream()
+    arrays.each { out.write(it) }
+    return out.toByteArray()
 }
 
 private byte[] intToBytesLE(int value, int numBytes) {
