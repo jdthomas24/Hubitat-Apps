@@ -1,5 +1,6 @@
 /**
- * Reolink Persistent Event Subscription Test Tool (STANDALONE -- NOT part of the Reolink Integration app)
+ * Reolink Event Subscription Test Tool (STANDALONE -- NOT part of the Reolink Integration app)
+ * Driver name in Hubitat: "Reolink Event Subscription Test Tool"
  *
  * ============================================================================
  * WHAT THIS IS FOR
@@ -143,11 +144,11 @@ import javax.crypto.spec.SecretKeySpec
 import javax.crypto.spec.IvParameterSpec
 
 metadata {
-    definition(name: "Reolink Webhook Test Tool", namespace: "jdthomas24", author: "Jason") {
+    definition(name: "Reolink Event Subscription Test Tool", namespace: "jdthomas24", author: "Jason") {
         capability "Actuator"
-        command "testWebhookFlow"
-        command "startEventSubscription", [[name: "Persistent event subscription (cmd_id=31) -- the RIGHT mechanism for a Hub/NVR-relayed battery channel, unlike the one-shot webhook flow above"]]
+        command "startEventSubscription", [[name: "PRIMARY -- persistent event subscription (cmd_id=31), the validated mechanism for a Hub/NVR-relayed channel"]]
         command "stopEventSubscription"
+        command "testWebhookFlow", [[name: "LEGACY reference only -- one-shot webhook path, not used by production (see header notes)"]]
     }
     preferences {
         input name: "host", type: "text", title: "Home Hub Pro / device IP address"
