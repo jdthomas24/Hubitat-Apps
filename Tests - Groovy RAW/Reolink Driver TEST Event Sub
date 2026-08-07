@@ -7,22 +7,36 @@
  * ============================================================================
  * Tests real-time local event delivery for a battery-class Reolink device
  * (camera or doorbell) sitting behind a Home Hub/NVR, using Reolink's
- * proprietary "Baichuan" TCP protocol (port 9000 by default).
+ * proprietary "Baichuan" TCP protocol (port 9000 by default). Works against
+ * ANY Hub/NVR-relayed channel -- point it at whatever battery device and
+ * Hub/NVR you've got, no changes needed for a different device or channel.
  *
- * VALIDATED MECHANISM (as of 2026-08-06): a PERSISTENT event subscription
- * (cmd_id=31 on push channel 251), kept alive with periodic cmd_id=93
- * keepalives, with real events (cmd_id=33 motion/AI/visitor, cmd_id=145
- * sleep) arriving as ongoing pushes over the same open connection. Live-
- * tested against a Home Hub Pro watching the battery doorbell: cleanly
- * captured a full approach -> ring -> departure sequence, connection stayed
- * up ~5 min with keepalives acking on schedule, no drops.
+ * VALIDATED MECHANISM: a PERSISTENT event subscription (cmd_id=31 on push
+ * channel 251), kept alive with periodic cmd_id=93 keepalives, with real
+ * events (cmd_id=33 motion/AI/visitor, cmd_id=145 sleep) arriving as ongoing
+ * pushes over the same open connection -- no webhook, no local HTTP
+ * receiver, no companion app needed. See "WHY NO WEBHOOK" below for why.
  *
- * NOT NEEDED FOR THIS PROJECT: a one-shot webhook registration (cmd_id=807),
- * and the companion local HTTP receiver app that would go with it. That was
- * the original plan but is now known to be unnecessary -- see "WHY NO
- * WEBHOOK" below. The startEventSubscription()/stopEventSubscription()
- * commands below are the real, complete mechanism; testWebhookFlow() is
- * kept only as a reference/comparison path, not something production needs.
+ * KNOWN ISSUES / THINGS TO WATCH FOR:
+ *   - No auto-reconnect after a real connection drop (Hub reboot, wifi
+ *     blip) was originally missing; auto-reconnect with exponential backoff
+ *     has since been added (see scheduleReconnect()) but reconnect recovery
+ *     depends entirely on the device itself coming back cleanly.
+ *   - On one Home Hub Pro reboot test, the device did NOT come back online
+ *     on its own after the Hub recovered -- it had to be deleted and
+ *     re-added in the Reolink app to recover. Unclear yet whether that's a
+ *     one-off (wifi signal was marginal on that particular device) or a
+ *     more general risk of this connection pattern. Worth watching for on
+ *     any hardware/Hub combo.
+ *   - A short burst of state churn (sleep status flapping connect/null/
+ *     disconnect, a few unhandled stray cmd_ids) is normal right after
+ *     subscribing and again periodically (roughly every ~30 min) -- not a
+ *     bug, just Hub housekeeping traffic.
+ *   - Every incoming message from at least one Home Hub Pro carries an
+ *     undocumented encryption marker (0xc800) not in reolink_aio's known
+ *     list; the driver's decrypt fallback handles it fine, just don't be
+ *     alarmed by the "marker unrecognized" debug line -- AES decryption
+ *     still succeeds.
  *
  * ============================================================================
  * WHY NO WEBHOOK FOR THIS (HUB/NVR-RELAYED) CASE -- confirmed by reading
@@ -41,46 +55,22 @@
  * TCP connection after ~5s idle to conserve the device's own battery --
  * webhook exists purely to catch events after that intentional disconnect.
  * The library doesn't even ASK a Hub for webhook-ability (cmd_id=806) --
- * that check only runs when is_battery is true. This is why this Home Hub
- * Pro's ability response had no webhook field: not a firmware gap, the
- * library never queries a Hub for it in the first place.
+ * that check only runs when is_battery is true. This is also why a Hub's
+ * ability response has no webhook field: not a firmware gap, the library
+ * never queries a Hub for it in the first place.
  *
  * Since a Hub is mains-powered, there's no battery-conservation reason to
  * ever close its persistent connection -- so cmd_id=31 subscription is the
  * complete, permanent mechanism for any Hub/NVR-relayed channel. No webhook,
  * no local HTTP receiver, no companion app.
  *
- * ============================================================================
- * WHAT PRODUCTION WILL NEED (not yet built here -- this is still a test tool)
- * ============================================================================
- * Same is_battery-style split applies to the production Reolink Integration
- * app going forward:
- *   - Hub/NVR-relayed channels (this Home Hub Pro's doorbell/cameras): use
- *     ONLY the persistent cmd_id=31 subscription, exactly as validated here.
- *   - Any FUTURE standalone battery device NOT behind a Hub would need the
- *     webhook path in addition (cmd_id=807/806) plus a local HTTP receiver
- *     endpoint (an app, via mappings{} -- a driver alone can't listen), to
- *     catch events after its own battery-saving disconnect. Not built or
- *     tested yet -- no non-Hub-relayed battery hardware on hand to verify
- *     against.
- *
- * TESTED (2026-08-06/07): overnight soak (~6.5hrs, no drops, keepalives
- * clean) and a deliberate Home Hub Pro reboot -- confirmed the drop is
- * detected correctly (socketStatus() sees the broken pipe) but, as of that
- * test, nothing reconnected automatically. Auto-reconnect (exponential
- * backoff, 5s up to a 300s cap, gives up after 10 attempts) has now been
- * added to socketStatus()/scheduleReconnect() -- NOT YET RE-TESTED against a
- * real reboot. Only reconnects a connection that was fully SUBSCRIBED and
- * then dropped; a mid-handshake error (bad creds, wrong port, etc.) is left
- * for manual retry on purpose, so a real config problem surfaces instead of
- * looping silently.
- *
- * Remaining work before this logic moves into production: re-test the new
- * auto-reconnect against a real Hub reboot and a real wifi-drop, multiple
- * back-to-back ring/motion events, and a longer soak with the reconnect
- * logic in place. This is still a standalone test tool -- nothing here has
- * been shared with gopher-ny yet; the plan is to have a solid, re-tested
- * result before that happens.
+ * The one exception: a standalone battery device NOT behind a Hub would
+ * need the webhook path in addition (cmd_id=807/806) plus a local HTTP
+ * receiver endpoint (an app, via mappings{} -- a driver alone can't listen),
+ * to catch events after its own battery-saving disconnect. Not built or
+ * tested here -- testWebhookFlow() below is a partial reference
+ * implementation of that one-shot registration handshake only, kept for
+ * comparison, not a complete solution.
  *
  * Completely standalone -- own login/session, no dependency on the
  * production Reolink Integration app, cannot affect any existing source or
@@ -137,16 +127,20 @@
  * HOW TO USE
  * ============================================================================
  *  1. Drivers Code > New Driver > paste this in > Save.
- *  2. Devices > Add Device > Virtual > "Reolink Webhook Test Tool" > Save.
- *  3. Fill in Preferences: the Home Hub Pro's IP, Baichuan port (9000
- *     default), username, password, and the webhook URL (leave blank for
- *     now until the companion receiver app exists -- registration will
- *     still complete, you just won't see the resulting events yet).
- *  4. Run "Start Event Subscription" on the Commands tab to test the real,
- *     validated mechanism -- watch Logs, then walk in front of / ring the
- *     device to confirm live events. Run "Stop Event Subscription" when
- *     done. "Test Webhook Flow" is kept only as a reference/comparison path
- *     (see WHY NO WEBHOOK above) -- not needed for a Hub-relayed device.
+ *  2. Devices > Add Device > Virtual > "Reolink Event Subscription Test
+ *     Tool" > Save.
+ *  3. Fill in Preferences: your Hub/NVR's IP, Baichuan port (9000 default),
+ *     username, password, and the channel index of the battery device you
+ *     want to watch (find the channel number in the Reolink app or your
+ *     Hub's device list -- webhook URL can be left blank, it's unused by
+ *     the main flow).
+ *  4. Run "Start Event Subscription" on the Commands tab -- watch Logs,
+ *     then trigger the device (walk in front of it, ring it if it's a
+ *     doorbell, etc.) to confirm live events show up as
+ *     "***** Ch N ... CHANGED *****" lines. Run "Stop Event Subscription"
+ *     when done. "Test Webhook Flow" is a separate, legacy reference path
+ *     (see WHY NO WEBHOOK above) -- not needed for a Hub-relayed device,
+ *     safe to ignore.
  * ============================================================================
  */
 import groovy.transform.Field
@@ -163,14 +157,14 @@ metadata {
         command "testWebhookFlow", [[name: "LEGACY reference only -- one-shot webhook path, not used by production (see header notes)"]]
     }
     preferences {
-        input name: "host", type: "text", title: "Home Hub Pro / device IP address"
+        input name: "host", type: "text", title: "Hub/NVR IP address"
         input name: "port", type: "number", title: "Baichuan TCP port", defaultValue: 9000
         input name: "username", type: "text", title: "Username"
         input name: "password", type: "password", title: "Password"
-        input name: "webhookUrl", type: "text", title: "Webhook URL to register",
-            description: "Leave blank to just test the handshake/capability check without registering a real URL yet"
+        input name: "webhookUrl", type: "text", title: "Webhook URL (legacy testWebhookFlow only, unused by Start Event Subscription)",
+            description: "Leave blank -- only relevant to the legacy one-shot webhook reference path"
         input name: "channel", type: "number", title: "Channel to watch (for event subscription)", defaultValue: 4,
-            description: "The doorbell's channel index behind the Home Hub Pro, e.g. 4 for reolink-14-4"
+            description: "The battery device's channel index behind your Hub/NVR -- check the Reolink app or Hub device list"
     }
 }
 
@@ -221,7 +215,7 @@ def testWebhookFlow() {
 }
 
 /**
- * The RIGHT mechanism for a battery channel behind a Home Hub/NVR, unlike
+ * The RIGHT mechanism for ANY battery channel behind a Hub/NVR, unlike
  * testWebhookFlow() above. Confirmed from reolink_aio's own source:
  * is_battery = NOT is_nvr AND battery-on-channel-0 -- a Hub is always
  * is_nvr=True, so it's NEVER is_battery, so the webhook subscription branch
@@ -230,7 +224,8 @@ def testWebhookFlow() {
  * PERSISTENT TCP subscription (not a one-shot registration) kept alive with
  * periodic cmd_id=93 heartbeats -- real events (motion/AI/visitor/sleep)
  * then arrive as ongoing pushes over the SAME connection, indefinitely,
- * until stopped or the connection drops.
+ * until stopped or the connection drops. Not device-specific -- works the
+ * same regardless of which battery camera/doorbell model is on the channel.
  */
 def startEventSubscription(boolean isReconnect = false) {
     log.info "===== EVENT SUBSCRIPTION: ${isReconnect ? 'RECONNECT' : 'START'} (watching channel ${channel ?: 4}) ====="
@@ -716,8 +711,8 @@ private void handleMessage(int cmdId, String bodyText) {
             break
 
         case "AWAITING_SUBSCRIBE":
-            log.info "===== EVENT SUBSCRIPTION: ACTIVE -- now listening indefinitely. Walk in front of the " +
-                "doorbell/camera to test. Run stopEventSubscription when done. ====="
+            log.info "===== EVENT SUBSCRIPTION: ACTIVE -- now listening indefinitely. Trigger the device " +
+                "(motion, AI detection, doorbell press, etc.) to test. Run stopEventSubscription when done. ====="
             state.stage = "SUBSCRIBED"
             state.reconnectAttempts = 0  // fresh backoff sequence next time it drops
             unschedule("flowTimeoutCheck")
