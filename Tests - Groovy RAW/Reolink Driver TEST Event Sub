@@ -64,11 +64,23 @@
  *     tested yet -- no non-Hub-relayed battery hardware on hand to verify
  *     against.
  *
- * Remaining work before this logic moves into production: reconnect/
- * resilience after a real connection drop, confirming the post-subscribe
- * state churn (sleep flapping connect/null/connect, stray cmd_ids) is
- * consistent across fresh subscribes, multiple back-to-back events, and
- * behavior across a Hubitat hub reboot.
+ * TESTED (2026-08-06/07): overnight soak (~6.5hrs, no drops, keepalives
+ * clean) and a deliberate Home Hub Pro reboot -- confirmed the drop is
+ * detected correctly (socketStatus() sees the broken pipe) but, as of that
+ * test, nothing reconnected automatically. Auto-reconnect (exponential
+ * backoff, 5s up to a 300s cap, gives up after 10 attempts) has now been
+ * added to socketStatus()/scheduleReconnect() -- NOT YET RE-TESTED against a
+ * real reboot. Only reconnects a connection that was fully SUBSCRIBED and
+ * then dropped; a mid-handshake error (bad creds, wrong port, etc.) is left
+ * for manual retry on purpose, so a real config problem surfaces instead of
+ * looping silently.
+ *
+ * Remaining work before this logic moves into production: re-test the new
+ * auto-reconnect against a real Hub reboot and a real wifi-drop, multiple
+ * back-to-back ring/motion events, and a longer soak with the reconnect
+ * logic in place. This is still a standalone test tool -- nothing here has
+ * been shared with gopher-ny yet; the plan is to have a solid, re-tested
+ * result before that happens.
  *
  * Completely standalone -- own login/session, no dependency on the
  * production Reolink Integration app, cannot affect any existing source or
@@ -220,8 +232,15 @@ def testWebhookFlow() {
  * then arrive as ongoing pushes over the SAME connection, indefinitely,
  * until stopped or the connection drops.
  */
-def startEventSubscription() {
-    log.info "===== EVENT SUBSCRIPTION: START (watching channel ${channel ?: 4}) ====="
+def startEventSubscription(boolean isReconnect = false) {
+    log.info "===== EVENT SUBSCRIPTION: ${isReconnect ? 'RECONNECT' : 'START'} (watching channel ${channel ?: 4}) ====="
+    if (!isReconnect) {
+        // Manual (re)start -- treat as a fresh attempt count. An auto-triggered
+        // reconnect leaves the counter alone so scheduleReconnect() can track
+        // it across the whole backoff sequence.
+        state.reconnectAttempts = 0
+        unschedule("reconnectEventSubscription")
+    }
     state.testMode = "subscribe"
     state.messIdCounter = 0
     state.rxBufferHex = ""
@@ -247,6 +266,8 @@ def stopEventSubscription() {
     log.info "===== EVENT SUBSCRIPTION: stopping ====="
     unschedule("sendKeepalive")
     unschedule("flowTimeoutCheck")
+    unschedule("reconnectEventSubscription")
+    state.reconnectAttempts = 0
     if (state.stage == "SUBSCRIBED") {
         try {
             def messId = nextMessId()
@@ -262,13 +283,51 @@ def socketStatus(String status) {
     log.info "Socket status: ${status}"
     if (status?.contains("error") || status?.contains("close")) {
         if (state.stage == "SUBSCRIBED") {
-            log.warn "===== EVENT SUBSCRIPTION: connection lost -- run startEventSubscription again to resume ====="
             unschedule("sendKeepalive")
+            // Only auto-reconnect a connection that was fully established and
+            // then dropped (e.g. Hub reboot/wifi blip). Mid-handshake errors
+            // (bad creds, wrong port, etc.) are left for manual retry -- auto-
+            // retrying those would just loop silently on a real config problem
+            // instead of surfacing it, which is the opposite of what a TEST
+            // tool should do.
+            if (state.testMode == "subscribe") {
+                log.warn "===== EVENT SUBSCRIPTION: connection lost -- scheduling automatic reconnect ====="
+                scheduleReconnect()
+            } else {
+                log.warn "===== EVENT SUBSCRIPTION: connection lost -- run startEventSubscription again to resume ====="
+            }
         } else if (state.stage && state.stage != "DONE") {
             log.warn "===== TEST FLOW: socket closed/errored mid-flow (stage was ${state.stage}) ====="
         }
         state.stage = null
     }
+}
+
+/**
+ * Exponential backoff, capped at 5 minutes: 5s, 10s, 20s, 40s, 80s, 160s,
+ * 300s, 300s... After MAX_RECONNECT_ATTEMPTS (default 10, ~roughly 20-25
+ * cumulative minutes of retrying) it stops and waits for a manual
+ * startEventSubscription() -- an unattended test tool that retries forever
+ * against a genuinely dead/misconfigured target isn't more informative than
+ * one that gives up and says so.
+ */
+@Field static final int MAX_RECONNECT_ATTEMPTS = 10
+
+private void scheduleReconnect() {
+    int attempt = (state.reconnectAttempts ?: 0) + 1
+    state.reconnectAttempts = attempt
+    if (attempt > MAX_RECONNECT_ATTEMPTS) {
+        log.warn "===== EVENT SUBSCRIPTION: giving up after ${MAX_RECONNECT_ATTEMPTS} reconnect attempts -- run startEventSubscription manually ====="
+        return
+    }
+    int delaySec = Math.min(300, 5 * (int) Math.pow(2, attempt - 1))
+    log.warn "===== EVENT SUBSCRIPTION: reconnect attempt ${attempt}/${MAX_RECONNECT_ATTEMPTS} in ${delaySec}s ====="
+    runIn(delaySec, "reconnectEventSubscription")
+}
+
+def reconnectEventSubscription() {
+    log.info "===== EVENT SUBSCRIPTION: reconnecting (attempt ${state.reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS}) ====="
+    startEventSubscription(true)
 }
 
 def flowTimeoutCheck() {
@@ -660,6 +719,7 @@ private void handleMessage(int cmdId, String bodyText) {
             log.info "===== EVENT SUBSCRIPTION: ACTIVE -- now listening indefinitely. Walk in front of the " +
                 "doorbell/camera to test. Run stopEventSubscription when done. ====="
             state.stage = "SUBSCRIBED"
+            state.reconnectAttempts = 0  // fresh backoff sequence next time it drops
             unschedule("flowTimeoutCheck")
             runIn(25, "sendKeepalive")
             break
@@ -813,4 +873,3 @@ private String findXmlValue(String xml, String tagName) {
         return null
     }
 }
-
