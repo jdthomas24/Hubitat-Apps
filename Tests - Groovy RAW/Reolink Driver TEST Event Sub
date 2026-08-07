@@ -1,84 +1,73 @@
 /**
- * Reolink Webhook Test Tool (STANDALONE -- NOT part of the Reolink Integration app)
+ * Reolink Persistent Event Subscription Test Tool (STANDALONE -- NOT part of the Reolink Integration app)
  *
  * ============================================================================
  * WHAT THIS IS FOR
  * ============================================================================
- * Tests whether we can register a local webhook URL with a battery-class
- * Reolink device (camera or doorbell) behind a Home Hub/NVR, using Reolink's
- * proprietary "Baichuan" TCP protocol (port 9000 by default) -- the same
- * mechanism Reolink's own phone app uses for instant motion/doorbell
- * notifications on battery devices, confirmed 100% local (no Reolink cloud
- * involved) by reading the officially-backed reolink_aio library's source.
+ * Tests real-time local event delivery for a battery-class Reolink device
+ * (camera or doorbell) sitting behind a Home Hub/NVR, using Reolink's
+ * proprietary "Baichuan" TCP protocol (port 9000 by default).
  *
- * This is step 1 of 2. This driver only handles the OUTBOUND side: connect,
- * log in, check the device supports webhooks, register a URL. It does NOT
- * receive events -- for that you need a companion test APP with a webhook
- * receiver endpoint (planned as a separate deliverable), since Hubitat
- * drivers can only be TCP CLIENTS (no listening socket), and only APPS can
- * expose local HTTP endpoints (via mappings{}).
+ * VALIDATED MECHANISM (as of 2026-08-06): a PERSISTENT event subscription
+ * (cmd_id=31 on push channel 251), kept alive with periodic cmd_id=93
+ * keepalives, with real events (cmd_id=33 motion/AI/visitor, cmd_id=145
+ * sleep) arriving as ongoing pushes over the same open connection. Live-
+ * tested against a Home Hub Pro watching the battery doorbell: cleanly
+ * captured a full approach -> ring -> departure sequence, connection stayed
+ * up ~5 min with keepalives acking on schedule, no drops.
  *
- * Completely standalone -- own login/session, no dependency on the
- * production Reolink Integration app, cannot affect any existing source or
- * child device. No credentials are ever logged.
- *
- * ============================================================================
- * PROTOCOL NOTES (for future reference / debugging)
- * ============================================================================
- * Every detail below was confirmed directly from reolink_aio's source
- * (baichuan.py, util.py, base_protocol.py, xmls.py) -- not guessed.
- *
- * Header (little-endian), 20 or 24 bytes depending on message class:
- *   bytes[0:4]   magic: f0 de bc 0a (HEADER_MAGIC)
- *   bytes[4:8]   cmd_id
- *   bytes[8:12]  body length
- *   bytes[12:16] message id: byte 0 = channel id (250=host), bytes 1-3 = counter
- *   bytes[16:18] on OUTGOING messages: always "0000". On INCOMING messages:
- *                the actual encryption-type marker (00dd=unencrypted,
- *                01dd/12dd=Baichuan-XOR-encrypted, 02dd/03dd=AES-encrypted)
- *   bytes[18:20] message class: "1464"=24-byte header (normal), "1466"=20-byte
- *                header (some responses), "1465"=used ONLY for the very first
- *                bare nonce request (20-byte header, no payload_offset field)
- *   bytes[20:24] payload_offset (ONLY present for 24-byte "1464"/"0000" header)
- *
- * Two ciphers, used at different stages -- NOT interchangeable:
- *   - Baichuan's own simple XOR cipher (encrypt/decrypt are the same
- *     function, XOR is symmetric): byte ^ XML_KEY[(offset+idx) % 8] ^ offset,
- *     where offset = the channel id (250 for host-level commands). Used ONLY
- *     for the login step itself.
- *   - AES-CFB-128, fixed IV "0123456789abcdef" (literal ASCII bytes, NOT the
- *     IV found during the earlier HTTP-side encryption investigation -- a
- *     different fixed IV for this different protocol). Key = first 16 chars
- *     of md5Modern("{nonce}-{password}"), used as raw UTF-8 bytes. Used for
- *     every authenticated command AFTER login succeeds.
- *
- * "md5Modern" is NOT a plain MD5 hex digest: take the standard 32-char lower
- * case MD5 hex digest, truncate to the first 31 characters, uppercase it.
- * (Then, for the AES key specifically, truncate THAT 31-char result to 16.)
- *
- * Full one-shot sequence for a battery device:
- *   1. cmd_id=1, no body (bare header, message class 1465) -> get a nonce
- *      from the response, derive the AES key
- *   2. cmd_id=1, Baichuan-XOR-encrypted body (LOGIN_XML with md5Modern-hashed
- *      username/password) -> log in
- *   3. cmd_id=199, no body, AES-encrypted -> confirm the "webhook" ability
- *      field is present (only meaningful once already known to be battery)
- *   4. cmd_id=807, AES-encrypted body (WEBHOOK_PUSH XML with our URL) ->
- *      register the webhook
- *   5. cmd_id=806, no body, AES-encrypted -> verify the registration took
- *   6. cmd_id=2, AES-encrypted body (LOGOUT_XML, plaintext creds -- fine,
- *      channel is encrypted) -> logout, then close the socket
+ * NOT NEEDED FOR THIS PROJECT: a one-shot webhook registration (cmd_id=807),
+ * and the companion local HTTP receiver app that would go with it. That was
+ * the original plan but is now known to be unnecessary -- see "WHY NO
+ * WEBHOOK" below. The startEventSubscription()/stopEventSubscription()
+ * commands below are the real, complete mechanism; testWebhookFlow() is
+ * kept only as a reference/comparison path, not something production needs.
  *
  * ============================================================================
- * HOW TO USE
+ * WHY NO WEBHOOK FOR THIS (HUB/NVR-RELAYED) CASE -- confirmed by reading
+ * reolink_aio's own subscribe_events()/get_host_data() source directly
  * ============================================================================
- *  1. Drivers Code > New Driver > paste this in > Save.
- *  2. Devices > Add Device > Virtual > "Reolink Webhook Test Tool" > Save.
- *  3. Fill in Preferences: the Home Hub Pro's IP, Baichuan port (9000
- *     default), username, password, and the webhook URL (leave blank for
- *     now until the companion receiver app exists -- registration will
- *     still complete, you just won't see the resulting events yet).
- *  4. Run "Test Webhook Flow" on the Commands tab, watch Logs.
+ * reolink_aio (the officially-backed library HA uses) treats webhook as a
+ * SUPPLEMENT to the persistent subscription, not an alternative to it -- and
+ * only for STANDALONE battery devices, never for Hub/NVR-relayed channels:
+ *
+ *   is_battery = NOT is_nvr AND device reports a battery
+ *
+ * A Hub/NVR is always is_nvr=True, so any channel behind it is ALWAYS
+ * is_battery=False, regardless of whether the underlying camera itself runs
+ * on battery. Standalone (non-Hub) battery devices get BOTH the cmd_id=31
+ * subscription AND a webhook, because reolink_aio deliberately closes their
+ * TCP connection after ~5s idle to conserve the device's own battery --
+ * webhook exists purely to catch events after that intentional disconnect.
+ * The library doesn't even ASK a Hub for webhook-ability (cmd_id=806) --
+ * that check only runs when is_battery is true. This is why this Home Hub
+ * Pro's ability response had no webhook field: not a firmware gap, the
+ * library never queries a Hub for it in the first place.
+ *
+ * Since a Hub is mains-powered, there's no battery-conservation reason to
+ * ever close its persistent connection -- so cmd_id=31 subscription is the
+ * complete, permanent mechanism for any Hub/NVR-relayed channel. No webhook,
+ * no local HTTP receiver, no companion app.
+ *
+ * ============================================================================
+ * WHAT PRODUCTION WILL NEED (not yet built here -- this is still a test tool)
+ * ============================================================================
+ * Same is_battery-style split applies to the production Reolink Integration
+ * app going forward:
+ *   - Hub/NVR-relayed channels (this Home Hub Pro's doorbell/cameras): use
+ *     ONLY the persistent cmd_id=31 subscription, exactly as validated here.
+ *   - Any FUTURE standalone battery device NOT behind a Hub would need the
+ *     webhook path in addition (cmd_id=807/806) plus a local HTTP receiver
+ *     endpoint (an app, via mappings{} -- a driver alone can't listen), to
+ *     catch events after its own battery-saving disconnect. Not built or
+ *     tested yet -- no non-Hub-relayed battery hardware on hand to verify
+ *     against.
+ *
+ * Remaining work before this logic moves into production: reconnect/
+ * resilience after a real connection drop, confirming the post-subscribe
+ * state churn (sleep flapping connect/null/connect, stray cmd_ids) is
+ * consistent across fresh subscribes, multiple back-to-back events, and
+ * behavior across a Hubitat hub reboot.
  * ============================================================================
  */
 import groovy.transform.Field
