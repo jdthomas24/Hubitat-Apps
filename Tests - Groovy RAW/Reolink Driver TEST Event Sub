@@ -68,6 +68,72 @@
  * state churn (sleep flapping connect/null/connect, stray cmd_ids) is
  * consistent across fresh subscribes, multiple back-to-back events, and
  * behavior across a Hubitat hub reboot.
+ *
+ * Completely standalone -- own login/session, no dependency on the
+ * production Reolink Integration app, cannot affect any existing source or
+ * child device. No credentials are ever logged.
+ *
+ * ============================================================================
+ * PROTOCOL NOTES (for future reference / debugging)
+ * ============================================================================
+ * Every detail below was confirmed directly from reolink_aio's source
+ * (baichuan.py, util.py, base_protocol.py, xmls.py) -- not guessed.
+ *
+ * Header (little-endian), 20 or 24 bytes depending on message class:
+ *   bytes[0:4]   magic: f0 de bc 0a (HEADER_MAGIC)
+ *   bytes[4:8]   cmd_id
+ *   bytes[8:12]  body length
+ *   bytes[12:16] message id: byte 0 = channel id (250=host), bytes 1-3 = counter
+ *   bytes[16:18] on OUTGOING messages: always "0000". On INCOMING messages:
+ *                the actual encryption-type marker (00dd=unencrypted,
+ *                01dd/12dd=Baichuan-XOR-encrypted, 02dd/03dd=AES-encrypted)
+ *   bytes[18:20] message class: "1464"=24-byte header (normal), "1466"=20-byte
+ *                header (some responses), "1465"=used ONLY for the very first
+ *                bare nonce request (20-byte header, no payload_offset field)
+ *   bytes[20:24] payload_offset (ONLY present for 24-byte "1464"/"0000" header)
+ *
+ * Two ciphers, used at different stages -- NOT interchangeable:
+ *   - Baichuan's own simple XOR cipher (encrypt/decrypt are the same
+ *     function, XOR is symmetric): byte ^ XML_KEY[(offset+idx) % 8] ^ offset,
+ *     where offset = the channel id (250 for host-level commands). Used ONLY
+ *     for the login step itself.
+ *   - AES-CFB-128, fixed IV "0123456789abcdef" (literal ASCII bytes, NOT the
+ *     IV found during the earlier HTTP-side encryption investigation -- a
+ *     different fixed IV for this different protocol). Key = first 16 chars
+ *     of md5Modern("{nonce}-{password}"), used as raw UTF-8 bytes. Used for
+ *     every authenticated command AFTER login succeeds.
+ *
+ * "md5Modern" is NOT a plain MD5 hex digest: take the standard 32-char lower
+ * case MD5 hex digest, truncate to the first 31 characters, uppercase it.
+ * (Then, for the AES key specifically, truncate THAT 31-char result to 16.)
+ *
+ * Full one-shot sequence for a battery device:
+ *   1. cmd_id=1, no body (bare header, message class 1465) -> get a nonce
+ *      from the response, derive the AES key
+ *   2. cmd_id=1, Baichuan-XOR-encrypted body (LOGIN_XML with md5Modern-hashed
+ *      username/password) -> log in
+ *   3. cmd_id=199, no body, AES-encrypted -> confirm the "webhook" ability
+ *      field is present (only meaningful once already known to be battery)
+ *   4. cmd_id=807, AES-encrypted body (WEBHOOK_PUSH XML with our URL) ->
+ *      register the webhook
+ *   5. cmd_id=806, no body, AES-encrypted -> verify the registration took
+ *   6. cmd_id=2, AES-encrypted body (LOGOUT_XML, plaintext creds -- fine,
+ *      channel is encrypted) -> logout, then close the socket
+ *
+ * ============================================================================
+ * HOW TO USE
+ * ============================================================================
+ *  1. Drivers Code > New Driver > paste this in > Save.
+ *  2. Devices > Add Device > Virtual > "Reolink Webhook Test Tool" > Save.
+ *  3. Fill in Preferences: the Home Hub Pro's IP, Baichuan port (9000
+ *     default), username, password, and the webhook URL (leave blank for
+ *     now until the companion receiver app exists -- registration will
+ *     still complete, you just won't see the resulting events yet).
+ *  4. Run "Start Event Subscription" on the Commands tab to test the real,
+ *     validated mechanism -- watch Logs, then walk in front of / ring the
+ *     device to confirm live events. Run "Stop Event Subscription" when
+ *     done. "Test Webhook Flow" is kept only as a reference/comparison path
+ *     (see WHY NO WEBHOOK above) -- not needed for a Hub-relayed device.
  * ============================================================================
  */
 import groovy.transform.Field
@@ -80,6 +146,8 @@ metadata {
     definition(name: "Reolink Webhook Test Tool", namespace: "jdthomas24", author: "Jason") {
         capability "Actuator"
         command "testWebhookFlow"
+        command "startEventSubscription", [[name: "Persistent event subscription (cmd_id=31) -- the RIGHT mechanism for a Hub/NVR-relayed battery channel, unlike the one-shot webhook flow above"]]
+        command "stopEventSubscription"
     }
     preferences {
         input name: "host", type: "text", title: "Home Hub Pro / device IP address"
@@ -88,6 +156,8 @@ metadata {
         input name: "password", type: "password", title: "Password"
         input name: "webhookUrl", type: "text", title: "Webhook URL to register",
             description: "Leave blank to just test the handshake/capability check without registering a real URL yet"
+        input name: "channel", type: "number", title: "Channel to watch (for event subscription)", defaultValue: 4,
+            description: "The doorbell's channel index behind the Home Hub Pro, e.g. 4 for reolink-14-4"
     }
 }
 
@@ -117,6 +187,7 @@ def updated() {}
 // ============================================================================
 def testWebhookFlow() {
     log.info "===== TEST WEBHOOK FLOW: START ====="
+    state.testMode = "webhook"
     state.messIdCounter = 0
     state.rxBufferHex = ""
     state.aesKeyHex = null
@@ -136,19 +207,74 @@ def testWebhookFlow() {
     runIn(15, "flowTimeoutCheck")
 }
 
+/**
+ * The RIGHT mechanism for a battery channel behind a Home Hub/NVR, unlike
+ * testWebhookFlow() above. Confirmed from reolink_aio's own source:
+ * is_battery = NOT is_nvr AND battery-on-channel-0 -- a Hub is always
+ * is_nvr=True, so it's NEVER is_battery, so the webhook subscription branch
+ * (testWebhookFlow's path) never even runs for a Hub in the reference
+ * implementation. The actual mechanism used for a Hub/NVR is cmd_id=31, a
+ * PERSISTENT TCP subscription (not a one-shot registration) kept alive with
+ * periodic cmd_id=93 heartbeats -- real events (motion/AI/visitor/sleep)
+ * then arrive as ongoing pushes over the SAME connection, indefinitely,
+ * until stopped or the connection drops.
+ */
+def startEventSubscription() {
+    log.info "===== EVENT SUBSCRIPTION: START (watching channel ${channel ?: 4}) ====="
+    state.testMode = "subscribe"
+    state.messIdCounter = 0
+    state.rxBufferHex = ""
+    state.aesKeyHex = null
+    state.nonce = null
+    state.stage = "CONNECTING"
+    state.last33Status = null
+    state.last33AiType = null
+    state.last145State = null
+    try {
+        interfaces.rawSocket.connect(host, port as int, byteInterface: true)
+        log.info "Socket connect requested to ${host}:${port}"
+    } catch (e) {
+        log.warn "===== EVENT SUBSCRIPTION: FAILED to open socket -- ${e.message} ====="
+        state.stage = null
+        return
+    }
+    runIn(1, "sendNonceRequest")
+    runIn(15, "flowTimeoutCheck")
+}
+
+def stopEventSubscription() {
+    log.info "===== EVENT SUBSCRIPTION: stopping ====="
+    unschedule("sendKeepalive")
+    unschedule("flowTimeoutCheck")
+    if (state.stage == "SUBSCRIBED") {
+        try {
+            def messId = nextMessId()
+            byte[] header = buildHeader1464(2, 0, HOST_CH_ID, messId, 0)
+            sendRaw(header)
+        } catch (e) { /* best effort logout, fine either way */ }
+    }
+    runIn(1, "closeSocket")
+    state.stage = "DONE"
+}
+
 def socketStatus(String status) {
     log.info "Socket status: ${status}"
     if (status?.contains("error") || status?.contains("close")) {
-        if (state.stage && state.stage != "DONE") {
-            log.warn "===== TEST WEBHOOK FLOW: socket closed/errored mid-flow (stage was ${state.stage}) ====="
+        if (state.stage == "SUBSCRIBED") {
+            log.warn "===== EVENT SUBSCRIPTION: connection lost -- run startEventSubscription again to resume ====="
+            unschedule("sendKeepalive")
+        } else if (state.stage && state.stage != "DONE") {
+            log.warn "===== TEST FLOW: socket closed/errored mid-flow (stage was ${state.stage}) ====="
         }
         state.stage = null
     }
 }
 
 def flowTimeoutCheck() {
-    if (state.stage && state.stage != "DONE") {
-        log.warn "===== TEST WEBHOOK FLOW: TIMED OUT waiting for a response (stuck at stage ${state.stage}) ====="
+    // Does NOT apply once SUBSCRIBED -- staying connected indefinitely with
+    // no response pending is the intended, correct state at that point.
+    if (state.stage && state.stage != "DONE" && state.stage != "SUBSCRIBED") {
+        log.warn "===== TEST FLOW: TIMED OUT waiting for a response (stuck at stage ${state.stage}) ====="
         try { interfaces.rawSocket.close() } catch (e) { }
         state.stage = null
     }
@@ -190,6 +316,89 @@ def sendAbilityCheck() {
     byte[] header = buildHeader1464(199, 0, HOST_CH_ID, messId, 0)
     log.info "Step 3/5: sending ability check (cmd_id=199)"
     sendRaw(header)
+}
+
+// ============================================================================
+// Event subscription path (persistent, for a Hub/NVR-relayed channel):
+// cmd_id=31, ch_id=251 (the special "push" channel id, NOT 250/host) -- this
+// is the mechanism that actually applies here, confirmed from reolink_aio's
+// own is_battery gating (see startEventSubscription() doc comment above).
+// ============================================================================
+def sendSubscribe() {
+    state.stage = "AWAITING_SUBSCRIBE"
+    def messId = nextMessId()
+    byte[] header = buildHeader1464(31, 0, 251, messId, 0)
+    log.info "Sending event subscribe (cmd_id=31, ch_id=251 push channel)"
+    sendRaw(header)
+}
+
+/**
+ * Keepalive heartbeat (cmd_id=93, "LinkType"), sent roughly every 25s to keep
+ * the subscription alive -- reolink_aio uses a 30s interval (KEEP_ALLIVE_INTERVAL),
+ * 25s gives a safety margin. Reschedules itself as long as still SUBSCRIBED;
+ * stops silently once stopped/disconnected.
+ */
+def sendKeepalive() {
+    if (state.stage != "SUBSCRIBED") return
+    try {
+        def messId = nextMessId()
+        byte[] header = buildHeader1464(93, 0, HOST_CH_ID, messId, 0)
+        log.debug "Sending keepalive (cmd_id=93)"
+        sendRaw(header)
+    } catch (e) {
+        log.warn "Keepalive send failed: ${e.message}"
+    }
+    runIn(25, "sendKeepalive")
+}
+
+/**
+ * Handles any message received while SUBSCRIBED. The Hub pushes cmd_id=33
+ * (motion/AI/visitor, covering all channels) roughly every 2-3 seconds
+ * REGARDLESS of whether anything actually changed -- logging the full raw
+ * body every time was mostly noise. Now only logs the watched channel's own
+ * values, and only when they actually CHANGE from what was last seen --
+ * same "log transitions, not steady state" approach used throughout the
+ * production app (sendIfChanged()). Everything not related to the watched
+ * channel's motion/AI/sleep status drops to debug-only.
+ */
+private void handlePushedEvent(int cmdId, String bodyText) {
+    int ch = (channel != null ? channel : 4) as int
+
+    if (cmdId == 33) {
+        def elem = findChannelElement(bodyText, "AlarmEvent", ch)
+        def status = elem?.status?.text()
+        def aiType = elem?.AItype?.text()
+        if (status != state.last33Status || aiType != state.last33AiType) {
+            log.info "***** Ch ${ch} motion/AI CHANGED: status='${status}', AItype='${aiType}' *****"
+            state.last33Status = status
+            state.last33AiType = aiType
+        } else {
+            log.debug "Ch ${ch} motion/AI push, unchanged (status='${status}', AItype='${aiType}')"
+        }
+    } else if (cmdId == 145) {
+        def elem = findChannelElement(bodyText, "ChannelInfo", ch)
+        def sleepState = elem?.state?.text()
+        if (sleepState != state.last145State) {
+            log.info "***** Ch ${ch} sleep status CHANGED: '${sleepState}' *****"
+            state.last145State = sleepState
+        } else {
+            log.debug "Ch ${ch} sleep status push, unchanged ('${sleepState}')"
+        }
+    } else {
+        log.debug "Pushed event, cmd_id ${cmdId} (not the watched channel's motion/sleep data)"
+    }
+}
+
+/** Finds a specific channel's element within a repeated-element push body (e.g. <AlarmEvent><channelId>N</channelId>...</AlarmEvent> repeated per channel). Returns null if not found or unparseable. */
+private findChannelElement(String xml, String elementName, int ch) {
+    if (!xml) return null
+    try {
+        def root = new XmlSlurper().parseText(xml)
+        return root.depthFirst().find { it.name() == elementName && it.channelId?.text() == ch.toString() }
+    } catch (e) {
+        log.debug "Failed to parse pushed event XML: ${e.message}"
+        return null
+    }
 }
 
 // ============================================================================
@@ -363,10 +572,20 @@ private String decryptBody(String bodyHex, String encTypeMarker, int chId) {
     "AWAITING_LOGIN": 1,
     "AWAITING_ABILITY": 199,
     "AWAITING_WEBHOOK_REG": 807,
-    "AWAITING_VERIFY": 806
+    "AWAITING_VERIFY": 806,
+    "AWAITING_SUBSCRIBE": 31
 ]
 
 private void handleMessage(int cmdId, String bodyText) {
+    // SUBSCRIBED is the one stage where ANY cmd_id is valid and expected --
+    // that's the whole point, real pushed events arrive under many different
+    // cmd_ids (33=motion/AI/visitor, 145=sleep, etc). Route those separately,
+    // skipping the strict single-expected-cmd_id gate used everywhere else.
+    if (state.stage == "SUBSCRIBED") {
+        handlePushedEvent(cmdId, bodyText)
+        return
+    }
+
     log.info "Received cmd_id ${cmdId}, stage was ${state.stage} -- body: ${escapeForLog(bodyText?.take(300))}"
 
     Integer expectedCmdId = STAGE_EXPECTED_CMD_ID[state.stage]
@@ -379,7 +598,7 @@ private void handleMessage(int cmdId, String bodyText) {
         case "AWAITING_NONCE":
             def nonce = findXmlValue(bodyText, "nonce")
             if (!nonce) {
-                log.warn "===== TEST WEBHOOK FLOW: no nonce found in response, cannot continue ====="
+                log.warn "===== TEST FLOW: no nonce found in response, cannot continue ====="
                 state.stage = null
                 return
             }
@@ -391,7 +610,11 @@ private void handleMessage(int cmdId, String bodyText) {
 
         case "AWAITING_LOGIN":
             log.info "Login response received -- assuming success (no error thrown means status 200/201/300)"
-            sendAbilityCheck()
+            if (state.testMode == "subscribe") {
+                sendSubscribe()
+            } else {
+                sendAbilityCheck()
+            }
             break
 
         case "AWAITING_ABILITY":
@@ -430,6 +653,14 @@ private void handleMessage(int cmdId, String bodyText) {
                 log.warn "===== TEST WEBHOOK FLOW: verify response did not match what we registered ====="
             }
             sendLogoutAndClose()
+            break
+
+        case "AWAITING_SUBSCRIBE":
+            log.info "===== EVENT SUBSCRIPTION: ACTIVE -- now listening indefinitely. Walk in front of the " +
+                "doorbell/camera to test. Run stopEventSubscription when done. ====="
+            state.stage = "SUBSCRIBED"
+            unschedule("flowTimeoutCheck")
+            runIn(25, "sendKeepalive")
             break
 
         default:
@@ -581,3 +812,4 @@ private String findXmlValue(String xml, String tagName) {
         return null
     }
 }
+
