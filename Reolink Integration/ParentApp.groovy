@@ -61,6 +61,11 @@
  *     source (deletes its child devices too)") didn't make that scope
  *     clear enough to avoid it reading like it might apply to whatever's
  *     currently toggled in the list above instead.
+ *  5. Minor: Hub/NVR channel device-type detection (camera vs doorbell)
+ *     now checks the channel's own name instead of a model field the
+ *     Hub/NVR API never returns, fixing a mislabeled doorbell channel.
+ *  6. Minor: added a short note on the discover page about removing
+ *     devices from this page rather than Hubitat's Devices page directly.
  *
  * v1.3.5 -- Capability-detection corrections and additions, cross-checked
  * against Reolink's own officially-backed reolink_aio library:
@@ -471,6 +476,22 @@ def discoverPage(params) {
             }
         } else {
             section {
+                // v1.3.6: explicit warning added after a real-world case where a
+                // device deleted from Hubitat's Devices page (instead of this
+                // page) left the app's own checkbox state stale. On a
+                // single-channel source that stale state gets silently
+                // recreated the next time this page opens; on a multi-channel
+                // source the checkbox stays checked next to a device that's
+                // actually gone, both confusing and a trap for "Apply changes"
+                // recreating it later by accident.
+                paragraph "<span style='display:inline-block;background:#FFEBEE;color:#C62828;font-weight:700;" +
+                    "padding:2px 10px;border-radius:10px;font-size:11px;margin-right:6px;'>HEADS UP</span>" +
+                    "<b>Remove devices from THIS page, not Hubitat's Devices page.</b> Deleting a device " +
+                    "directly from Devices leaves this app's own selection state out of sync with reality -- " +
+                    "on a standalone source it will likely come right back the next time you open this page, " +
+                    "and on a multi-channel (NVR/Home Hub) source it can sit checked here even though it's " +
+                    "actually gone, until something toggles 'Apply changes' and it comes back too. Uncheck it " +
+                    "here (and apply, for multi-channel sources) instead."
                 href name: "runDiscovery", title: "Re-run discovery",
                     description: "Discovery already ran automatically when this page opened. Use this to " +
                         "refresh the channel list, e.g. after pairing a new camera to an NVR/Home Hub.",
@@ -770,7 +791,7 @@ def discoverChannels(sourceId) {
         }
         status?.status?.each { ch ->
             if (ch.online) {
-                channels << [channel: ch.channel, name: ch.name ?: "Channel ${ch.channel}", deviceType: guessDeviceType(ch),
+                channels << [channel: ch.channel, name: ch.name ?: "Channel ${ch.channel}", deviceType: guessChannelDeviceType(ch),
                     isBattery: guessIsBattery(sourceId, ch.channel),
                     supportedFeatures: computeSupportedFeatures(abilityChnList?.getAt(ch.channel as Integer))]
             }
@@ -779,9 +800,42 @@ def discoverChannels(sourceId) {
     return channels
 }
 
+/**
+ * Standalone-source detection (GetDevInfo shape, has a real model field).
+ * Unchanged from prior versions -- confirmed reliable against every
+ * standalone camera/doorbell tested so far.
+ */
 private String guessDeviceType(info) {
     def model = (info?.DevInfo?.model ?: info?.model ?: "").toLowerCase()
     return model.contains("doorbell") ? "doorbell" : "camera"
+}
+
+/**
+ * Hub/NVR-channel detection. FIXED in v1.3.6: this previously called
+ * guessDeviceType(ch) using the SAME model-field check as standalone
+ * sources -- but GetChannelstatus (the Hub/NVR API) never returns a model
+ * field at all, only GetDevInfo (the standalone API) does. That meant
+ * every single Hub/NVR-relayed channel silently fell through to "camera",
+ * always, regardless of what the device actually was. Confirmed in the
+ * field: a doorbell channel named "Doorbell" behind a Home Hub Pro showed
+ * up labeled "(camera)" on the discover page.
+ *
+ * This isn't just a display bug -- deviceType also selects the DRIVER at
+ * creation time (createSelectedChildren()), so a new doorbell discovered
+ * behind a Hub/NVR would have been created with the Reolink Camera driver
+ * instead of Reolink Doorbell, silently missing PushableButton/the visitor
+ * (ring) event entirely.
+ *
+ * Fix: since GetChannelstatus has no model field, use the channel's own
+ * name instead -- Reolink's own Hub/NVR channel naming already reflects
+ * the device type (confirmed: a paired doorbell channel is named
+ * "Doorbell" by default). Falls back to "camera" only when the name gives
+ * no signal either way, same safe default as before, but now actually
+ * checking for the doorbell case first instead of skipping it entirely.
+ */
+private String guessChannelDeviceType(ch) {
+    def name = (ch?.name ?: "").toLowerCase()
+    return name.contains("doorbell") ? "doorbell" : "camera"
 }
 
 /**
