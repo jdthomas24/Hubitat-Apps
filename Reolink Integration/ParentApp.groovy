@@ -495,7 +495,7 @@ def discoverPage(params) {
                     paragraph "⚠️ ${state.lastDiscoveryError}"
                 }
 
-                lastDiscovery.eachWithIndex { ch, idx ->
+                lastDiscovery.each { ch ->
                     def dni = childDni(sourceId, ch.channel)
                     def exists = getChildDevice(dni) != null
                     // v1.3.6: dropped the generic "(camera)" tag from every row --
@@ -508,38 +508,36 @@ def discoverPage(params) {
                     // is pulled tight against it (negative top margin) and given a
                     // colored left-border accent + indent, so it visually reads as
                     // "belonging to" the toggle above it rather than a floating
-                    // line.
+                    // line. A divider after each device's pill separates it from
+                    // the next device, so grouping is legible by proximity/gap
+                    // even though these are technically separate form elements.
                     //
-                    // Two-column grid via Hubitat's width: attribute (out of 12),
-                    // same technique used elsewhere -- puts two channels side by
-                    // side instead of one long vertical list, which matters once a
-                    // source has a lot of channels. A full-width divider follows
-                    // every second device (by position in this list, not channel
-                    // number -- channel numbers can have gaps since offline
-                    // channels are already filtered out before this loop runs) so
-                    // it separates ROWS rather than fighting the side-by-side
-                    // layout. Pill label shortened to just "EXISTING"/"NEW"
-                    // (dropped "DEVICE") since the columns are narrower now.
+                    // NOTE: a two-column grid (width: attribute) was tried here and
+                    // reverted -- Hubitat's "bool" toggle input does not honor
+                    // width: the way it does for other input types, so instead of
+                    // pairing each toggle with its pill side by side it rendered
+                    // every toggle full-width in one block and every pill floated
+                    // into a separate block, breaking the toggle-to-pill pairing
+                    // entirely. Single column is the reliable layout for this
+                    // control type.
                     def doorbellTag = ch.deviceType == "doorbell" ? " (Doorbell)" : ""
                     input "create_${sourceId}_${ch.channel}", "bool",
                         title: "Ch ${ch.channel}: ${ch.name}${doorbellTag}",
-                        defaultValue: exists, submitOnChange: true, width: 6
+                        defaultValue: exists, submitOnChange: true
                     if (exists) {
-                        paragraph width: 6, "<div style='margin:-8px 0 0 32px;border-left:3px solid #378ADD;" +
+                        paragraph "<div style='margin:-8px 0 0 32px;border-left:3px solid #378ADD;" +
                             "padding-left:10px;'><span style='display:inline-block;background:#B5D4F4;color:#042C53;" +
                             "font-weight:500;font-size:11px;letter-spacing:0.3px;padding:2px 10px;" +
-                            "border-radius:20px;margin-right:6px;'>EXISTING</span>" +
-                            "<span style='color:#5F5E5A;font-size:13px;'>Toggle off + apply to remove</span></div>"
+                            "border-radius:20px;margin-right:6px;'>EXISTING DEVICE</span>" +
+                            "<span style='color:#5F5E5A;font-size:13px;'>Toggle off + apply to remove it</span></div>"
                     } else {
-                        paragraph width: 6, "<div style='margin:-8px 0 0 32px;border-left:3px solid #639922;" +
+                        paragraph "<div style='margin:-8px 0 0 32px;border-left:3px solid #639922;" +
                             "padding-left:10px;'><span style='display:inline-block;background:#C0DD97;color:#173404;" +
                             "font-weight:500;font-size:11px;letter-spacing:0.3px;padding:2px 10px;" +
-                            "border-radius:20px;margin-right:6px;'>NEW</span>" +
-                            "<span style='color:#5F5E5A;font-size:13px;'>Toggle on + apply to create</span></div>"
+                            "border-radius:20px;margin-right:6px;'>NEW DEVICE</span>" +
+                            "<span style='color:#5F5E5A;font-size:13px;'>Toggle on + apply to create it</span></div>"
                     }
-                    if (idx % 2 == 1 || idx == lastDiscovery.size() - 1) {
-                        paragraph width: 12, "<div style='height:1px;background:#e0e0e0;margin:12px 0;'></div>"
-                    }
+                    paragraph "<div style='height:1px;background:#e0e0e0;margin:12px 0 12px 32px;'></div>"
                 }
 
                 if (channelCount > 1) {
