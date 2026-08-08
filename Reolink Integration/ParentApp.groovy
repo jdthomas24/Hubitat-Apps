@@ -1,6 +1,6 @@
 /**
  * Reolink Integration (Parent App)
- * Version: 1.3.5
+ * Version: 1.3.6
  *
  * Architecture notes:
  *  - A "source" is anything that answers the Reolink HTTP/JSON API: a standalone
@@ -29,118 +29,38 @@
  * that used to live here (it had grown to roughly 10% of this file's total
  * lines with no benefit to anyone running the current version).
  *
- * v1.3.0 --
- *  1. Discovery now runs automatically the first time you open a source's
- *     Discover page, instead of requiring a manual "Run discovery now" click
- *     first. The button is still there (relabeled "Re-run discovery") for
- *     refreshing an NVR/Home Hub's channel list later, e.g. after pairing a
- *     new camera to it.
- *  2. Capability auto-detection via Reolink's GetAbility API. Each child
- *     device now gets a read-only supportedFeatures attribute, populated
- *     automatically at discovery/creation time and refreshable via a new
- *     Check Abilities command. This does NOT hide or disable any commands --
- *     Hubitat has no way to dynamically remove commands from an individual
- *     device instance -- it's purely informational, so you can tell at a
- *     glance whether e.g. a fixed camera actually has PTZ before trying it,
- *     instead of it just silently erroring. Built from real GetAbility data
- *     gathered across 7 cameras spanning 5 models and multiple firmware
- *     years (2021-2024) -- see fetchAbilityChnList()/computeSupportedFeatures()
- *     for the confirmed field mappings and the defensive handling for keys
- *     that are missing entirely (older firmware) or named differently
- *     depending on firmware version (e.g. supportAiDogCat vs supportAiAnimal).
- *     Package detection's real field name is still unconfirmed (no doorbell
- *     tested yet against this codebase) -- handled with a defensive
- *     name-pattern scan rather than a hardcoded guess, so it can pick up the
- *     real key once confirmed without a code change. Battery-status detection
- *     via GetAbility's battery/batAnalysis fields is also unconfirmed against
- *     a real battery device yet -- guessIsBattery() (GetBatteryInfo-based)
- *     remains the source of truth for batteryMode for now; this is a
- *     candidate for consolidation once tested against real hardware.
- *  3. Clarified battery-device documentation on the Tips page: local
- *     HTTP/HTTPS/ONVIF access is a firmware-level exclusion across Reolink's
- *     ENTIRE battery-powered product line (confirmed via Reolink's own
- *     community forum), not something that varies by power source -- even a
- *     battery-class device running continuously on a DC adapter still has no
- *     local API, because the firmware itself never includes that server
- *     stack on battery models. This applies to the Gen 2 doorbell
- *     specifically as much as any other battery device. The only way to get
- *     data from a battery-class device is through whatever Home Hub/NVR it's
- *     paired to.
- *
- * v1.3.1 -- Fixed a bug in the doorbell driver: it declares capability
- * "PushableButton" (needed for the pushed/numberOfButtons attributes so
- * Rule Machine can trigger on a doorbell press), but never implemented the
- * push() command the capability requires. Declaring a capability adds its
- * commands to the device page -- it does NOT auto-implement them. This
- * meant clicking Push on the device's Commands tab (or anything else
- * calling push()) threw a MissingMethodException. Added push(buttonNumber)
- * and routed the real doorbell-press event through it instead of
- * duplicating the same sendEvent() call in two places.
- * Also (still v1.3.1): fixed computeSupportedFeatures() under-reporting a
- * doorbell's light. Doorbells report their light under a DIFFERENT ability
- * key (supportDoorbellLight) than cameras do (supportFLswitch) -- confirmed
- * against a real wired doorbell. Now checks both. Also confirmed
- * supportAiPackage as the real package-detection field name against that
- * same doorbell (the v1.3.0 defensive "ackage"-substring scan already
- * caught it correctly with no code change needed, kept in place as a
- * safety net for any differently-named variant).
- *
- * v1.3.2 -- Fixed a false negative in PTZ Calibration detection.
- * supportPtzCalibration (the field it was gated on) reported permit:0 on
- * Jason's Back Porch camera, but he confirmed that camera can actually be
- * calibrated via the Reolink app -- the field was simply wrong on the exact
- * camera the original reasoning was built from. Switched the primary signal
- * to supportPtzCheck (the ability flag for GetPtzCheckState, the actual API
- * checkPtzCalibrationStatus calls), which was nonzero on every PTZ camera
- * tested and zero/absent on every non-PTZ camera -- a clean match with real
- * calibration availability. supportPtzCalibration is now only OR'd in as a
- * safety net, not the primary signal. See computeSupportedFeatures().
- *
- * v1.3.3 -- Two related fixes for a known older-firmware bug (documented
- * independently on Reddit and in Reolink's own support docs: some E1-series
- * cameras on ~2021-era firmware have a buggy web server that intermittently
- * returns corrupted/garbled data instead of a real response, due to a
- * buffer-handling issue -- not encryption, not a real connectivity problem).
- * Confirmed via extensive real-device testing: several "garbled" responses
- * captured were BYTE-FOR-BYTE IDENTICAL across completely different login
- * sessions hours apart, which genuine per-session encryption could never
- * produce -- ruling out an earlier encryption hypothesis in favor of this
- * firmware bug explanation.
- *  1. doReolinkApiCall() now distinguishes a JSON parse failure (the bug --
- *     HTTP succeeded, body wasn't valid JSON) from other exceptions (network
- *     failures, timeouts) via groovy.json.JsonException specifically.
- *     reolinkApiCall() retries once immediately with the SAME token (not a
- *     fresh login -- confirmed this isn't an auth problem) when a parse
- *     failure is flagged, since real-world testing showed a second attempt
- *     right after a failed one often succeeds. Reduces (but does not fully
- *     eliminate, since the underlying bug is intermittent) how often an
- *     affected camera gets wrongly reported as asleep.
- *  2. Added a new Tips page section documenting the bug, how to recognize
- *     it (Full-level logs show parse errors, not timeouts), and remediation
- *     steps in order of effort: toggle HTTP/HTTPS off/on + reboot the camera
- *     first, then a firmware update via Reolink's Download Center or a
- *     support request if that doesn't resolve it.
- *
- * v1.3.4 -- Two fixes:
- *  1. Fixed connectivity-failure log spam. A single source going unreachable
- *     (host down, network issue) previously logged 2-3 separate warnings per
- *     poll cycle (raw POST failure, a confusing secondary "Cannot invoke
- *     getAt() on null" from trying to parse a response that never arrived,
- *     and "no token available") -- and repeated that full cascade every
- *     poll for as long as the outage lasted, producing dozens of
- *     near-identical warnings for one ongoing problem. Added
- *     markSourceUnreachable()/markSourceReachable(), which gate on a
- *     per-source state flag so only the TRANSITION into/out of unreachable
- *     logs a warning -- same "log transitions, not steady state" idea as
- *     sleepStatus/sendIfChanged elsewhere in this app. Full-tier logging
- *     still shows every individual attempt for active troubleshooting.
- *     The "connection restored" message uses log.info (always visible),
- *     matching the always-visible log.warn used for "went unreachable" --
- *     it originally used logNormal(), gated behind the Normal/Full logging
- *     tier, so at the default Errors Only level a source would silently
- *     recover with no matching log line for the outage warning it did show.
- *  2. Added a Battery-Monitor-style "Help & Support" section to the main
- *     page: Hubitat Community Thread link and a Buy Me a Coffee link.
+ * v1.3.6 -- Two related fixes to the device-discovery/toggle page
+ * (discoverPage()), both found via real-world use:
+ *  1. FIXED: unchecking an EXISTING device on a single-channel (standalone
+ *     camera) source never actually deleted it. The auto-apply check for
+ *     single-channel sources only called createSelectedChildren() when the
+ *     checkbox was TRUE (`if (settings[...]) { createSelectedChildren(...) }`)
+ *     -- unchecking an existing device sets that setting to FALSE, which
+ *     never entered the block, so the delete branch inside
+ *     createSelectedChildren() (the actual removal logic) never ran. Changed
+ *     the condition to fire whenever the checkbox state disagrees with
+ *     whether the device currently exists (either direction: check an
+ *     absent device to create it, OR uncheck a present device to remove
+ *     it), not just the create direction.
+ *  2. Multi-channel (NVR/Home Hub) sources technically already applied
+ *     removal correctly through the "Create selected devices" toggle, but
+ *     that toggle's label only described creation -- nothing indicated it
+ *     ALSO applies removal for anything unchecked, which is exactly the
+ *     kind of thing that looks like "unchecking didn't do anything."
+ *     Relabeled to "Apply changes (create checked / remove unchecked)" and
+ *     reworded the explanatory paragraph to say so explicitly.
+ *  3. Every per-channel row now says outright whether it's an
+ *     "(Existing Device)" or a "(New Device)" right in the checkbox title,
+ *     instead of only showing a checkmark for existing ones and nothing at
+ *     all for new ones -- removes the previous "is this actually new or
+ *     did I lose track of something" ambiguity.
+ *  4. Reworded the "Danger zone" remove-source toggle to spell out that it
+ *     removes the ENTIRE source and ALL of its child devices in one shot --
+ *     this is a completely separate, all-or-nothing action from the
+ *     per-channel checkboxes above it, and the old wording ("Remove this
+ *     source (deletes its child devices too)") didn't make that scope
+ *     clear enough to avoid it reading like it might apply to whatever's
+ *     currently toggled in the list above instead.
  *
  * v1.3.5 -- Capability-detection corrections and additions, cross-checked
  * against Reolink's own officially-backed reolink_aio library:
@@ -185,7 +105,7 @@ definition(
     oauth: true // required for createAccessToken()/local endpoint access used by the snapshot relay
 )
 
-@Field static final String APP_VERSION = "1.3.5"
+@Field static final String APP_VERSION = "1.3.6"
 
 @Field static final List LOG_LEVELS = ["Errors Only", "Normal", "Full"]
 
@@ -521,9 +441,19 @@ def discoverPage(params) {
         app.updateSetting("confirmCreate", [type: "bool", value: false])
     }
 
+    // v1.3.6 FIX: this used to only fire when the checkbox was TRUE
+    // (`if (settings[...]) { createSelectedChildren(...) }`), which meant
+    // unchecking an EXISTING single-channel device to remove it never
+    // triggered anything -- createSelectedChildren()'s delete branch simply
+    // never ran. Now fires on EITHER direction: checking an absent device
+    // (create) or unchecking a present one (remove), by comparing the
+    // checkbox state against whether the device currently exists.
     if (channelCount == 1 && src) {
         def ch = lastDiscovery[0]
-        if (settings["create_${sourceId}_${ch.channel}"]) {
+        def dni = childDni(sourceId, ch.channel)
+        def existing = getChildDevice(dni) != null
+        def wantIt = settings["create_${sourceId}_${ch.channel}"]
+        if ((wantIt ?: false) != existing) {
             createSelectedChildren(sourceId)
         }
     }
@@ -553,26 +483,48 @@ def discoverPage(params) {
                 lastDiscovery.each { ch ->
                     def dni = childDni(sourceId, ch.channel)
                     def exists = getChildDevice(dni) != null
+                    // v1.3.6: explicit (Existing Device)/(New Device) tag on every row,
+                    // instead of only showing a checkmark for existing ones and nothing
+                    // at all for new ones -- removes the "is this actually new, or did
+                    // I lose track of something" ambiguity.
+                    def statusTag = exists ? "(Existing Device)" : "(New Device)"
                     input "create_${sourceId}_${ch.channel}", "bool",
-                        title: "Ch ${ch.channel}: ${ch.name} (${ch.deviceType})",
+                        title: "Ch ${ch.channel}: ${ch.name} (${ch.deviceType}) ${statusTag}",
                         defaultValue: exists, submitOnChange: true
                     if (exists) {
-                        paragraph "<span style='color:#1a73e8'>✔ Added to device list</span>"
+                        paragraph "<span style='color:#1a73e8'>✔ Already added -- uncheck + apply to remove it</span>"
+                    } else {
+                        paragraph "<span style='color:#43A047'>+ Not yet added -- check + apply to create it</span>"
                     }
                 }
 
                 if (channelCount > 1) {
-                    input "confirmCreate", "bool", title: "Create selected devices", defaultValue: false, submitOnChange: true
-                    paragraph "This source has multiple channels (NVR/Home Hub) -- check the ones you want, " +
-                        "then toggle 'Create selected devices' once to create them all together."
+                    // v1.3.6: relabeled from "Create selected devices" -- that name only
+                    // described half of what this toggle does. It applies BOTH directions:
+                    // creates anything checked that doesn't exist yet, AND removes anything
+                    // unchecked that currently does exist. The old label made it look like
+                    // unchecking a device alone should be enough, when this toggle is the
+                    // step that actually applies it.
+                    input "confirmCreate", "bool", title: "Apply changes (create checked / remove unchecked)",
+                        defaultValue: false, submitOnChange: true
+                    paragraph "This source has multiple channels (NVR/Home Hub). Check the ones you want " +
+                        "ADDED, uncheck any you want REMOVED, then toggle 'Apply changes' once to apply " +
+                        "everything together -- unchecking a device by itself does not remove it until you " +
+                        "toggle this."
                 } else if (channelCount == 1) {
-                    paragraph "Standalone source, one channel -- toggling it on creates the device immediately, no separate confirm needed."
+                    paragraph "Standalone source, one channel -- toggling it applies immediately (checked " +
+                        "creates it, unchecked removes it), no separate confirm needed."
                 }
             }
             section {
                 paragraph pillHeader("Danger zone")
+                // v1.3.6: reworded to make the scope unmistakable -- this is a completely
+                // separate, all-or-nothing action from the per-channel checkboxes above it.
+                // It does NOT apply to whatever's currently toggled in that list; it always
+                // removes this ENTIRE source and every one of its child devices, regardless
+                // of any per-channel selection state.
                 input "confirmRemoveSource", "bool",
-                    title: "Remove this source (deletes its child devices too)",
+                    title: "Remove this ENTIRE source and ALL ${childrenForSource(sourceId as Integer).size()} of its device(s) -- unrelated to the checkboxes above",
                     defaultValue: false, submitOnChange: true
             }
         }
@@ -1004,6 +956,7 @@ def createSelectedChildren(sourceId) {
         } else if (!wantIt && existing) {
             deleteChildDevice(dni)
             forgetSchedulingState(dni)
+            logNormal "Removed child ${dni} (unchecked in discovery list)"
         }
     }
     initializePolling()
