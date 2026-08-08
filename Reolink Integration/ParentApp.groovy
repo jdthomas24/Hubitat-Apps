@@ -489,8 +489,8 @@ def discoverPage(params) {
                     "<b>Remove devices from THIS page, not Hubitat's Devices page.</b> Deleting a device " +
                     "directly from Devices leaves this app's own selection state out of sync with reality -- " +
                     "on a standalone source it will likely come right back the next time you open this page, " +
-                    "and on a multi-channel (NVR/Home Hub) source it can sit checked here even though it's " +
-                    "actually gone, until something toggles 'Apply changes' and it comes back too. Uncheck it " +
+                    "and on a multi-channel (NVR/Home Hub) source it can stay toggled on here even though it's " +
+                    "actually gone, until Apply changes fires and it comes back too. Toggle it off " +
                     "here (and apply, for multi-channel sources) instead."
                 href name: "runDiscovery", title: "Re-run discovery",
                     description: "Discovery already ran automatically when this page opened. Use this to " +
@@ -504,37 +504,49 @@ def discoverPage(params) {
                 lastDiscovery.each { ch ->
                     def dni = childDni(sourceId, ch.channel)
                     def exists = getChildDevice(dni) != null
-                    // v1.3.6: explicit (Existing Device)/(New Device) tag on every row,
-                    // instead of only showing a checkmark for existing ones and nothing
-                    // at all for new ones -- removes the "is this actually new, or did
-                    // I lose track of something" ambiguity.
-                    def statusTag = exists ? "(Existing Device)" : "(New Device)"
+                    // v1.3.6: dropped the generic "(camera)" tag from every row --
+                    // it added noise without disambiguating anything, since almost
+                    // every device already IS a camera. Only "(Doorbell)" earns a
+                    // tag now, since that's the one case worth calling out.
+                    // Existing/New status moved out of the checkbox title entirely
+                    // and into a colored pill directly below each toggle -- easier
+                    // to scan at a glance, and unambiguously attached to its own
+                    // device instead of floating as plain text.
+                    def doorbellTag = ch.deviceType == "doorbell" ? " (Doorbell)" : ""
                     input "create_${sourceId}_${ch.channel}", "bool",
-                        title: "Ch ${ch.channel}: ${ch.name} (${ch.deviceType}) ${statusTag}",
+                        title: "Ch ${ch.channel}: ${ch.name}${doorbellTag}",
                         defaultValue: exists, submitOnChange: true
                     if (exists) {
-                        paragraph "<span style='color:#1a73e8'>✔ Already added -- uncheck + apply to remove it</span>"
+                        paragraph "<span style='display:inline-block;background:#B5D4F4;color:#042C53;" +
+                            "font-weight:700;font-size:11px;letter-spacing:0.3px;padding:3px 12px;" +
+                            "border-radius:20px;margin-right:6px;'>EXISTING DEVICE</span>" +
+                            "<span style='color:#5F5E5A;font-size:13px;'>Toggle off + apply to remove it</span>"
                     } else {
-                        paragraph "<span style='color:#43A047'>+ Not yet added -- check + apply to create it</span>"
+                        paragraph "<span style='display:inline-block;background:#C0DD97;color:#173404;" +
+                            "font-weight:700;font-size:11px;letter-spacing:0.3px;padding:3px 12px;" +
+                            "border-radius:20px;margin-right:6px;'>NEW DEVICE</span>" +
+                            "<span style='color:#5F5E5A;font-size:13px;'>Toggle on + apply to create it</span>"
                     }
                 }
 
                 if (channelCount > 1) {
-                    // v1.3.6: relabeled from "Create selected devices" -- that name only
-                    // described half of what this toggle does. It applies BOTH directions:
-                    // creates anything checked that doesn't exist yet, AND removes anything
-                    // unchecked that currently does exist. The old label made it look like
-                    // unchecking a device alone should be enough, when this toggle is the
-                    // step that actually applies it.
-                    input "confirmCreate", "bool", title: "Apply changes (create checked / remove unchecked)",
+                    // v1.3.6: "Apply changes" pulled visually out of the device list --
+                    // it's an action, not another device toggle, and was easy to mistake
+                    // for one sitting in the same list with the same control style. The
+                    // highlighted box above the toggle is the closest Hubitat's own form
+                    // rendering allows to visually separating it (the toggle input itself
+                    // can't be wrapped inside a custom container).
+                    paragraph rawHtml: true, """
+<div style='border:2px solid #185FA5;border-radius:8px;background:#E6F1FB;padding:10px 14px;margin-top:14px;'>
+  <div style='color:#042C53;font-weight:700;font-size:14px;'>Apply changes</div>
+  <div style='color:#0C447C;font-size:12px;margin-top:2px;'>Creates every device toggled on above and removes every device toggled off. Toggling a device by itself does not apply anything until you toggle this.</div>
+</div>
+"""
+                    input "confirmCreate", "bool", title: "Apply changes now",
                         defaultValue: false, submitOnChange: true
-                    paragraph "This source has multiple channels (NVR/Home Hub). Check the ones you want " +
-                        "ADDED, uncheck any you want REMOVED, then toggle 'Apply changes' once to apply " +
-                        "everything together -- unchecking a device by itself does not remove it until you " +
-                        "toggle this."
                 } else if (channelCount == 1) {
-                    paragraph "Standalone source, one channel -- toggling it applies immediately (checked " +
-                        "creates it, unchecked removes it), no separate confirm needed."
+                    paragraph "Standalone source, one channel -- toggling it applies immediately (toggled on " +
+                        "creates it, toggled off removes it), no separate apply step needed."
                 }
             }
             section {
@@ -545,7 +557,7 @@ def discoverPage(params) {
                 // removes this ENTIRE source and every one of its child devices, regardless
                 // of any per-channel selection state.
                 input "confirmRemoveSource", "bool",
-                    title: "Remove this ENTIRE source and ALL ${childrenForSource(sourceId as Integer).size()} of its device(s) -- unrelated to the checkboxes above",
+                    title: "Remove this ENTIRE source and ALL ${childrenForSource(sourceId as Integer).size()} of its device(s) -- unrelated to the toggles above",
                     defaultValue: false, submitOnChange: true
             }
         }
