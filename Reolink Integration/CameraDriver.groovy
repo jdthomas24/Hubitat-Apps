@@ -1,6 +1,9 @@
 /**
  * Reolink Camera (Component Driver)
- * Version: 1.3.5 -- kept in sync with the parent app's version.
+ * Version: 1.3.6 -- kept in sync with the parent app's version. No functional
+ * change to this driver -- v1.3.6's changes (discovery-page toggle fix and
+ * clarity improvements) are app-side only. Version bumped here only to stay
+ * in sync.
  *
  * v1.3.5 -- confirmed (not a guess) the battery percentage field name via
  * Reolink's officially-backed reolink_aio library: Battery.batteryPercent.
