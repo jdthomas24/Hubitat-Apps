@@ -1,6 +1,11 @@
 /**
  * Reolink Doorbell (Component Driver)
- * Version: 1.3.5 -- kept in sync with the parent app's version. No functional
+ * Version: 1.3.6 -- kept in sync with the parent app's version. No functional
+ * change to this driver -- v1.3.6's changes (discovery-page toggle fix and
+ * clarity improvements) are app-side only. Version bumped here only to stay
+ * in sync.
+ *
+ * v1.3.5 -- kept in sync with the parent app's version. No functional
  * change to this driver -- v1.3.5's changes (capability-detection
  * corrections: doorbell light re-mapped to a new "Status LED" feature
  * instead of Spotlight, new "Night Vision" feature, permit-or-ver ability
