@@ -509,24 +509,32 @@ def discoverPage(params) {
                     // every device already IS a camera. Only "(Doorbell)" earns a
                     // tag now, since that's the one case worth calling out.
                     // Existing/New status moved out of the checkbox title entirely
-                    // and into a colored pill directly below each toggle -- easier
-                    // to scan at a glance, and unambiguously attached to its own
-                    // device instead of floating as plain text.
+                    // and into a colored pill directly below each toggle. Hubitat's
+                    // native toggle can't be wrapped in custom markup, so the pill
+                    // is pulled tight against it (negative top margin) and given a
+                    // colored left-border accent + indent, so it visually reads as
+                    // "belonging to" the toggle above it rather than a floating
+                    // line. A divider after each device's pill separates it from
+                    // the next device, so grouping is legible by proximity/gap
+                    // even though these are technically separate form elements.
                     def doorbellTag = ch.deviceType == "doorbell" ? " (Doorbell)" : ""
                     input "create_${sourceId}_${ch.channel}", "bool",
                         title: "Ch ${ch.channel}: ${ch.name}${doorbellTag}",
                         defaultValue: exists, submitOnChange: true
                     if (exists) {
-                        paragraph "<span style='display:inline-block;background:#B5D4F4;color:#042C53;" +
-                            "font-weight:700;font-size:11px;letter-spacing:0.3px;padding:3px 12px;" +
+                        paragraph "<div style='margin:-8px 0 0 32px;border-left:3px solid #378ADD;" +
+                            "padding-left:10px;'><span style='display:inline-block;background:#B5D4F4;color:#042C53;" +
+                            "font-weight:500;font-size:11px;letter-spacing:0.3px;padding:2px 10px;" +
                             "border-radius:20px;margin-right:6px;'>EXISTING DEVICE</span>" +
-                            "<span style='color:#5F5E5A;font-size:13px;'>Toggle off + apply to remove it</span>"
+                            "<span style='color:#5F5E5A;font-size:13px;'>Toggle off + apply to remove it</span></div>"
                     } else {
-                        paragraph "<span style='display:inline-block;background:#C0DD97;color:#173404;" +
-                            "font-weight:700;font-size:11px;letter-spacing:0.3px;padding:3px 12px;" +
+                        paragraph "<div style='margin:-8px 0 0 32px;border-left:3px solid #639922;" +
+                            "padding-left:10px;'><span style='display:inline-block;background:#C0DD97;color:#173404;" +
+                            "font-weight:500;font-size:11px;letter-spacing:0.3px;padding:2px 10px;" +
                             "border-radius:20px;margin-right:6px;'>NEW DEVICE</span>" +
-                            "<span style='color:#5F5E5A;font-size:13px;'>Toggle on + apply to create it</span>"
+                            "<span style='color:#5F5E5A;font-size:13px;'>Toggle on + apply to create it</span></div>"
                     }
+                    paragraph "<div style='height:1px;background:#e0e0e0;margin:12px 0 12px 32px;'></div>"
                 }
 
                 if (channelCount > 1) {
