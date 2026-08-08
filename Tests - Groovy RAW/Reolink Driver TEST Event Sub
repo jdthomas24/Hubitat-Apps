@@ -37,6 +37,14 @@
  *     list; the driver's decrypt fallback handles it fine, just don't be
  *     alarmed by the "marker unrecognized" debug line -- AES decryption
  *     still succeeds.
+ *   - Rare, isolated bursts of corrupted TCP data (a handful of consecutive
+ *     "invalid magic header" warnings) have been observed -- not connection
+ *     loss, just a moment of garbled bytes on the wire, recovered
+ *     automatically via buffer-drop resync. handlePushedEvent() now
+ *     suppresses any resulting null/undecoded push instead of logging a
+ *     bogus "CHANGED" event, so this shouldn't produce false state changes
+ *     -- but the underlying corruption itself is still unexplained and
+ *     worth watching for recurrence/pattern.
  *
  * ============================================================================
  * WHY NO WEBHOOK FOR THIS (HUB/NVR-RELAYED) CASE -- confirmed by reading
@@ -419,10 +427,24 @@ def sendKeepalive() {
 private void handlePushedEvent(int cmdId, String bodyText) {
     int ch = (channel != null ? channel : 4) as int
 
+    // Guard against corrupted/undecoded pushes: a failed decode or parse
+    // leaves bodyText empty/blank, which would otherwise surface as a
+    // bogus status='null'/AItype='null' "CHANGED" event -- indistinguishable
+    // from a real state change to anything consuming this log/event stream.
+    // Skip entirely rather than log or update state on garbage input.
+    if (!bodyText?.trim()) {
+        log.debug "Pushed event, cmd_id ${cmdId} -- body was empty/undecoded (likely corrupted data), skipping"
+        return
+    }
+
     if (cmdId == 33) {
         def elem = findChannelElement(bodyText, "AlarmEvent", ch)
         def status = elem?.status?.text()
         def aiType = elem?.AItype?.text()
+        if (status == null && aiType == null) {
+            log.debug "Ch ${ch} motion/AI push had no parseable status/AItype (likely corrupted data), skipping"
+            return
+        }
         if (status != state.last33Status || aiType != state.last33AiType) {
             log.info "***** Ch ${ch} motion/AI CHANGED: status='${status}', AItype='${aiType}' *****"
             state.last33Status = status
@@ -433,6 +455,10 @@ private void handlePushedEvent(int cmdId, String bodyText) {
     } else if (cmdId == 145) {
         def elem = findChannelElement(bodyText, "ChannelInfo", ch)
         def sleepState = elem?.state?.text()
+        if (sleepState == null) {
+            log.debug "Ch ${ch} sleep status push had no parseable state (likely corrupted data), skipping"
+            return
+        }
         if (sleepState != state.last145State) {
             log.info "***** Ch ${ch} sleep status CHANGED: '${sleepState}' *****"
             state.last145State = sleepState
@@ -868,3 +894,4 @@ private String findXmlValue(String xml, String tagName) {
         return null
     }
 }
+
