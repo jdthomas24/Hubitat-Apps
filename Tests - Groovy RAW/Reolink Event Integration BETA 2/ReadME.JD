@@ -1,0 +1,53 @@
+Reolink Integration — Event-Driven Exploration (BETA)
+
+Status: internal/shared testing only. Not production. Not on the HPM manifest.
+
+This is a working proof-of-concept for replacing polling with real-time push updates in the Reolink Integration app, shared here for review and testing feedback — particularly from a Hubitat platform perspective, since a couple of things below touch platform-level constraints rather than app-level design choices.
+
+The problem this solves
+
+The production app polls every device on a timer (3s wired / 30s battery). That works, but it means a real, unavoidable delay between something happening at the camera and Hubitat finding out. For something like a doorbell driving a "turn the light on" automation, a few seconds of lag is noticeable.
+
+The mechanism
+
+Reolink's Hub/NVR products (confirmed: Home Hub Pro) support a persistent TCP subscription over their proprietary "Baichuan" protocol (port 9000 default) — once subscribed, the Hub pushes motion/AI/visitor/sleep events in real time over the same open connection, instead of waiting to be asked. This is the same mechanism Home Assistant's own Reolink integration (via reolink_aio) uses as its primary event path, with polling as a fallback tier.
+
+What's confirmed, with real testing
+Per-source, not per-channel scope. One subscription to a Hub/NVR delivers events for every paired channel, not just one. Confirmed by watching genuine, unconfigured channels report real detections on the same connection.
+Reboot recovery. A real Home Hub Pro power-cycle reboot (Hub genuinely unreachable, ~15s) triggered detection, exponential-backoff reconnect, and full resubscription — first attempt, ~6-7s total, no manual re-pair needed.
+Sustained stability. Multiple overnight soak runs (8+ hours) with keepalives on schedule and no unexpected drops. A recurring, benign ~30-minute housekeeping churn pattern was identified and is expected, not a bug.
+One real bug found and fixed during testing: a rare TCP data corruption burst was, before the fix, producing bogus status=null/AItype=null events logged as if they were real state changes. Now suppressed — a failed decode is discarded, not treated as a legitimate value.
+What's NOT yet confirmed — the important part for reviewers
+The status/AItype → motion-state mapping is a best-effort guess, not verified against real side-by-side polling data. See translateToLegacyShape() in ParentApp.groovy.
+Only tested against one Home Hub Pro. Reolink's firmware varies meaningfully across models and ages (already true of the polling side of this app — see e.g. the E1 "false asleep" garbled-response bug fixed in production v1.3.3). This mechanism has not been tested against an NVR, a different Hub model, or a genuinely standalone (non-Hub) device.
+Standalone battery devices are an open question. This project's own earlier finding suggests Reolink's battery-class product line has no local HTTP/ONVIF API at all until paired to a Hub — which may mean a standalone battery source isn't even reachable for this mechanism to apply to. Untested either way.
+Sleep-status pushes (cmd_id=145) are received and logged but not yet acted on — no awake/asleep state change wired up yet.
+Platform-level things worth a platform developer's eyes
+Confirmed from Hubitat's own docs: a socket connection can only be held by a driver, never an app. This shaped the whole architecture — see "Architecture" below. Flagging in case there's context on why that's the platform's design, or on any related constraints not written down anywhere I've found.
+Three raw-socket gotchas hit during development, general enough that they'd likely bite anyone doing similar work on this platform:
+byte[] + byte[] concatenation via + is unsupported in Hubitat's sandbox — needs ByteArrayOutputStream.
+interfaces.rawSocket.connect() needs byteInterface: true passed explicitly, or it silently sends text instead of binary with no error.
+Hubitat's log viewer HTML-renders log lines and silently swallows raw <tag> characters — real XML/HTML payloads need escaping before logging or they appear blank.
+No visibility into whether there's a practical limit on concurrent long-lived rawSocket connections per hub (one per Reolink source in this design) — untested at any real scale, only ever run against a single source.
+Architecture
+
+Three drivers, one app:
+
+ParentApp.groovy — discovery, HTTP polling (still the fallback path), per-source settings, orchestration.
+ReolinkSourceBridge.groovy — new. One instance per source. Holds the persistent socket/subscription (all logic here is unchanged from the validated standalone test tool). Also acts as the real parent device for Camera/Doorbell children, so they nest/collapse under it in the Devices list (matches the pattern used by, e.g., the Pentair IntelliCenter integration) — this is a deliberate structural change from the current production app, where children are app-owned and always render flat.
+CameraDriver.groovy / DoorbellDriver.groovy — genuinely unchanged from production. Neither needed to be touched; the bridge relays their existing parent?.componentX(...) calls straight through to the app via a thin passthrough layer.
+
+Per-source setting: event mode on by default, falls back to polling automatically if the connection can't establish or drops, and silently resumes event mode on reconnect.
+
+Known limitation, not a bug
+
+This app instance was left mid-install once (never reached the final "Done" on Hubitat's own install page) and its child devices were created anyway but the app didn't appear in the Integrations list. That's expected per-platform behavior — an app instance is live and functional as soon as setup begins, but isn't listed until "Done" is pressed on the outer page. Not something this app can control.
+
+Installation
+Drivers Code → add ReolinkSourceBridge.groovy, CameraDriver.groovy, DoorbellDriver.groovy.
+Apps Code → add ParentApp.groovy.
+Add User App → Reolink Integration → add a source → walk through to the main page → Done (see "Known limitation" above for what happens if you don't).
+Feedback wanted
+Anything from a platform/rawSocket perspective on the items above.
+Real-world testing against different Reolink hardware/firmware, if you have any on hand.
+General code review — this is a working prototype, not polished production code.
