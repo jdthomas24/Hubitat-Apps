@@ -1,0 +1,543 @@
+/**
+ * Reolink Source Bridge (Internal Parent Driver)
+ * Version: 1.3.7-BETA1
+ *
+ * NOT user-facing. Created and managed automatically by the Reolink
+ * Integration parent app -- ONE instance per SOURCE (Hub/NVR or standalone).
+ * Users never add this manually.
+ *
+ * Merges two roles into one device, per Jason's refined design (2026-08-09):
+ *  1. Holds the persistent Baichuan TCP event subscription (cmd_id=31) --
+ *     identical code to ReolinkEventConnection.groovy / the validated
+ *     ReolinkEventSubscriptionTestTool.groovy, unchanged.
+ *  2. Is the PARENT that creates Camera/Doorbell devices as ITS OWN children
+ *     (not the app's), via createChannelDevice()/removeChannelDevice() below
+ *     -- this is what makes them nest under this bridge in the Devices list
+ *     (Hubitat's expand/collapse nested UI only applies to device-owned
+ *     children, never app-owned children -- confirmed from Hubitat's own
+ *     docs). Same pattern as the Pentair IntelliCenter Bridge.
+ *
+ * Camera/Doorbell's existing parent?.componentX(...) calls now resolve to
+ * THIS device (since it's their real parent) instead of the app directly --
+ * every componentX() method below is a one-line passthrough forwarding to
+ * this bridge's OWN parent (the app), so CameraDriver.groovy/
+ * DoorbellDriver.groovy needed ZERO changes for this restructuring.
+ */
+import groovy.transform.Field
+import java.security.MessageDigest
+import javax.crypto.Cipher
+import javax.crypto.spec.SecretKeySpec
+import javax.crypto.spec.IvParameterSpec
+
+metadata {
+    definition(name: "Reolink Source Bridge", namespace: "jdthomas24", author: "Jason", component: true) {
+        capability "Actuator"
+        command "startEventSubscription"
+        command "stopEventSubscription"
+        command "configureConnection", [
+            [name: "host", type: "STRING"],
+            [name: "port", type: "NUMBER"],
+            [name: "username", type: "STRING"],
+            [name: "password", type: "STRING"],
+            [name: "sourceId", type: "NUMBER"]
+        ]
+        attribute "connectionStatus", "enum", ["disconnected", "connecting", "connected", "reconnecting"]
+    }
+}
+
+// ============================================================================
+// Child (Camera/Doorbell) management -- NEW vs. the old standalone connection
+// driver. This bridge creates/removes Camera and Doorbell as ITS OWN
+// children, called by the app's createSelectedChildren().
+// ============================================================================
+def createChannelDevice(String driverName, String dni, String name, Integer pollDefault, List supportedFeatures) {
+    def child = addChildDevice("jdthomas24", driverName, dni, [
+        name: name, label: name, isComponent: true
+    ])
+    child.updateDataValue("sourceId", "${state.sourceId}")
+    // dni format: "reolink-{sourceId}-{channel}" -- channel is the 3rd token.
+    def channelToken = dni?.tokenize("-")?.getAt(2)
+    if (channelToken != null) child.updateDataValue("channel", channelToken)
+    child.updateSetting("pollIntervalSec", [type: "number", value: pollDefault])
+    child.receiveSupportedFeatures(supportedFeatures ?: [])
+    return child
+}
+
+def removeChannelDevice(String dni) {
+    deleteChildDevice(dni)
+}
+
+// ============================================================================
+// componentX() passthrough -- Camera/Doorbell call parent?.componentX(...)
+// unchanged; since THIS bridge is now their real parent, each call lands
+// here first and is simply forwarded up to the bridge's own parent (the
+// app), which still does the actual HTTP/API work exactly as before.
+// ============================================================================
+def componentRefresh(child, String dni = null) { parent?.componentRefresh(child, dni) }
+def componentTakeSnapshot(child, String dni = null) { parent?.componentTakeSnapshot(child, dni) }
+def componentPtz(child, String direction, String dni = null) { parent?.componentPtz(child, direction, dni) }
+def componentPtzGoToPreset(child, Integer presetId, String dni = null) { parent?.componentPtzGoToPreset(child, presetId, dni) }
+def componentSavePreset(child, Integer presetId, String name, String dni = null) { parent?.componentSavePreset(child, presetId, name, dni) }
+def componentSetSpotlight(child, Boolean on, String dni = null) { parent?.componentSetSpotlight(child, on, dni) }
+def componentSetNightVision(child, String mode, String dni = null) { parent?.componentSetNightVision(child, mode, dni) }
+def componentSetSiren(child, Boolean on, String dni = null) { parent?.componentSetSiren(child, on, dni) }
+def componentCheckBattery(child, String dni = null) { parent?.componentCheckBattery(child, dni) }
+def componentCheckAbilities(child, String dni = null) { parent?.componentCheckAbilities(child, dni) }
+def componentCalibratePtz(child, String dni = null) { parent?.componentCalibratePtz(child, dni) }
+def componentCheckPtzCalibrationStatus(child, String dni = null) { parent?.componentCheckPtzCalibrationStatus(child, dni) }
+def componentSetPollInterval(child, Integer seconds, String dni = null) { parent?.componentSetPollInterval(child, seconds, dni) }
+def componentSetSnapshotInterval(child, Integer seconds, String dni = null) { parent?.componentSetSnapshotInterval(child, seconds, dni) }
+
+// ============================================================================
+// Everything below is UNCHANGED from ReolinkEventConnection.groovy / the
+// validated ReolinkEventSubscriptionTestTool.groovy -- persistent
+// subscription, reconnect, per-channel push handling. See that file's
+// header notes for what's confirmed vs. still-assumed.
+// ============================================================================
+
+@Field static final String HEADER_MAGIC_HEX = "f0debc0a"
+@Field static final List<Integer> XML_KEY = [0x1F, 0x2D, 0x3C, 0x4B, 0x5A, 0x69, 0x78, 0xFF]
+@Field static final byte[] AES_IV_BYTES = "0123456789abcdef".getBytes("UTF-8")
+@Field static final int HOST_CH_ID = 250
+
+@Field static final String LOGIN_XML =
+    '<?xml version="1.0" encoding="UTF-8" ?><body><LoginUser version="1.1"><userName>%s</userName>' +
+    '<password>%s</password><userVer>1</userVer></LoginUser><LoginNet version="1.1"><type>LAN</type>' +
+    '<udpPort>0</udpPort></LoginNet></body>'
+
+def installed() {}
+def updated() {}
+
+def configureConnection(String host, Integer port, String username, String password, Integer sourceId) {
+    state.host = host
+    state.port = port
+    state.username = username
+    state.password = password
+    state.sourceId = sourceId
+}
+
+def startEventSubscription(boolean isReconnect = false) {
+    log.info "Reolink Source Bridge (source ${state.sourceId}): ${isReconnect ? 'reconnecting' : 'starting'}"
+    if (!isReconnect) {
+        state.reconnectAttempts = 0
+        unschedule("reconnectEventSubscription")
+    }
+    sendEvent(name: "connectionStatus", value: isReconnect ? "reconnecting" : "connecting")
+    state.messIdCounter = 0
+    state.rxBufferHex = ""
+    state.aesKeyHex = null
+    state.nonce = null
+    state.stage = "CONNECTING"
+    state.last33 = [:]
+    state.last145 = [:]
+    try {
+        interfaces.rawSocket.connect(state.host, state.port as int, byteInterface: true)
+    } catch (e) {
+        log.warn "Reolink Source Bridge (source ${state.sourceId}): FAILED to open socket -- ${e.message}"
+        state.stage = null
+        sendEvent(name: "connectionStatus", value: "disconnected")
+        return
+    }
+    runIn(1, "sendNonceRequest")
+    runIn(15, "flowTimeoutCheck")
+}
+
+def stopEventSubscription() {
+    log.info "Reolink Source Bridge (source ${state.sourceId}): stopping event subscription"
+    unschedule("sendKeepalive")
+    unschedule("flowTimeoutCheck")
+    unschedule("reconnectEventSubscription")
+    state.reconnectAttempts = 0
+    if (state.stage == "SUBSCRIBED") {
+        try {
+            def messId = nextMessId()
+            byte[] header = buildHeader1464(2, 0, HOST_CH_ID, messId, 0)
+            sendRaw(header)
+        } catch (e) { /* best effort logout, fine either way */ }
+    }
+    runIn(1, "closeSocket")
+    state.stage = "DONE"
+    sendEvent(name: "connectionStatus", value: "disconnected")
+    parent?.componentEventConnectionStatus(this, state.sourceId, "disconnected")
+}
+
+def socketStatus(String status) {
+    if (status?.contains("error") || status?.contains("close")) {
+        if (state.stage == "SUBSCRIBED") {
+            unschedule("sendKeepalive")
+            log.warn "Reolink Source Bridge (source ${state.sourceId}): connection lost, scheduling reconnect"
+            sendEvent(name: "connectionStatus", value: "reconnecting")
+            parent?.componentEventConnectionStatus(this, state.sourceId, "reconnecting")
+            scheduleReconnect()
+        } else if (state.stage && state.stage != "DONE") {
+            log.warn "Reolink Source Bridge (source ${state.sourceId}): socket closed/errored mid-handshake (stage was ${state.stage})"
+            sendEvent(name: "connectionStatus", value: "disconnected")
+            parent?.componentEventConnectionStatus(this, state.sourceId, "disconnected")
+        }
+        state.stage = null
+    }
+}
+
+@Field static final int MAX_RECONNECT_ATTEMPTS = 10
+
+private void scheduleReconnect() {
+    int attempt = (state.reconnectAttempts ?: 0) + 1
+    state.reconnectAttempts = attempt
+    if (attempt > MAX_RECONNECT_ATTEMPTS) {
+        log.warn "Reolink Source Bridge (source ${state.sourceId}): giving up after ${MAX_RECONNECT_ATTEMPTS} attempts -- falling back to polling"
+        sendEvent(name: "connectionStatus", value: "disconnected")
+        parent?.componentEventConnectionStatus(this, state.sourceId, "disconnected")
+        return
+    }
+    int delaySec = Math.min(300, 5 * (int) Math.pow(2, attempt - 1))
+    log.warn "Reolink Source Bridge (source ${state.sourceId}): reconnect attempt ${attempt}/${MAX_RECONNECT_ATTEMPTS} in ${delaySec}s"
+    runIn(delaySec, "reconnectEventSubscription")
+}
+
+def reconnectEventSubscription() {
+    startEventSubscription(true)
+}
+
+def flowTimeoutCheck() {
+    if (state.stage && state.stage != "DONE" && state.stage != "SUBSCRIBED") {
+        log.warn "Reolink Source Bridge (source ${state.sourceId}): timed out waiting for handshake response (stage ${state.stage})"
+        try { interfaces.rawSocket.close() } catch (e) { }
+        state.stage = null
+        sendEvent(name: "connectionStatus", value: "disconnected")
+        parent?.componentEventConnectionStatus(this, state.sourceId, "disconnected")
+    }
+}
+
+def sendNonceRequest() {
+    state.stage = "AWAITING_NONCE"
+    byte[] header = buildHeader1465(1, HOST_CH_ID, nextMessId())
+    sendRaw(header)
+}
+
+def sendLoginRequest() {
+    state.stage = "AWAITING_LOGIN"
+    def userHash = md5Modern("${state.username}${state.nonce}")
+    def passHash = md5Modern("${state.password}${state.nonce}")
+    String xml = String.format(LOGIN_XML, userHash, passHash)
+    byte[] bodyBytes = xml.getBytes("UTF-8")
+    byte[] encBody = xorBaichuan(bodyBytes, HOST_CH_ID)
+    byte[] header = buildHeader1464(1, bodyBytes.length, HOST_CH_ID, nextMessId(), 0)
+    sendRaw(concatBytes(header, encBody))
+}
+
+def sendSubscribe() {
+    state.stage = "AWAITING_SUBSCRIBE"
+    byte[] header = buildHeader1464(31, 0, 251, nextMessId(), 0)
+    sendRaw(header)
+}
+
+def sendKeepalive() {
+    if (state.stage != "SUBSCRIBED") return
+    try {
+        byte[] header = buildHeader1464(93, 0, HOST_CH_ID, nextMessId(), 0)
+        sendRaw(header)
+    } catch (e) {
+        log.warn "Reolink Source Bridge (source ${state.sourceId}): keepalive send failed: ${e.message}"
+    }
+    runIn(25, "sendKeepalive")
+}
+
+private void handlePushedEvent(int cmdId, String bodyText) {
+    if (!bodyText?.trim()) {
+        log.debug "Reolink Source Bridge (source ${state.sourceId}): cmd_id ${cmdId} body empty/undecoded, skipping"
+        return
+    }
+    if (cmdId == 33) {
+        def elements = findAllChannelElements(bodyText, "AlarmEvent")
+        if (!elements) return
+        def last = state.last33 ?: [:]
+        elements.each { chId, elem ->
+            def status = elem?.status?.text()
+            def aiType = elem?.AItype?.text()
+            def key = chId.toString()
+            def prev = last[key]
+            if (prev == null || prev.status != status || prev.aiType != aiType) {
+                last[key] = [status: status, aiType: aiType]
+                parent?.componentEventChannelUpdate(this, state.sourceId, chId, status, aiType)
+            }
+        }
+        state.last33 = last
+    } else if (cmdId == 145) {
+        def elements = findAllChannelElements(bodyText, "ChannelInfo")
+        if (!elements) return
+        def last = state.last145 ?: [:]
+        elements.each { chId, elem ->
+            def sleepState = elem?.state?.text()
+            def key = chId.toString()
+            if (last[key] != sleepState) {
+                last[key] = sleepState
+                parent?.componentEventSleepUpdate(this, state.sourceId, chId, sleepState)
+            }
+        }
+        state.last145 = last
+    }
+}
+
+private Map findAllChannelElements(String xml, String elementName) {
+    if (!xml) return [:]
+    try {
+        def root = new XmlSlurper().parseText(xml)
+        def result = [:]
+        root.depthFirst().findAll { it.name() == elementName }.each { elem ->
+            def chIdText = elem.channelId?.text()
+            if (chIdText != null && chIdText.isInteger()) {
+                result[chIdText.toInteger()] = elem
+            }
+        }
+        return result
+    } catch (e) {
+        log.debug "Reolink Source Bridge (source ${state.sourceId}): failed to parse pushed event XML: ${e.message}"
+        return [:]
+    }
+}
+
+def parse(String message) {
+    if (!message) return
+    state.rxBufferHex = (state.rxBufferHex ?: "") + message
+    processBuffer()
+}
+
+private void processBuffer() {
+    String hex = state.rxBufferHex ?: ""
+    if (hex.length() < 40) return
+    if (hex.substring(0, 8).toLowerCase() != HEADER_MAGIC_HEX) {
+        log.warn "Reolink Source Bridge (source ${state.sourceId}): invalid magic header, dropping buffer"
+        state.rxBufferHex = ""
+        return
+    }
+    int cmdId = leHexToInt(hex.substring(8, 16))
+    int bodyLen = leHexToInt(hex.substring(16, 24))
+    int chId = Integer.parseInt(hex.substring(24, 26), 16)
+    String encTypeMarker = hex.substring(32, 36).toLowerCase()
+    String messageClass = hex.substring(36, 40).toLowerCase()
+
+    int headerLenBytes
+    int payloadOffset
+    if (messageClass == "1466") {
+        headerLenBytes = 20
+        payloadOffset = bodyLen
+    } else if (messageClass == "1464" || messageClass == "0000") {
+        headerLenBytes = 24
+        if (hex.length() < 48) return
+        payloadOffset = leHexToInt(hex.substring(40, 48))
+        if (payloadOffset == 0) payloadOffset = bodyLen
+    } else {
+        log.warn "Reolink Source Bridge (source ${state.sourceId}): unknown message class '${messageClass}', dropping buffer"
+        state.rxBufferHex = ""
+        return
+    }
+
+    int totalHexNeeded = (headerLenBytes + bodyLen) * 2
+    if (hex.length() < totalHexNeeded) return
+
+    String bodyHex = hex.substring(headerLenBytes * 2, totalHexNeeded)
+    state.rxBufferHex = hex.substring(totalHexNeeded)
+
+    String bodyText = decryptBody(bodyHex, encTypeMarker, chId)
+    handleMessage(cmdId, bodyText)
+
+    if (state.rxBufferHex?.length() >= 40) {
+        processBuffer()
+    }
+}
+
+private String decryptBody(String bodyHex, String encTypeMarker, int chId) {
+    if (!bodyHex) return ""
+    byte[] bodyBytes = hexToBytes(bodyHex)
+    String result = null
+    try {
+        if (encTypeMarker in ["01dd", "12dd"]) {
+            result = new String(xorBaichuan(bodyBytes, chId), "UTF-8")
+        } else if (encTypeMarker in ["02dd", "03dd"]) {
+            result = new String(aesDecrypt(bodyBytes), "UTF-8")
+        } else if (encTypeMarker == "00dd") {
+            result = new String(bodyBytes, "UTF-8")
+        }
+    } catch (e) { result = null }
+    if (result?.trim()?.startsWith("<?xml")) return result
+
+    if (encTypeMarker != "02dd" && encTypeMarker != "03dd") {
+        try {
+            def aesTry = new String(aesDecrypt(bodyBytes), "UTF-8")
+            if (aesTry?.trim()?.startsWith("<?xml")) return aesTry
+        } catch (e) { /* fall through */ }
+    }
+    if (encTypeMarker != "01dd" && encTypeMarker != "12dd") {
+        try {
+            def bcTry = new String(xorBaichuan(bodyBytes, chId), "UTF-8")
+            if (bcTry?.trim()?.startsWith("<?xml")) return bcTry
+        } catch (e) { /* fall through */ }
+    }
+    log.warn "Reolink Source Bridge (source ${state.sourceId}): unable to decrypt body (marker '${encTypeMarker}')"
+    return ""
+}
+
+@Field static final Map<String, Integer> STAGE_EXPECTED_CMD_ID = [
+    "AWAITING_NONCE": 1,
+    "AWAITING_LOGIN": 1,
+    "AWAITING_SUBSCRIBE": 31
+]
+
+private void handleMessage(int cmdId, String bodyText) {
+    if (state.stage == "SUBSCRIBED") {
+        handlePushedEvent(cmdId, bodyText)
+        return
+    }
+    Integer expectedCmdId = STAGE_EXPECTED_CMD_ID[state.stage]
+    if (expectedCmdId != null && cmdId != expectedCmdId) return
+
+    switch (state.stage) {
+        case "AWAITING_NONCE":
+            def nonce = findXmlValue(bodyText, "nonce")
+            if (!nonce) {
+                log.warn "Reolink Source Bridge (source ${state.sourceId}): no nonce in response, cannot continue"
+                state.stage = null
+                sendEvent(name: "connectionStatus", value: "disconnected")
+                parent?.componentEventConnectionStatus(this, state.sourceId, "disconnected")
+                return
+            }
+            state.nonce = nonce
+            state.aesKeyHex = bytesToHex(deriveAesKey(nonce, state.password))
+            sendLoginRequest()
+            break
+        case "AWAITING_LOGIN":
+            sendSubscribe()
+            break
+        case "AWAITING_SUBSCRIBE":
+            state.stage = "SUBSCRIBED"
+            state.reconnectAttempts = 0
+            unschedule("flowTimeoutCheck")
+            runIn(25, "sendKeepalive")
+            log.info "Reolink Source Bridge (source ${state.sourceId}): event subscription ACTIVE"
+            sendEvent(name: "connectionStatus", value: "connected")
+            parent?.componentEventConnectionStatus(this, state.sourceId, "connected")
+            break
+        default:
+            break
+    }
+}
+
+private int nextMessId() {
+    state.messIdCounter = ((state.messIdCounter ?: 0) + 1) % 16777216
+    return state.messIdCounter
+}
+
+private void sendRaw(byte[] data) {
+    interfaces.rawSocket.sendMessage(bytesToHex(data))
+}
+
+private byte[] buildHeader1465(int cmdId, int chId, int messId) {
+    byte[] magic = hexToBytes(HEADER_MAGIC_HEX)
+    byte[] cmdIdB = intToBytesLE(cmdId, 4)
+    byte[] messLenB = intToBytesLE(0, 4)
+    byte[] messIdB = buildMessIdBytes(chId, messId)
+    byte[] encAndClass = hexToBytes("12dc1465")
+    return concatBytes(magic, cmdIdB, messLenB, messIdB, encAndClass)
+}
+
+private byte[] buildHeader1464(int cmdId, int bodyLen, int chId, int messId, int payloadOffset) {
+    byte[] magic = hexToBytes(HEADER_MAGIC_HEX)
+    byte[] cmdIdB = intToBytesLE(cmdId, 4)
+    byte[] messLenB = intToBytesLE(bodyLen, 4)
+    byte[] messIdB = buildMessIdBytes(chId, messId)
+    byte[] statusAndClass = hexToBytes("00001464")
+    byte[] payloadOffB = intToBytesLE(payloadOffset, 4)
+    return concatBytes(magic, cmdIdB, messLenB, messIdB, statusAndClass, payloadOffB)
+}
+
+private byte[] buildMessIdBytes(int chId, int messId) {
+    byte[] out = new byte[4]
+    out[0] = (byte)(chId & 0xFF)
+    byte[] counter = intToBytesLE(messId, 3)
+    out[1] = counter[0]; out[2] = counter[1]; out[3] = counter[2]
+    return out
+}
+
+private byte[] concatBytes(byte[]... arrays) {
+    def out = new java.io.ByteArrayOutputStream()
+    arrays.each { out.write(it) }
+    return out.toByteArray()
+}
+
+private byte[] intToBytesLE(int value, int numBytes) {
+    byte[] out = new byte[numBytes]
+    for (int i = 0; i < numBytes; i++) {
+        out[i] = (byte)((value >> (8 * i)) & 0xFF)
+    }
+    return out
+}
+
+private int leHexToInt(String hex) {
+    int numBytes = hex.length() / 2
+    long value = 0
+    for (int i = numBytes - 1; i >= 0; i--) {
+        int b = Integer.parseInt(hex.substring(i * 2, i * 2 + 2), 16)
+        value = (value << 8) | b
+    }
+    return (int) value
+}
+
+private byte[] xorBaichuan(byte[] buf, int offset) {
+    offset = offset % 256
+    byte[] out = new byte[buf.length]
+    for (int idx = 0; idx < buf.length; idx++) {
+        int key = XML_KEY[(offset + idx) % XML_KEY.size()]
+        int b = (buf[idx] & 0xFF) ^ key ^ offset
+        out[idx] = (byte)(b & 0xFF)
+    }
+    return out
+}
+
+private byte[] aesDecrypt(byte[] body) {
+    if (!body || body.length == 0) return new byte[0]
+    def cipher = Cipher.getInstance("AES/CFB/NoPadding")
+    def keySpec = new SecretKeySpec(hexToBytes(state.aesKeyHex), "AES")
+    def ivSpec = new IvParameterSpec(AES_IV_BYTES)
+    cipher.init(Cipher.DECRYPT_MODE, keySpec, ivSpec)
+    return cipher.doFinal(body)
+}
+
+private String md5Modern(String input) {
+    def digest = MessageDigest.getInstance("MD5")
+    def bytes = digest.digest(input.getBytes("UTF-8"))
+    def hex = bytes.collect { String.format("%02x", it & 0xFF) }.join()
+    return hex.substring(0, 31).toUpperCase()
+}
+
+private byte[] deriveAesKey(String nonce, String pw) {
+    String keyStr = md5Modern("${nonce}-${pw}").substring(0, 16)
+    return keyStr.getBytes("UTF-8")
+}
+
+private byte[] hexToBytes(String hex) {
+    if (!hex) return new byte[0]
+    byte[] result = new byte[hex.length() / 2]
+    for (int i = 0; i < result.length; i++) {
+        result[i] = (byte) Integer.parseInt(hex.substring(i * 2, i * 2 + 2), 16)
+    }
+    return result
+}
+
+private String bytesToHex(byte[] bytes) {
+    return bytes.collect { String.format("%02x", it & 0xFF) }.join()
+}
+
+private String findXmlValue(String xml, String tagName) {
+    if (!xml) return null
+    try {
+        def root = new XmlSlurper().parseText(xml)
+        def node = root.depthFirst().find { it.name() == tagName }
+        return node?.text()?.trim()
+    } catch (e) {
+        return null
+    }
+}
+
+def closeSocket() {
+    try { interfaces.rawSocket.close() } catch (e) { }
+}
