@@ -10,7 +10,7 @@
  * Integration parent app -- ONE instance per SOURCE (Hub/NVR or standalone).
  * Users never add this manually.
  *
- * Merges two roles into one device, per Jason's refined design (2026-08-09):
+ * Merges two roles into one device, per JT refined design (2026-08-09):
  *  1. Holds the persistent Baichuan TCP event subscription (cmd_id=31) --
  *     identical code to ReolinkEventConnection.groovy / the validated
  *     ReolinkEventSubscriptionTestTool.groovy, unchanged.
