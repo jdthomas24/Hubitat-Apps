@@ -152,6 +152,21 @@ definition(
 @Field static final Integer DEFAULT_WIRED_POLL_SEC = 3
 @Field static final Integer DEFAULT_BATTERY_POLL_SEC = 30
 
+// BUG FIX (found 2026-08-09, Jason's live testing): the Baichuan event-
+// subscription protocol always runs on port 9000, completely separate from
+// each source's own configurable HTTPS API port (src.port, default 443,
+// used for GetAiState/GetChannelstatus/etc.). ensureSourceBridge() was
+// wrongly passing src.port into configureConnection() for the SOCKET
+// connection too -- the socket connected fine (443 genuinely answers, just
+// not as Baichuan), sent a valid nonce request, and then sat timed out
+// waiting for a response that was never coming, since nothing on 443
+// understands raw Baichuan binary framing. Symptom matched exactly:
+// Connection Status stuck "disconnected", Nonce/AesKeyHex null, Reconnect
+// Attempts 0 (the timeout path doesn't trigger the reconnect-with-backoff
+// logic at all -- only a drop AFTER a successful connect does). Always use
+// this constant for the socket, never src.port.
+@Field static final Integer BAICHUAN_PORT = 9000
+
 preferences {
     page(name: "mainPage")
     page(name: "addSourcePage")
@@ -1152,7 +1167,7 @@ def ensureSourceBridge(sourceId) {
     def currentStatus = state.sourceConnMode?.get(sourceId.toString())
     def currentlyRunning = currentStatus in ["connected", "connecting", "reconnecting"]
     if (wantEvent && !currentlyRunning) {
-        bridge.configureConnection(src.host, (src.port ?: 443) as Integer, src.username, src.password, sourceId as Integer)
+        bridge.configureConnection(src.host, BAICHUAN_PORT, src.username, src.password, sourceId as Integer)
         bridge.startEventSubscription()
         logNormal "Reolink source ${sourceId}: event subscription starting"
     } else if (!wantEvent && currentlyRunning) {
