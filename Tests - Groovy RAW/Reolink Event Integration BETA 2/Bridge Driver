@@ -198,13 +198,24 @@ def reconnectEventSubscription() {
     startEventSubscription(true)
 }
 
+/**
+ * BUG FIX (found 2026-08-09, Jason's live testing): this previously just
+ * logged, closed the socket, and marked "disconnected" -- with NO retry
+ * scheduled at all. Only socketStatus() catching a drop AFTER a successful
+ * connect called scheduleReconnect(); a timeout during the handshake itself
+ * (e.g. the very first connection attempt never getting a response) went
+ * permanently silent instead, matching exactly what was observed: stuck at
+ * "disconnected" with Reconnect Attempts staying at 0 forever. Now this
+ * path gets the same backoff-retry treatment as a post-subscribe drop.
+ */
 def flowTimeoutCheck() {
     if (state.stage && state.stage != "DONE" && state.stage != "SUBSCRIBED") {
-        log.warn "Reolink Source Bridge (source ${state.sourceId}): timed out waiting for handshake response (stage ${state.stage})"
+        log.warn "Reolink Source Bridge (source ${state.sourceId}): timed out waiting for handshake response (stage ${state.stage}), scheduling reconnect"
         try { interfaces.rawSocket.close() } catch (e) { }
         state.stage = null
-        sendEvent(name: "connectionStatus", value: "disconnected")
-        parent?.componentEventConnectionStatus(this, state.sourceId, "disconnected")
+        sendEvent(name: "connectionStatus", value: "reconnecting")
+        parent?.componentEventConnectionStatus(this, state.sourceId, "reconnecting")
+        scheduleReconnect()
     }
 }
 
