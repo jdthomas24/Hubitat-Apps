@@ -1163,11 +1163,22 @@ def ensureSourceBridge(sourceId) {
         bridge.updateDataValue("sourceId", "${sourceId}")
         logNormal "Reolink source ${sourceId}: bridge device created"
     }
+    // BUG FIX (found 2026-08-09): configureConnection() previously only ran
+    // as part of the "start" branch below, gated on wantEvent -- so if the
+    // toggle was ever off (observed in the field: a bool input's
+    // defaultValue can fail to persist as expected, leaving it showing
+    // unchecked without ever being explicitly clicked), the bridge's stored
+    // host/port/credentials went stale and never refreshed, masking other
+    // fixes (like the BAICHUAN_PORT correction) even after they shipped.
+    // Now unconditional -- always keeps the bridge's connection config in
+    // sync with state.sources, independent of whether the subscription is
+    // actually wanted right now.
+    bridge.configureConnection(src.host, BAICHUAN_PORT, src.username, src.password, sourceId as Integer)
+
     def wantEvent = settings["useEventSubscription_${sourceId}"] != false  // default true
     def currentStatus = state.sourceConnMode?.get(sourceId.toString())
     def currentlyRunning = currentStatus in ["connected", "connecting", "reconnecting"]
     if (wantEvent && !currentlyRunning) {
-        bridge.configureConnection(src.host, BAICHUAN_PORT, src.username, src.password, sourceId as Integer)
         bridge.startEventSubscription()
         logNormal "Reolink source ${sourceId}: event subscription starting"
     } else if (!wantEvent && currentlyRunning) {
