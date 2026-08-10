@@ -1,6 +1,19 @@
 /**
  * Reolink Camera (Component Driver)
- * Version: 1.3.6 -- kept in sync with the parent app's version. No functional
+ * Version: 1.3.7-BETA3 -- FIRST functional change to this driver in the
+ * whole BETA line: added the "lastUpdateSource" attribute (event/poll), set
+ * inside parseReolinkState() via a new optional third parameter that
+ * defaults to "poll" -- the app's existing polling call site needed no
+ * changes at all. Every version note below this one predates the event-
+ * driven BETA work entirely and describes the stable, unrelated production
+ * history of this driver up through 1.3.7.
+ *
+ * Version: 1.3.7 -- kept in sync with the parent app's version. No functional
+ * change to this driver -- v1.3.7's changes (Hub/NVR channel device-type
+ * detection fix, discover-page deletion warning) are app-side only. Version
+ * bumped here only to stay in sync.
+ *
+ * v1.3.6 -- kept in sync with the parent app's version. No functional
  * change to this driver -- v1.3.6's changes (discovery-page toggle fix and
  * clarity improvements) are app-side only. Version bumped here only to stay
  * in sync.
@@ -45,6 +58,13 @@ metadata {
         attribute "snapshotUrl", "string"
         attribute "batteryMode", "enum", ["wired", "battery", "unknown"]
         attribute "sleepStatus", "enum", ["awake", "asleep", "unknown"]
+        // BETA (2026-08-09): tracks whether the most recent state update
+        // came from the real-time event push path or the plain polling
+        // fallback -- added specifically so it's visible at a glance which
+        // mechanism is actually driving this device right now, without
+        // needing to cross-reference the source's bridge device or dig into
+        // Events history.
+        attribute "lastUpdateSource", "enum", ["event", "poll"]
         attribute "spotlight", "enum", ["on", "off"]
         attribute "nightVision", "enum", ["auto", "on", "off"]
         attribute "siren", "enum", ["on", "off"]
@@ -186,9 +206,14 @@ def setSnapshotInterval(seconds) {
     parent?.componentSetSnapshotInterval(this, seconds as Integer, device.deviceNetworkId)
 }
 
-/** Called by the app after it polls GetAiState/GetMdState for this channel. */
-def parseReolinkState(aiState, mdState) {
+/**
+ * Called by the app after either a poll (GetAiState/GetMdState) or a real-
+ * time event push -- source defaults to "poll" so the existing polling call
+ * site needs no change; the app's event path explicitly passes "event".
+ */
+def parseReolinkState(aiState, mdState, String source = "poll") {
     sendIfChanged("sleepStatus", "awake")
+    sendIfChanged("lastUpdateSource", source)
 
     // TODO map real field names once GetAiState/GetMdState payloads are confirmed
     def motionActive = mdState?.state == 1
