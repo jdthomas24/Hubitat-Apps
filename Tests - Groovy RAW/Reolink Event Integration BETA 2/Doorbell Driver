@@ -1,6 +1,15 @@
 /**
  * Reolink Doorbell (Component Driver)
- * Version: 1.3.6 -- kept in sync with the parent app's version. No functional
+ * Version: 1.3.7-BETA3 -- FIRST functional change to this driver in the
+ * whole BETA line: same "lastUpdateSource" addition as CameraDriver.groovy
+ * (see that file's matching note for detail).
+ *
+ * Version: 1.3.7 -- kept in sync with the parent app's version. No functional
+ * change to this driver -- v1.3.7's changes (Hub/NVR channel device-type
+ * detection fix, discover-page deletion warning) are app-side only. Version
+ * bumped here only to stay in sync.
+ *
+ * v1.3.6 -- kept in sync with the parent app's version. No functional
  * change to this driver -- v1.3.6's changes (discovery-page toggle fix and
  * clarity improvements) are app-side only. Version bumped here only to stay
  * in sync.
@@ -56,6 +65,8 @@ metadata {
         attribute "snapshotUrl", "string"
         attribute "batteryMode", "enum", ["wired", "battery", "unknown"]
         attribute "sleepStatus", "enum", ["awake", "asleep", "unknown"]
+        // BETA (2026-08-09): see CameraDriver.groovy's matching note.
+        attribute "lastUpdateSource", "enum", ["event", "poll"]
         attribute "supportedFeatures", "string"
         command "takeSnapshot"
         command "checkAbilities", [[name: "Refreshes the supportedFeatures attribute from the doorbell's current GetAbility data"]]
@@ -112,9 +123,10 @@ def push(buttonNumber) {
 def receiveSupportedFeatures(List features) {
     sendEvent(name: "supportedFeatures", value: features ? features.join(", ") : "None detected")
 }
-/** Called by the app after it polls GetAiState/GetMdState/visitor state for this channel. */
-def parseReolinkState(aiState, mdState) {
+/** Called by the app after either a poll or a real-time event push -- see CameraDriver.groovy's matching note. */
+def parseReolinkState(aiState, mdState, String source = "poll") {
     sendIfChanged("sleepStatus", "awake")
+    sendIfChanged("lastUpdateSource", source)
     // TODO confirm the visitor/doorbell-press field name in your firmware's GetAiState/GetMdState payload
     def visitorPressed = aiState?.visitor?.alarm_state == 1
     if (visitorPressed) {
