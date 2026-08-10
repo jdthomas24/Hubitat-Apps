@@ -1,26 +1,39 @@
 /**
  * Reolink Integration (Parent App)
- * Version: 1.3.7-BETA2
+ * Version: 1.3.7-BETA3
  *
  * ============================================================================
  * BETA BUILD -- INTERNAL TESTING ONLY. NOT part of the HPM manifest, not a
  * public release. Jason's own test build, manually overwritten on his own
  * hub in place of production 1.3.6.
  *
- * BETA2 vs BETA1: restructured to a bridge-device architecture, matching the
- * Pentair IntelliCenter Bridge pattern Jason wants for production. One
- * "Reolink Source Bridge" device per source now holds the persistent event
- * subscription AND is the real parent that creates Camera/Doorbell as ITS
- * OWN children (device-owned, not app-owned) -- this is what makes them
- * nest/collapse under the bridge in the Devices list, since Hubitat's
- * nested-children UI only applies to device-owned children, never app-owned
- * ones. The standalone "Reolink Event Connection" driver from BETA1 is gone
- * -- its logic moved into ReolinkSourceBridge.groovy, which now ALSO creates
- * Camera/Doorbell children directly. CameraDriver.groovy/DoorbellDriver.groovy
- * are STILL genuinely unchanged -- their parent?.componentX(...) calls now
- * resolve to the bridge instead of the app, but the bridge forwards every
- * one straight up to this app via a thin passthrough layer, so neither
- * driver needed to know its parent changed.
+ * BETA3 vs BETA2: two small additions after a night of real live testing
+ * confirmed BETA2's bridge architecture and event mechanism both work
+ * correctly. (1) Camera/Doorbell devices now report a "lastUpdateSource"
+ * attribute (event/poll) so it's visible at a glance which mechanism
+ * produced their current state -- the FIRST actual change to
+ * CameraDriver.groovy/DoorbellDriver.groovy in this whole project (a new
+ * attribute + an optional parameter defaulting to today's behavior, so the
+ * existing polling call site needed no changes). (2) The bridge's
+ * configureConnection() command is no longer exposed as a manual Commands-
+ * tab form -- it's always called programmatically by the app, so the blank
+ * host/port/user/pass boxes just invited confusion. The method itself is
+ * unchanged and still fully callable from the app.
+ *
+ * BETA2 vs BETA1 (for reference): restructured to a bridge-device
+ * architecture, matching the Pentair IntelliCenter Bridge pattern Jason
+ * wants for production. One "Reolink Source Bridge" device per source holds
+ * the persistent event subscription AND is the real parent that creates
+ * Camera/Doorbell as ITS OWN children (device-owned, not app-owned) -- this
+ * is what makes them nest/collapse under the bridge in the Devices list,
+ * since Hubitat's nested-children UI only applies to device-owned children,
+ * never app-owned ones. The standalone "Reolink Event Connection" driver
+ * from BETA1 is gone -- its logic moved into ReolinkSourceBridge.groovy,
+ * which now ALSO creates Camera/Doorbell children directly. Their
+ * parent?.componentX(...) calls resolve to the bridge instead of the app,
+ * forwarded via a thin passthrough layer -- CameraDriver.groovy/
+ * DoorbellDriver.groovy needed no changes for THAT restructuring; BETA3
+ * above is the first time either was actually touched.
  *
  * This is a deliberate breaking-change direction for a future production
  * release (existing installs' device IDs would change) -- Jason has
@@ -141,7 +154,7 @@ definition(
     oauth: true // required for createAccessToken()/local endpoint access used by the snapshot relay
 )
 
-@Field static final String APP_VERSION = "1.3.7-BETA2"
+@Field static final String APP_VERSION = "1.3.7-BETA3"
 
 @Field static final List LOG_LEVELS = ["Errors Only", "Normal", "Full"]
 
@@ -1225,7 +1238,7 @@ def componentEventChannelUpdate(child, sourceId, channelId, String status, Strin
     def target = bridge?.getChildDevice(dni)
     if (!target) return  // channel not added as a device, or not yet discovered -- nothing to update
     def shapes = translateToLegacyShape(status, aiType)
-    target.parseReolinkState(shapes.aiState, shapes.mdState)
+    target.parseReolinkState(shapes.aiState, shapes.mdState, "event")
     logFull "Reolink source ${sourceId} ch ${channelId}: event push -- status='${status}', AItype='${aiType}'"
 }
 
