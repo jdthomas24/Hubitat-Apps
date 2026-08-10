@@ -1,0 +1,15 @@
+elease: Reolink Integration v1.3.7
+
+Adds PIR enable/disable for battery-class cameras, requested by a forum member.
+
+Problem: Battery-powered cameras have no way to pause detection without removing the device from Hubitat entirely. A battery camera doesn't record continuously, PIR is what wakes it up to detect and record in the first place, so there was no way to say "leave this camera set up, just stop it from recording for a while."
+
+The Fix: Added a pirEnabled attribute (a real true/false value, usable directly in Rule Machine conditions) and pirOn/pirOff commands on the camera driver. Turning PIR off does not send a "stop recording" command since there isn't one, it removes the trigger that would have woken the camera up in the first place, which has the same practical effect for these devices. A pirStatusNote attribute shows a plain-language explanation whenever PIR is off, and a log line notes it too, so it's not something you can forget about without a trace. This is available on every camera, the same way PTZ commands already appear even on fixed cameras. On a wired camera it will simply do nothing useful, since there's no PIR hardware to control.
+
+One real use case this unlocks with zero extra setup: a rule that disables PIR when battery drops below a threshold and re-enables it once it's charged back up, since battery level was already an existing attribute.
+
+Not yet confirmed against every camera model's exact API response, if PIR on/off doesn't take effect on your device, let me know and I'll take a look.
+
+Update through HPM.
+
+Thanks to the forum member who asked for this one.
