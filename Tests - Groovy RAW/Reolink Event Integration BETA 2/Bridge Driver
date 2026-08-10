@@ -1,12 +1,16 @@
 /**
  * Reolink Source Bridge (Internal Parent Driver)
- * Version: 1.3.7-BETA2
+ * Version: 1.3.7-BETA3
+ *
+ * BETA3: configureConnection() is no longer a manually-invokable UI command
+ * (see the app's BETA3 note) -- the method is unchanged, just not exposed
+ * on the Commands tab anymore, since the app always calls it programmatically.
  *
  * NOT user-facing. Created and managed automatically by the Reolink
  * Integration parent app -- ONE instance per SOURCE (Hub/NVR or standalone).
  * Users never add this manually.
  *
- * Merges two roles into one device, refined design (2026-08-09):
+ * Merges two roles into one device, per Jason's refined design (2026-08-09):
  *  1. Holds the persistent Baichuan TCP event subscription (cmd_id=31) --
  *     identical code to ReolinkEventConnection.groovy / the validated
  *     ReolinkEventSubscriptionTestTool.groovy, unchanged.
@@ -34,13 +38,15 @@ metadata {
         capability "Actuator"
         command "startEventSubscription"
         command "stopEventSubscription"
-        command "configureConnection", [
-            [name: "host", type: "STRING"],
-            [name: "port", type: "NUMBER"],
-            [name: "username", type: "STRING"],
-            [name: "password", type: "STRING"],
-            [name: "sourceId", type: "NUMBER"]
-        ]
+        // configureConnection() is NOT declared as a UI command (2026-08-09,
+        // per Jason) -- it's always called programmatically by the app
+        // (ensureSourceBridge(), unconditionally, every time it runs), so a
+        // manual "Configure Connection" form on the Commands tab served no
+        // purpose and only invited confusion (blank host/port/user/pass
+        // boxes that looked like a setup step, but weren't one). The method
+        // itself below is unchanged and still fully callable from the app --
+        // declaring/not declaring `command` only controls whether Hubitat
+        // auto-generates a manual UI form for it, not whether it's callable.
         attribute "connectionStatus", "enum", ["disconnected", "connecting", "connected", "reconnecting"]
     }
 }
