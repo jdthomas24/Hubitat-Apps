@@ -1,20 +1,31 @@
 /**
  * Reolink Source Bridge (Internal Parent Driver)
- * Version: 1.3.7-BETA3-DIAG1
+ * Version: 1.3.7-BETA3-DIAG2
  *
- * DIAGNOSTIC BUILD (2026-08-10): temporary logging added to processBuffer()
- * to chase a real bug -- the magic-header corruption pattern escalated from
- * rare/isolated (as originally documented) to firing dozens of times over
- * ~19 hours under real multi-camera load, several parse errors ago showed
- * mangled tag fragments (AItypeu/AIty/ti -- all look like AItype sliced at
- * the wrong byte offset) suggesting a genuine buffer-misalignment bug, not
- * random line noise. Prime suspect: payloadOffset is parsed from the header
- * but never actually used -- only bodyLen drives how much of the buffer
- * gets consumed per message. Now logs a warning every time those two values
- * differ, plus a raw hex dump + the previous message's header fields on
- * every magic-header failure (not gated by the 60s escalation tier, so a
- * real capture is available on the very next occurrence). No suppression
- * logic or reconnect behavior changed -- this build only adds visibility.
+ * DIAGNOSTIC BUILD, REVISED (2026-08-10): DIAG1's "payloadOffset != bodyLen"
+ * check was a dead end -- cross-referenced against an independent third-
+ * party reverse-engineering of this protocol (a Wireshark dissector) and
+ * that field is used to locate an embedded BINARY ATTACHMENT within a
+ * message body, not an alternate total-length value, so divergence there is
+ * likely normal for some message types, not a bug. Removed.
+ *
+ * Real lead instead, found by checking reolink_aio's own release history:
+ * this app's corruption pattern escalated from rare (single-camera testing)
+ * to frequent (dozens of times over ~19 hours) specifically under real
+ * multi-camera load -- and reolink_aio has a release note reading almost
+ * exactly like this symptom: "Fix baichuan fallback and broken cmd
+ * filtering when the same cmd multiple times in chunk," plus a related
+ * "Check for magic header while parsing multiple messages." So this is a
+ * confirmed-real, known-hard part of this protocol even for the reference
+ * library, specifically around multiple messages packed into one TCP read.
+ *
+ * This build now tracks WHICH position within a chunk a failure happens at
+ * (0 = first message of this read, 1+ = Nth message after N earlier
+ * messages parsed successfully from the SAME read) -- state.chunkMsgCount,
+ * reset at the start of every parse() call. If failures cluster at position
+ * 1+ rather than 0, that's strong confirmation of the same bug class
+ * reolink_aio had to patch. Still logs raw hex + the previous message's
+ * header fields as a fallback. No suppression/reconnect behavior changed.
  *
  * BETA3: configureConnection() is no longer a manually-invokable UI command
  * (see the app's BETA3 note) -- the method is unchanged, just not exposed
@@ -329,6 +340,15 @@ private Map findAllChannelElements(String xml, String elementName) {
 
 def parse(String message) {
     if (!message) return
+    // DIAGNOSTIC (2026-08-10, revised): resets per incoming TCP read, so
+    // processBuffer() can track which message NUMBER within THIS chunk it's
+    // currently on. Targets a specific, confirmed bug class in reolink_aio's
+    // own history -- "Fix baichuan fallback and broken cmd filtering when
+    // the same cmd multiple times in chunk" and "Check for magic header
+    // while parsing multiple messages" -- i.e. multiple pushes packed into
+    // one TCP read (exactly what increases under multi-camera load) is a
+    // known-hard part of this protocol even for the reference library.
+    state.chunkMsgCount = 0
     state.rxBufferHex = (state.rxBufferHex ?: "") + message
     processBuffer()
 }
@@ -349,16 +369,25 @@ private void processBuffer() {
         // shows up, so this keeps that signal intact without the noise on
         // the routine case.
         //
-        // DIAGNOSTIC ADDITION (2026-08-10): this pattern escalated from rare
-        // to frequent under real multi-camera load, and several parse errors
-        // showed mangled tag fragments (AItypeu/AIty/ti) suggesting a real
-        // buffer-offset bug rather than genuine line noise -- see the
-        // payloadOffset/bodyLen SUSPECT check above. Always logs the raw hex
-        // of the failing buffer + the previous successfully-parsed message's
-        // header fields now, regardless of the 60s escalation tier, so a
-        // real capture is available the next time this fires.
-        log.warn "Reolink Source Bridge (source ${state.sourceId}): DIAGNOSTIC -- magic header failure. " +
-            "Previous msg: ${state.lastMsg}. Failing buffer (first 240 hex chars): ${hex.take(240)}"
+        // DIAGNOSTIC, REVISED (2026-08-10): dropped the earlier
+        // payloadOffset/bodyLen "SUSPECT" check -- cross-referencing an
+        // independent third-party reverse-engineering of this same protocol
+        // (a Wireshark dissector) showed payload_offset is used to locate an
+        // embedded BINARY ATTACHMENT within a message body, not as an
+        // alternate total-length value, so that divergence is likely normal
+        // for some message types, not a bug. The real lead instead: this
+        // failure escalated from rare to frequent specifically under
+        // multi-camera load, and reolink_aio's own release history has a
+        // fix titled almost exactly for this: "broken cmd filtering when the
+        // same cmd multiple times in chunk." So the key question is WHERE in
+        // a multi-message chunk this fails -- always logs that position now,
+        // plus the previous message's header fields and raw hex, regardless
+        // of the 60s escalation tier.
+        def chunkPos = (state.chunkMsgCount ?: 0)
+        log.warn "Reolink Source Bridge (source ${state.sourceId}): DIAGNOSTIC -- magic header failure at " +
+            "chunk position ${chunkPos} (0 = first message in this TCP read, 1+ = Nth message after " +
+            "successfully parsing ${chunkPos} earlier message(s) from the SAME read). Previous msg: " +
+            "${state.lastMsg}. Failing buffer (first 240 hex chars): ${hex.take(240)}"
         def nowMs = now()
         def recent = (state.corruptionEvents ?: []).findAll { (nowMs - (it as Long)) < 60000 }
         recent << nowMs
@@ -396,28 +425,16 @@ private void processBuffer() {
     int totalHexNeeded = (headerLenBytes + bodyLen) * 2
     if (hex.length() < totalHexNeeded) return
 
-    // DIAGNOSTIC (2026-08-10): payloadOffset is parsed above but never
-    // actually used to determine how much of the buffer to consume --
-    // only bodyLen drives totalHexNeeded. If these two ever legitimately
-    // diverge, the buffer advances to the wrong spot and the NEXT message
-    // starts misaligned -- which would explain the mangled tag fragments
-    // seen in real logs ("AItypeu", "ti", "AIty" -- all look like AItype
-    // sliced at the wrong byte offset, not random corruption). This is the
-    // prime suspect; logging every time they differ, unconditionally, so
-    // it surfaces immediately in the field without waiting for a full
-    // corruption burst to happen.
-    if (payloadOffset != bodyLen) {
-        log.warn "Reolink Source Bridge (source ${state.sourceId}): SUSPECT -- payloadOffset (${payloadOffset}) != bodyLen (${bodyLen}) for cmd_id ${cmdId}, messageClass ${messageClass} -- buffer consumed using bodyLen only, this may be the misalignment source"
-    }
-
     String bodyHex = hex.substring(headerLenBytes * 2, totalHexNeeded)
     state.rxBufferHex = hex.substring(totalHexNeeded)
 
-    // DIAGNOSTIC (2026-08-10): remember this message's header fields so a
-    // subsequent magic-header failure can log what the PREVIOUS message
-    // claimed, not just that something went wrong.
+    // DIAGNOSTIC (2026-08-10): remember this message's header fields (for a
+    // subsequent failure to reference) and bump the chunk position counter --
+    // this is what lets a later failure say "this was message #3 parsed out
+    // of the same TCP read" instead of just "something went wrong."
     state.lastMsg = [cmdId: cmdId, bodyLen: bodyLen, headerLenBytes: headerLenBytes,
         payloadOffset: payloadOffset, messageClass: messageClass, totalHexNeeded: totalHexNeeded]
+    state.chunkMsgCount = (state.chunkMsgCount ?: 0) + 1
 
     String bodyText = decryptBody(bodyHex, encTypeMarker, chId)
     handleMessage(cmdId, bodyText)
