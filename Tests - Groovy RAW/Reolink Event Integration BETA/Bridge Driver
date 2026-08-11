@@ -1,6 +1,23 @@
 /**
  * Reolink Source Bridge (Internal Parent Driver)
- * Version: 1.3.7-BETA3-FIX1-REVERTED
+ * Version: 1.3.7-BETA3-RESYNC1
+ *
+ * RESYNC IMPROVEMENT (2026-08-11): a real resilience improvement, not a
+ * root-cause fix -- the corruption investigation reached a reasoned stopping
+ * point (evidence points to Hub-side wire corruption under load when
+ * composing large multi-channel broadcasts, not a fixable client parsing
+ * bug; see prior version history). This build doesn't try to prevent
+ * corruption, it makes recovery from it smarter: on a magic-header mismatch,
+ * instead of always discarding the ENTIRE buffer, it now scans forward
+ * within that same buffer for the next real occurrence of the magic header
+ * and resyncs from there. Real capture data shows these failures happen
+ * deep inside large (~4000-byte) pushes -- if the desync is only a few
+ * bytes in, the rest of that buffer likely still contains a genuine,
+ * recoverable message, which the old "drop everything" approach always
+ * threw away even when recoverable. Capped at 20 resync attempts per
+ * incoming TCP read to avoid looping indefinitely on a buffer that's
+ * genuinely all noise. See findNextMagicHeaderIndex() and the magic-header
+ * failure handling in processBuffer() below.
  *
  * FIX1's hypothesis DISPROVEN by direct, immediate, unambiguous evidence --
  * not just inconclusive. Real capture showed 36+ failures within 60s of
@@ -352,6 +369,10 @@ def parse(String message) {
     // one TCP read (exactly what increases under multi-camera load) is a
     // known-hard part of this protocol even for the reference library.
     state.chunkMsgCount = 0
+    // RESYNC IMPROVEMENT (2026-08-11): caps how many resync attempts
+    // processBuffer() will make per incoming read -- see the magic-header
+    // failure handling below for what this guards against.
+    state.resyncAttempts = 0
     state.rxBufferHex = (state.rxBufferHex ?: "") + message
     processBuffer()
 }
@@ -381,7 +402,37 @@ private void processBuffer() {
             log.warn "Reolink Source Bridge (source ${state.sourceId}): invalid magic header, dropping buffer " +
                 "(${recent.size()} in the last 60s). ${detail}"
         }
-        state.rxBufferHex = ""
+        // RESYNC IMPROVEMENT (2026-08-11): previously always discarded the
+        // ENTIRE buffer on a mismatch (state.rxBufferHex = ""). Real capture
+        // data shows these failures happen deep inside large (~4000-byte)
+        // pushes -- if the desync is only a few bytes in, the rest of that
+        // same buffer likely still contains a genuine, recoverable message.
+        // Now scans forward within the SAME buffer for the next real
+        // occurrence of the magic header and resyncs from there instead of
+        // discarding everything -- this can recover mid-burst instead of
+        // always waiting for the next TCP read. Capped at 20 resync attempts
+        // per incoming read (state.resyncAttempts, reset in parse()) so a
+        // buffer that's genuinely all noise can't loop indefinitely. If no
+        // header is found anywhere in the current buffer, keeps only the
+        // last 4 bytes as a safety tail in case a real header is split
+        // across this read and the next, instead of discarding everything.
+        def attempts = (state.resyncAttempts ?: 0) + 1
+        state.resyncAttempts = attempts
+        if (attempts > 20) {
+            log.warn "Reolink Source Bridge (source ${state.sourceId}): giving up resyncing after 20 attempts " +
+                "this read, dropping buffer entirely"
+            state.rxBufferHex = ""
+            return
+        }
+        int nextIdx = findNextMagicHeaderIndex(hex, 2)
+        if (nextIdx > 0) {
+            log.debug "Reolink Source Bridge (source ${state.sourceId}): resyncing -- found next magic header " +
+                "${(nextIdx / 2) as Integer} bytes in, discarding only the leading garbage instead of the whole buffer"
+            state.rxBufferHex = hex.substring(nextIdx)
+            processBuffer()
+        } else {
+            state.rxBufferHex = hex.length() > 8 ? hex.substring(hex.length() - 8) : hex
+        }
         return
     }
     int cmdId = leHexToInt(hex.substring(8, 16))
@@ -569,6 +620,25 @@ private byte[] intToBytesLE(int value, int numBytes) {
         out[i] = (byte)((value >> (8 * i)) & 0xFF)
     }
     return out
+}
+
+/**
+ * RESYNC IMPROVEMENT (2026-08-11): scans a hex string for the next
+ * byte-aligned occurrence of the magic header, starting at fromHexIndex
+ * (must itself be even/byte-aligned). Returns the hex-string index if
+ * found, or -1 if the header doesn't appear anywhere in the remaining
+ * buffer. Used by processBuffer()'s magic-header failure handling to
+ * resync from mid-buffer instead of discarding everything.
+ */
+private int findNextMagicHeaderIndex(String hex, int fromHexIndex) {
+    int i = fromHexIndex
+    while (i + 8 <= hex.length()) {
+        if (hex.substring(i, i + 8).equalsIgnoreCase(HEADER_MAGIC_HEX)) {
+            return i
+        }
+        i += 2
+    }
+    return -1
 }
 
 private int leHexToInt(String hex) {
