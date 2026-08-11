@@ -1,31 +1,31 @@
 /**
  * Reolink Source Bridge (Internal Parent Driver)
- * Version: 1.3.7-BETA3-DIAG2
+ * Version: 1.3.7-BETA3-FIX1
  *
- * DIAGNOSTIC BUILD, REVISED (2026-08-10): DIAG1's "payloadOffset != bodyLen"
- * check was a dead end -- cross-referenced against an independent third-
- * party reverse-engineering of this protocol (a Wireshark dissector) and
- * that field is used to locate an embedded BINARY ATTACHMENT within a
- * message body, not an alternate total-length value, so divergence there is
- * likely normal for some message types, not a bug. Removed.
+ * REAL CANDIDATE FIX (2026-08-10), not just another diagnostic pass. DIAG2's
+ * capture data (a real 19-hour, multi-camera log with dozens of magic-header
+ * failures) showed a clear, consistent pattern: virtually every failure's
+ * immediately-preceding successful message had messageClass "0000" -- never
+ * once "1464". "0000" was never actually confirmed/documented in the
+ * original protocol notes (only 1464/1465/1466 were); the code just assumed
+ * it behaved like "1464" (24-byte header, reads a payload_offset field at
+ * bytes[40:48]). Hypothesis: "0000" actually uses a 20-byte header, like
+ * "1466" does -- meaning every "0000" message was being over-consumed by
+ * exactly 4 bytes, eating into the start of the NEXT message's magic header.
+ * Consistent with the real mangled tag fragments seen in parse errors
+ * ("AItypeu", "ti" -- both read like a message starting 4 bytes late), and
+ * with the one real chunk-position-1 capture (a failure caught immediately
+ * after a same-chunk "0000" message, before any cross-read carryover could
+ * obscure it). This build treats "0000" like "1466" (20-byte header, no
+ * payload_offset field) as a direct test of that hypothesis -- see the
+ * messageClass branching in processBuffer() below. If corruption drops
+ * dramatically, hypothesis confirmed; if real messages start failing to
+ * parse instead, hypothesis wrong, equally diagnostic either way.
  *
- * Real lead instead, found by checking reolink_aio's own release history:
- * this app's corruption pattern escalated from rare (single-camera testing)
- * to frequent (dozens of times over ~19 hours) specifically under real
- * multi-camera load -- and reolink_aio has a release note reading almost
- * exactly like this symptom: "Fix baichuan fallback and broken cmd
- * filtering when the same cmd multiple times in chunk," plus a related
- * "Check for magic header while parsing multiple messages." So this is a
- * confirmed-real, known-hard part of this protocol even for the reference
- * library, specifically around multiple messages packed into one TCP read.
- *
- * This build now tracks WHICH position within a chunk a failure happens at
- * (0 = first message of this read, 1+ = Nth message after N earlier
- * messages parsed successfully from the SAME read) -- state.chunkMsgCount,
- * reset at the start of every parse() call. If failures cluster at position
- * 1+ rather than 0, that's strong confirmation of the same bug class
- * reolink_aio had to patch. Still logs raw hex + the previous message's
- * header fields as a fallback. No suppression/reconnect behavior changed.
+ * Logging reverted to DIAG2-style (every failure logged, not just escalated
+ * ones) specifically for this test, so the occurrence COUNT itself is fully
+ * visible to judge whether the fix actually worked -- DIAG3's suppression
+ * is a good idea for later, once this fix is confirmed one way or the other.
  *
  * BETA3: configureConnection() is no longer a manually-invokable UI command
  * (see the app's BETA3 note) -- the method is unchanged, just not exposed
@@ -357,45 +357,26 @@ private void processBuffer() {
     String hex = state.rxBufferHex ?: ""
     if (hex.length() < 40) return
     if (hex.substring(0, 8).toLowerCase() != HEADER_MAGIC_HEX) {
-        // FIX (2026-08-09, per Jason): a single isolated corrupted-TCP-byte
-        // burst is a known, benign, self-recovering pattern -- confirmed by
-        // real testing tonight where it dropped a garbled push with zero
-        // effect on any camera's actual state. Logging it at warn every time
-        // overstates it. Instead of silencing it outright (which would lose
-        // real visibility if this ever becomes a genuine problem), track a
-        // rolling 60s window: 1-2 in that window stays quiet (debug), 3+ in
-        // the same window escalates back to warn -- that's the pattern the
-        // original code comments flagged as "worth investigating" if it ever
-        // shows up, so this keeps that signal intact without the noise on
-        // the routine case.
-        //
-        // DIAGNOSTIC, REVISED (2026-08-10): dropped the earlier
-        // payloadOffset/bodyLen "SUSPECT" check -- cross-referencing an
-        // independent third-party reverse-engineering of this same protocol
-        // (a Wireshark dissector) showed payload_offset is used to locate an
-        // embedded BINARY ATTACHMENT within a message body, not as an
-        // alternate total-length value, so that divergence is likely normal
-        // for some message types, not a bug. The real lead instead: this
-        // failure escalated from rare to frequent specifically under
-        // multi-camera load, and reolink_aio's own release history has a
-        // fix titled almost exactly for this: "broken cmd filtering when the
-        // same cmd multiple times in chunk." So the key question is WHERE in
-        // a multi-message chunk this fails -- always logs that position now,
-        // plus the previous message's header fields and raw hex, regardless
-        // of the 60s escalation tier.
-        def chunkPos = (state.chunkMsgCount ?: 0)
-        log.warn "Reolink Source Bridge (source ${state.sourceId}): DIAGNOSTIC -- magic header failure at " +
-            "chunk position ${chunkPos} (0 = first message in this TCP read, 1+ = Nth message after " +
-            "successfully parsing ${chunkPos} earlier message(s) from the SAME read). Previous msg: " +
-            "${state.lastMsg}. Failing buffer (first 240 hex chars): ${hex.take(240)}"
+        // CANDIDATE FIX TEST (2026-08-10): reverted the DIAG3 suppression
+        // for THIS build specifically -- we're now testing a real
+        // behavioral change (see the messageClass "0000" header-length fix
+        // below), and need a clean, complete count of every occurrence to
+        // judge whether it actually worked, not just the escalated ones.
+        // Back to logging every failure (still tiered by severity).
         def nowMs = now()
         def recent = (state.corruptionEvents ?: []).findAll { (nowMs - (it as Long)) < 60000 }
         recent << nowMs
         state.corruptionEvents = recent
+        def chunkPos = (state.chunkMsgCount ?: 0)
+        def detail = "Chunk position ${chunkPos} (0 = first message in this TCP read, 1+ = Nth message " +
+            "after successfully parsing ${chunkPos} earlier message(s) from the SAME read). Previous msg: " +
+            "${state.lastMsg}. Failing buffer (first 240 hex chars): ${hex.take(240)}"
         if (recent.size() >= 3) {
-            log.warn "Reolink Source Bridge (source ${state.sourceId}): invalid magic header, dropping buffer (${recent.size()} in the last 60s -- pattern worth investigating, not just an isolated blip)"
+            log.warn "Reolink Source Bridge (source ${state.sourceId}): invalid magic header, dropping buffer " +
+                "(${recent.size()} in the last 60s -- NOT recovering cleanly, pattern worth investigating). ${detail}"
         } else {
-            log.debug "Reolink Source Bridge (source ${state.sourceId}): invalid magic header, dropping buffer (isolated, self-recovering)"
+            log.warn "Reolink Source Bridge (source ${state.sourceId}): invalid magic header, dropping buffer " +
+                "(${recent.size()} in the last 60s). ${detail}"
         }
         state.rxBufferHex = ""
         return
@@ -411,7 +392,28 @@ private void processBuffer() {
     if (messageClass == "1466") {
         headerLenBytes = 20
         payloadOffset = bodyLen
-    } else if (messageClass == "1464" || messageClass == "0000") {
+    } else if (messageClass == "0000") {
+        // CANDIDATE FIX (2026-08-10): "0000" was previously lumped in with
+        // "1464" (24-byte header, reads a payload_offset field at bytes
+        // [40:48]) purely by assumption -- it was never actually confirmed
+        // or documented in the original protocol notes, only 1464/1465/1466
+        // were. Real capture data strongly suggests that assumption is
+        // wrong: EVERY magic-header failure logged so far (dozens, across
+        // ~19 hours of real use) shows the immediately-preceding successful
+        // message was messageClass "0000" -- never once "1464". If "0000"
+        // actually uses a 20-byte header (like "1466" does) rather than 24,
+        // then every "0000" message was being over-consumed by exactly 4
+        // bytes, eating into the start of the NEXT message's magic header --
+        // which also matches the mangled tag fragments seen in real parse
+        // errors (e.g. "AItypeu", "ti" -- both consistent with a message
+        // starting 4 bytes late). Treating "0000" like "1466" (20-byte
+        // header, no payload_offset field to read) is the direct test of
+        // that hypothesis. If this is right, magic-header failures should
+        // drop dramatically; if wrong, real messages will start failing to
+        // decrypt/parse instead, which would be equally diagnostic.
+        headerLenBytes = 20
+        payloadOffset = bodyLen
+    } else if (messageClass == "1464") {
         headerLenBytes = 24
         if (hex.length() < 48) return
         payloadOffset = leHexToInt(hex.substring(40, 48))
