@@ -1,31 +1,34 @@
 /**
  * Reolink Source Bridge (Internal Parent Driver)
- * Version: 1.3.7-BETA3-FIX1
+ * Version: 1.3.7-BETA3-FIX1-REVERTED
  *
- * REAL CANDIDATE FIX (2026-08-10), not just another diagnostic pass. DIAG2's
- * capture data (a real 19-hour, multi-camera log with dozens of magic-header
- * failures) showed a clear, consistent pattern: virtually every failure's
- * immediately-preceding successful message had messageClass "0000" -- never
- * once "1464". "0000" was never actually confirmed/documented in the
- * original protocol notes (only 1464/1465/1466 were); the code just assumed
- * it behaved like "1464" (24-byte header, reads a payload_offset field at
- * bytes[40:48]). Hypothesis: "0000" actually uses a 20-byte header, like
- * "1466" does -- meaning every "0000" message was being over-consumed by
- * exactly 4 bytes, eating into the start of the NEXT message's magic header.
- * Consistent with the real mangled tag fragments seen in parse errors
- * ("AItypeu", "ti" -- both read like a message starting 4 bytes late), and
- * with the one real chunk-position-1 capture (a failure caught immediately
- * after a same-chunk "0000" message, before any cross-read carryover could
- * obscure it). This build treats "0000" like "1466" (20-byte header, no
- * payload_offset field) as a direct test of that hypothesis -- see the
- * messageClass branching in processBuffer() below. If corruption drops
- * dramatically, hypothesis confirmed; if real messages start failing to
- * parse instead, hypothesis wrong, equally diagnostic either way.
+ * FIX1's hypothesis DISPROVEN by direct, immediate, unambiguous evidence --
+ * not just inconclusive. Real capture showed 36+ failures within 60s of
+ * every connect after deploying FIX1 -- a clear regression, not an
+ * improvement. The failing buffer's raw hex showed 4 leading zero bytes
+ * before the real magic header (UNDER-consumption), the opposite of what
+ * FIX1 assumed (over-consumption). The specific message involved -- cmd_id
+ * 31 (subscribe confirmation), bodyLen 0, messageClass "0000" -- genuinely
+ * has the full 24-byte header with a real (zero-valued, since there's no
+ * body) payload_offset field. So "0000" grouped with "1464" (both 24-byte)
+ * was correct all along, at least for THIS message type. Reverted
+ * immediately rather than let the regression keep running.
  *
- * Logging reverted to DIAG2-style (every failure logged, not just escalated
- * ones) specifically for this test, so the occurrence COUNT itself is fully
- * visible to judge whether the fix actually worked -- DIAG3's suppression
- * is a good idea for later, once this fix is confirmed one way or the other.
+ * IMPORTANT: reverting does NOT explain the original evidence that
+ * motivated FIX1 -- large ~4000-byte cmd_id=33 (multi-channel AlarmEvent)
+ * pushes consistently preceding failures across a real 19-hour capture is
+ * still real and still unexplained. This build is back to DIAG2's original
+ * behavior/failure rate for that case -- reverting only stops the NEW,
+ * worse regression FIX1 introduced, it doesn't solve the underlying bug.
+ * Next hypothesis needs to be scoped narrower than "all of messageClass
+ * 0000" -- possibly something specific to large multi-channel push bodies
+ * (encryption padding, a body-length-dependent field, or something in how
+ * a ~4000-byte AlarmEvent list is actually framed that a 0-byte subscribe
+ * ack never exercises), not a blanket header-length rule.
+ *
+ * Logging still verbose (DIAG2-style, every failure logged) so the next
+ * capture is fully comparable to both the FIX1 regression and the original
+ * 19-hour baseline.
  *
  * BETA3: configureConnection() is no longer a manually-invokable UI command
  * (see the app's BETA3 note) -- the method is unchanged, just not exposed
@@ -392,28 +395,24 @@ private void processBuffer() {
     if (messageClass == "1466") {
         headerLenBytes = 20
         payloadOffset = bodyLen
-    } else if (messageClass == "0000") {
-        // CANDIDATE FIX (2026-08-10): "0000" was previously lumped in with
-        // "1464" (24-byte header, reads a payload_offset field at bytes
-        // [40:48]) purely by assumption -- it was never actually confirmed
-        // or documented in the original protocol notes, only 1464/1465/1466
-        // were. Real capture data strongly suggests that assumption is
-        // wrong: EVERY magic-header failure logged so far (dozens, across
-        // ~19 hours of real use) shows the immediately-preceding successful
-        // message was messageClass "0000" -- never once "1464". If "0000"
-        // actually uses a 20-byte header (like "1466" does) rather than 24,
-        // then every "0000" message was being over-consumed by exactly 4
-        // bytes, eating into the start of the NEXT message's magic header --
-        // which also matches the mangled tag fragments seen in real parse
-        // errors (e.g. "AItypeu", "ti" -- both consistent with a message
-        // starting 4 bytes late). Treating "0000" like "1466" (20-byte
-        // header, no payload_offset field to read) is the direct test of
-        // that hypothesis. If this is right, magic-header failures should
-        // drop dramatically; if wrong, real messages will start failing to
-        // decrypt/parse instead, which would be equally diagnostic.
-        headerLenBytes = 20
-        payloadOffset = bodyLen
-    } else if (messageClass == "1464") {
+    } else if (messageClass == "1464" || messageClass == "0000") {
+        // REVERTED (2026-08-10): FIX1's hypothesis that "0000" uses a
+        // 20-byte header (no payload_offset field) was DISPROVEN by direct
+        // evidence, not just "didn't help" -- it caused an immediate,
+        // severe regression (36+ failures within 60s of every connect).
+        // The failing buffer's raw hex showed 4 leading zero bytes before
+        // the real magic header -- i.e. UNDER-consumption by 4 bytes, the
+        // opposite problem from what FIX1 assumed. The message in question
+        // (cmd_id=31, bodyLen=0, the subscribe confirmation itself) genuinely
+        // has the 24-byte header with a real (just zero-valued, since there's
+        // no body) payload_offset field. Back to the original behavior --
+        // "0000" grouped with "1464", both 24-byte header. The EARLIER
+        // evidence that motivated FIX1 (large ~4000-byte cmd_id=33 pushes
+        // consistently preceding failures) is real and still unexplained --
+        // reverting this specific fix doesn't resolve that, it only stops
+        // making things actively worse. Next hypothesis should be scoped
+        // narrower than "all of messageClass 0000" -- possibly something
+        // specific to large multi-channel push bodies, not header length.
         headerLenBytes = 24
         if (hex.length() < 48) return
         payloadOffset = leHexToInt(hex.substring(40, 48))
