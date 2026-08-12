@@ -310,9 +310,15 @@ private void handlePushedEvent(int cmdId, String bodyText) {
         return
     }
     if (cmdId == 33) {
-        def elements = findAllChannelElements(bodyText, "AlarmEvent")
-        if (!elements) return
-        def last = state.last33 ?: [:]
+    def elements = findAllChannelElements(bodyText, "AlarmEvent")
+    if (!elements) return
+    // DIAG (2026-08-12): log which channels were present in this successfully
+    // parsed cmd_id=33 push -- lets a corruption burst logged right after this
+    // be cross-referenced against which channels' broadcast it likely belongs
+    // to, to see if any specific channel(s) correlate with corruption more
+    // than others. Purely additive logging, no behavior change.
+    log.debug "Reolink Source Bridge (source ${state.sourceId}): cmd_id 33 push parsed OK, channels present: ${elements.keySet().sort()}"
+    def last = state.last33 ?: [:]
         elements.each { chId, elem ->
             def status = elem?.status?.text()
             def aiType = elem?.AItype?.text()
