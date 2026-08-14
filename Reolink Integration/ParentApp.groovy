@@ -87,6 +87,15 @@
  *     after-20-resync, decrypt failure, unrecognized message type) remain
  *     unconditional warnings regardless of log level, same as the rest of
  *     this app.
+ *  7. NEW: standalone (non-Hub) cameras/doorbells now nest together under a
+ *     shared "Reolink Standalone Devices" entry in the Devices list instead
+ *     of each source's bridge appearing as its own separate, unnested
+ *     entry -- matching how an NVR/Home Hub's channels already group under
+ *     one bridge. Each standalone camera still holds its own independent
+ *     event connection underneath (Hubitat's rawSocket interface is one-
+ *     connection-per-driver-instance, so that part can't be shared) -- only
+ *     where the bridge nests in the Devices list changed, not how many
+ *     connections exist. See ensureStandaloneGroupDevice()/getSourceBridge().
  *
  * v1.3.6 -- Two related fixes to the device-discovery/toggle page
  * (discoverPage()), both found via real-world use:
@@ -622,9 +631,46 @@ private String bridgeDni(sourceId) {
     "reolink-bridge-${sourceId}"
 }
 
-/** Looks up an existing source's bridge device (app-owned). Returns null if not yet created. */
+@Field static final String STANDALONE_GROUP_DNI = "reolink-standalone-group"
+
+/**
+ * Looks up (but does not create) the shared "Reolink Standalone Devices"
+ * group device -- the nesting-only parent that every standalone (non-Hub)
+ * source's bridge lives under, so multiple standalone cameras/doorbells
+ * group together in the Devices list instead of each bridge appearing as
+ * its own separate unnested entry. Hub/NVR sources never use this; their
+ * bridge always parents directly off the app. Returns null if no
+ * standalone source has been added yet.
+ */
+private getStandaloneGroupDevice() {
+    getChildDevice(STANDALONE_GROUP_DNI)
+}
+
+/** Looks up OR creates the shared standalone-devices group device -- lazily created the first time a standalone source needs a bridge. */
+private ensureStandaloneGroupDevice() {
+    def group = getStandaloneGroupDevice()
+    if (!group) {
+        group = addChildDevice("jdthomas24", "Reolink Standalone Devices", STANDALONE_GROUP_DNI, [
+            name: "Reolink Standalone Devices",
+            label: "Reolink Standalone Devices",
+            isComponent: true
+        ])
+        logNormal "Reolink Integration: standalone-devices group device created"
+    }
+    return group
+}
+
+/**
+ * Looks up an existing source's bridge device. A Hub/NVR source's bridge is
+ * app-owned directly; a standalone source's bridge instead lives under the
+ * shared standalone-devices group device (see ensureStandaloneGroupDevice()
+ * above) -- this checks both locations so every other call site can look up
+ * a bridge without needing to know the source type. Returns null if not yet
+ * created.
+ */
 private getSourceBridge(sourceId) {
-    getChildDevice(bridgeDni(sourceId))
+    def dni = bridgeDni(sourceId)
+    getChildDevice(dni) ?: getStandaloneGroupDevice()?.getChildDevice(dni)
 }
 
 /**
@@ -640,6 +686,7 @@ private getSourceBridgeForChannelDni(String dni) {
 }
 
 def removeSource(id) {
+    def src = getSource(id as Integer)
     def bridge = getSourceBridge(id as Integer)
     if (bridge) {
         try { bridge.stopEventSubscription() } catch (e) { /* best effort */ }
@@ -648,7 +695,14 @@ def removeSource(id) {
         // behavior, same as deleting any multi-endpoint parent removes its
         // child endpoints too.
         bridge.getChildDevices()?.each { forgetSchedulingState(it.deviceNetworkId) }
-        deleteChildDevice(bridge.deviceNetworkId)
+        // Delete via whichever device actually owns this bridge -- a
+        // Hub/NVR bridge is the app's own direct child, a standalone
+        // bridge is the group device's child.
+        if (src?.isHub) {
+            deleteChildDevice(bridge.deviceNetworkId)
+        } else {
+            getStandaloneGroupDevice()?.removeBridgeDevice(bridge.deviceNetworkId)
+        }
     }
     state.sources.removeAll { it.id == (id as Integer) }
     state.sourceUnreachable?.remove(id.toString())
@@ -1011,19 +1065,32 @@ private String childDni(sourceId, channel) {
  * the bridge if missing, then separately starts/stops the event
  * subscription ON that bridge based on the per-source toggle. Idempotent --
  * safe to call on every page load or initialize().
+ *
+ * A Hub/NVR source's bridge is created as a direct child of the app, same
+ * as always. A standalone source's bridge is instead created as a child of
+ * the shared "Reolink Standalone Devices" group device (lazily created on
+ * first use) -- since each standalone camera still needs its own
+ * independent event connection (Hubitat's rawSocket interface is one-
+ * connection-per-driver-instance, so that part can't be shared), but
+ * nesting them all under one shared parent avoids N separate unnested
+ * bridges cluttering the Devices list the way they would otherwise.
  */
 def ensureSourceBridge(sourceId) {
     def src = getSource(sourceId)
     if (!src) return null
     def dni = bridgeDni(sourceId)
-    def bridge = getChildDevice(dni)
+    def bridge = getSourceBridge(sourceId)
     if (!bridge) {
-        bridge = addChildDevice("jdthomas24", "Reolink Device Bridge", dni, [
-            name: "Reolink Device Bridge (${src.label})",
-            label: "Reolink Device Bridge (${src.label})",
-            isComponent: true
-        ])
-        bridge.updateDataValue("sourceId", "${sourceId}")
+        def label = "Reolink Device Bridge (${src.label})"
+        if (src.isHub) {
+            bridge = addChildDevice("jdthomas24", "Reolink Device Bridge", dni, [
+                name: label, label: label, isComponent: true
+            ])
+            bridge.updateDataValue("sourceId", "${sourceId}")
+        } else {
+            def group = ensureStandaloneGroupDevice()
+            bridge = group.createBridgeDevice(dni, label, sourceId as Integer)
+        }
         logNormal "Reolink source ${sourceId}: bridge device created"
     }
     // Unconditional -- always keeps the bridge's connection config in sync
