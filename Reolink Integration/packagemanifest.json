@@ -49,7 +49,7 @@
             "id": "1a9d5e72-6c4f-4b8a-93e0-7d2c8f5b4a61",
             "name": "Reolink Standalone Devices",
             "namespace": "jdthomas24",
-            "location": "https://raw.githubusercontent.com/jdthomas24/Hubitat-Apps-Drivers/main/Reolink%20Integration/ReolinkStandaloneDevices.groovy",
+            "location": "https://raw.githubusercontent.com/jdthomas24/Hubitat-Apps-Drivers/main/Reolink%20Integration/StandaloneDevices.groovy",
             "required": true,
             "description": "Internal nesting-only group device -- gives every standalone (non-Hub) camera/doorbell's bridge a shared parent so they group together in the Devices list instead of appearing separately. Not user-facing; created automatically by the app."
         }
