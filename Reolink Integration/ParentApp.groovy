@@ -1,6 +1,6 @@
 /**
  * Reolink Integration (Parent App)
- * Version: 1.3.6
+ * Version: 1.3.8
  *
  * Architecture notes:
  *  - A "source" is anything that answers the Reolink HTTP/JSON API: a standalone
@@ -12,6 +12,13 @@
  *  - Poll interval is per-child, not global, because wired-mode doorbells/cams
  *    can be polled tight (2-5s) while battery-mode devices should be polled
  *    looser to avoid hammering a sleeping device.
+ *  - Each source is fronted by a "Reolink Device Bridge" device (one per
+ *    source). The bridge holds the persistent real-time event subscription
+ *    AND is the real parent that creates Camera/Doorbell as its own children,
+ *    so they nest under the bridge in the Devices list. Event-driven updates
+ *    are the standard path; a source falls back to polling automatically if
+ *    its event connection can't be established or drops, and resumes event
+ *    mode silently on reconnect.
  *
  * Device-specific findings, known limitations, and setup gotchas are documented
  * in the README and the in-app Tips page -- not duplicated here to avoid the
@@ -19,79 +26,90 @@
  *
  * TODO markers throughout mark spots that need exact command/param names
  * verified against your firmware's API guide (GetMdState / GetAiState /
- * GetChannelstatus / Snap / PtzCtrl / Login field names can drift by version).
+ * GetChannelstatus / Snap / PtzCtrl / SetPirInfo field names can drift by
+ * firmware version).
  *
- * Full version history prior to 1.3.0 (the 1.1.x scheduler/logging plumbing,
- * the 1.2.x snapshot relay redesign, the central scheduler rewrite, sendEvent
- * gating, and tiered logging) is in the GitHub commit history and past
- * release notes -- not duplicated here. This header only documents the
- * CURRENT version going forward, trimmed down from the full inline changelog
- * that used to live here (it had grown to roughly 10% of this file's total
- * lines with no benefit to anyone running the current version).
+ * Full version history prior to 1.3.6 is in the GitHub commit history and
+ * past release notes -- not duplicated here.
+ *
+ * ============================================================================
+ * BREAKING CHANGE NOTICE (v1.3.8): this release restructures how child
+ * devices are organized -- every camera/doorbell is now created as a child
+ * of a "Reolink Device Bridge" device (one per source) instead of a child of
+ * this app directly. This is required to support the new event-driven
+ * update path and to get proper nesting/grouping in the Devices list.
+ * EXISTING INSTALLS MUST delete their current camera/doorbell devices and
+ * re-run discovery under each source to recreate them under the new bridge.
+ * Dashboards, Rule Machine rules, and dashboard tiles that reference the old
+ * device IDs will need to be repointed at the newly created devices. See the
+ * forum release notes for step-by-step upgrade instructions.
+ * ============================================================================
+ *
+ * v1.3.8:
+ *  1. NEW: real-time event-driven updates. Each source now maintains a
+ *     persistent connection to the camera/Hub/NVR and receives motion/AI/
+ *     visitor changes as they happen, instead of relying solely on polling.
+ *     Falls back to polling automatically if the event connection can't be
+ *     established or drops, and silently resumes event mode on reconnect.
+ *     Per-source on/off toggle on the discover page (defaults on).
+ *  2. NEW: PIR enable/disable for cameras -- pirOn()/pirOn() commands plus a
+ *     pirEnabled attribute, so a battery camera's motion trigger can be
+ *     paused without removing the device (e.g. via a Rule Machine rule tied
+ *     to battery level). Scoped to cameras; doorbells unaffected.
+ *  3. FIXED: a login/token bug where the "new token acquired" log line fired
+ *     even when the Login response didn't actually contain a usable token
+ *     (e.g. a bad password, or a response shape this app doesn't expect on
+ *     some firmware) -- previously this looked like a successful login in
+ *     the log while every subsequent API call silently failed with "no
+ *     token available," repeating forever. The success log now only fires
+ *     when a real token comes back; a failure now logs the raw response so
+ *     the actual cause is visible instead of a misleading success line.
+ *  4. FIXED: the Login API call was missing the "action" field that every
+ *     other command in this app sends -- added for consistency, and because
+ *     it's plausible some firmware is stricter about requiring it than
+ *     others.
+ *  5. Corruption-recovery logging for the event connection (magic-header
+ *     resync) now stays at debug tier for both the routine and repeated-in-
+ *     60s cases, since real-world soak testing confirmed this pattern is
+ *     benign, self-recovering Hub-side noise under load, not a client bug.
+ *     Still logs at warn for a buffer that fails to resync after 20
+ *     attempts, and for a genuinely unrecognized message type.
+ *  6. FIXED: the bridge device logged its own connection status and every
+ *     routine event push directly to the hub log (log.info/log.debug),
+ *     completely bypassing the app's Log level setting -- so switching the
+ *     app to Errors Only did nothing to quiet the bridge, and Full
+ *     reproduced the exact log-flooding pattern from BETA testing. The
+ *     bridge now routes its logging through the app's existing
+ *     logNormal()/logFull() tiers via parent?.logNormal(...)/
+ *     parent?.logFull(...) -- connection-status transitions (starting,
+ *     connected, reconnecting) are Normal tier, routine per-push/resync
+ *     detail is Full tier, and genuine failures (socket errors, give-up-
+ *     after-20-resync, decrypt failure, unrecognized message type) remain
+ *     unconditional warnings regardless of log level, same as the rest of
+ *     this app.
  *
  * v1.3.6 -- Two related fixes to the device-discovery/toggle page
  * (discoverPage()), both found via real-world use:
  *  1. FIXED: unchecking an EXISTING device on a single-channel (standalone
- *     camera) source never actually deleted it. The auto-apply check for
- *     single-channel sources only called createSelectedChildren() when the
- *     checkbox was TRUE (`if (settings[...]) { createSelectedChildren(...) }`)
- *     -- unchecking an existing device sets that setting to FALSE, which
- *     never entered the block, so the delete branch inside
- *     createSelectedChildren() (the actual removal logic) never ran. Changed
- *     the condition to fire whenever the checkbox state disagrees with
- *     whether the device currently exists (either direction: check an
- *     absent device to create it, OR uncheck a present device to remove
- *     it), not just the create direction.
- *  2. Multi-channel (NVR/Home Hub) sources technically already applied
- *     removal correctly through the "Create selected devices" toggle, but
- *     that toggle's label only described creation -- nothing indicated it
- *     ALSO applies removal for anything unchecked, which is exactly the
- *     kind of thing that looks like "unchecking didn't do anything."
- *     Relabeled to "Apply changes (create checked / remove unchecked)" and
- *     reworded the explanatory paragraph to say so explicitly.
- *  3. Every per-channel row now says outright whether it's an
- *     "(Existing Device)" or a "(New Device)" right in the checkbox title,
- *     instead of only showing a checkmark for existing ones and nothing at
- *     all for new ones -- removes the previous "is this actually new or
- *     did I lose track of something" ambiguity.
+ *     camera) source never actually deleted it. The auto-apply check only
+ *     fired when the checkbox was TRUE -- unchecking an existing device sets
+ *     that setting to FALSE, which never triggered the delete branch. Now
+ *     fires on either direction: checking an absent device to create it, or
+ *     unchecking a present one to remove it.
+ *  2. Multi-channel (NVR/Home Hub) sources already applied removal
+ *     correctly through the "Create selected devices" toggle, but the label
+ *     only described creation -- relabeled to "Apply changes (create
+ *     checked / remove unchecked)" and reworded the explanatory paragraph.
+ *  3. Every per-channel row now says outright whether it's an "(Existing
+ *     Device)" or "(New Device)".
  *  4. Reworded the "Danger zone" remove-source toggle to spell out that it
- *     removes the ENTIRE source and ALL of its child devices in one shot --
- *     this is a completely separate, all-or-nothing action from the
- *     per-channel checkboxes above it, and the old wording ("Remove this
- *     source (deletes its child devices too)") didn't make that scope
- *     clear enough to avoid it reading like it might apply to whatever's
- *     currently toggled in the list above instead.
- *  5. Minor: Hub/NVR channel device-type detection (camera vs doorbell)
- *     now checks the channel's own name instead of a model field the
- *     Hub/NVR API never returns, fixing a mislabeled doorbell channel.
- *  6. Minor: added a short note on the discover page about removing
- *     devices from this page rather than Hubitat's Devices page directly.
- *
- * v1.3.5 -- Capability-detection corrections and additions, cross-checked
- * against Reolink's own officially-backed reolink_aio library:
- *  1. CORRECTED a mistake from v1.3.1: supportDoorbellLight was folded into
- *     the Spotlight feature gate based on real hardware showing it nonzero
- *     on a doorbell with a light -- but that doorbell's only lights are IR
- *     night vision and a button/ring status light, no true spotlight.
- *     Confirmed via reolink_aio that this key actually governs the
- *     status/ring indicator LED, not illumination. Split into its own
- *     "Status LED" feature, removed from Spotlight.
- *  2. Added "Night Vision" feature (ledControl > 0) -- a real prior gap,
- *     field found via reolink_aio, confirmed against a real doorbell.
- *  3. Added floodLight back into the Spotlight OR chain as a defensive
- *     fallback alongside supportFLswitch, matching reolink_aio's own logic,
- *     even though floodLight alone has stayed unreliable on every device
- *     tested so far.
- *  4. abilityPermit() now checks both the "permit" and "ver" sub-fields of
- *     every GetAbility entry (previously permit only). reolink_aio checks
- *     ver exclusively; these move together on every field tested except
- *     ptzType, where permit stays 0 on confirmed PTZ cameras but ver
- *     correctly shows nonzero -- avoided in our case by keying PTZ presence
- *     off ptzCtrl instead, but checking both closes off the same risk for
- *     any other field not yet tested against divergent hardware.
- *  5. Confirmed (not a guess) the battery percentage field name via
- *     reolink_aio: Battery.batteryPercent. See CameraDriver's
- *     receiveBatteryInfo().
+ *     removes the ENTIRE source and ALL of its child devices, separate from
+ *     the per-channel checkboxes above it.
+ *  5. Hub/NVR channel device-type detection (camera vs doorbell) now checks
+ *     the channel's own name instead of a model field the Hub/NVR API never
+ *     returns, fixing a mislabeled doorbell channel.
+ *  6. Added a short note on the discover page about removing devices from
+ *     this page rather than Hubitat's Devices page directly.
  */
 
 import groovy.transform.Field
@@ -110,7 +128,7 @@ definition(
     oauth: true // required for createAccessToken()/local endpoint access used by the snapshot relay
 )
 
-@Field static final String APP_VERSION = "1.3.6"
+@Field static final String APP_VERSION = "1.3.8"
 
 @Field static final List LOG_LEVELS = ["Errors Only", "Normal", "Full"]
 
@@ -120,6 +138,12 @@ definition(
 // the Set Poll Interval / Set Snapshot Interval commands).
 @Field static final Integer DEFAULT_WIRED_POLL_SEC = 3
 @Field static final Integer DEFAULT_BATTERY_POLL_SEC = 30
+
+// The real-time event-subscription protocol (Baichuan) always runs on port
+// 9000, completely separate from each source's own configurable HTTPS API
+// port (src.port, default 443, used for GetAiState/GetChannelstatus/etc.).
+// Always use this constant for the event socket, never src.port.
+@Field static final Integer BAICHUAN_PORT = 9000
 
 preferences {
     page(name: "mainPage")
@@ -162,13 +186,11 @@ def mainPage() {
             paragraph pillHeader("Logging")
             input "logLevel", "enum", title: "Log level", options: LOG_LEVELS,
                 defaultValue: "Errors Only", submitOnChange: true
-            paragraph logLevelPill("Errors Only") + " Warnings and errors only. Default -- matches the " +
-                "old debug-logging-off behavior, so nothing changes for anyone who hasn't touched this setting."
-            paragraph logLevelPill("Normal") + " Adds meaningful one-time events and state transitions " +
-                "(login, asleep/awake changes, devices created, config changes) on top of Errors Only."
-            paragraph logLevelPill("Full") + " Everything, including every routine poll step. Useful for " +
-                "actively chasing something intermittent. <b>Automatically reverts to Normal after 60 " +
-                "minutes</b> -- Errors Only and Normal have no timer, since neither is noisy enough to need one."
+            paragraph logLevelPill("Errors Only") + " Default. Warnings and errors only."
+            paragraph logLevelPill("Normal") + " Errors, plus meaningful one-time events and changes " +
+                "(logins, asleep/awake, devices created, config changes)."
+            paragraph logLevelPill("Full") + " Everything, including every routine poll step. " +
+                "<b>Automatically reverts to Normal after 60 minutes.</b>"
         }
         section {
             href name: "tips", title: "Tips, limitations & what works so far", page: "tipsPage",
@@ -205,14 +227,14 @@ private String pillHeader(String text) {
 
 /**
  * Small colored pill for a log level name, distinct from pillHeader's section-title style so
- * the two don't get visually confused. Color signals severity/verbosity at a glance: grey for
- * the quietest tier, blue for the default, orange for the noisiest/temporary one.
+ * the two don't get visually confused. Color signals severity/verbosity at a glance: red for
+ * the errors-only default, grey for the middle tier, dark blue for the noisiest/temporary one.
  */
 private String logLevelPill(String level) {
     def colors = [
-        "Errors Only": [bg: "#ECEFF1", fg: "#455A64"],
-        "Normal":      [bg: "#E3F2FD", fg: "#1565C0"],
-        "Full":        [bg: "#FFF3E0", fg: "#E65100"]
+        "Errors Only": [bg: "#FFEBEE", fg: "#C62828"],
+        "Normal":      [bg: "#ECEFF1", fg: "#455A64"],
+        "Full":        [bg: "#E8EAF6", fg: "#283593"]
     ]
     def c = colors[level] ?: [bg: "#ECEFF1", fg: "#455A64"]
     "<span style='display:inline-block;background:${c.bg};color:${c.fg};font-weight:700;" +
@@ -274,6 +296,9 @@ def tipsPage() {
             paragraph "This still holds once a battery device is behind a Hub: you're asking the Hub for its " +
                 "last-known state, not the device directly. The device's own check-in cadence is still the " +
                 "real limit."
+            paragraph "When a source's event connection is active, its children are updated in real time and " +
+                "polling is skipped entirely for as long as that connection stays healthy -- polling only " +
+                "resumes automatically if the event connection drops."
         }
         section {
             paragraph pillHeader("Sleep status")
@@ -321,6 +346,17 @@ def tipsPage() {
                 "Running means it's in progress (takes a few seconds), Done means it's ready."
         }
         section {
+            paragraph pillHeader("PIR (motion trigger) on/off -- cameras only")
+            paragraph "Use <b>pirOn</b>/<b>pirOff</b> to enable or disable a camera's PIR motion trigger " +
+                "without removing the device. This does NOT stop an in-progress recording -- it removes the " +
+                "trigger that would have woken a battery camera to record in the first place. If anything else " +
+                "on that camera is separately configured for continuous/scheduled recording outside PIR " +
+                "triggering, that recording is unaffected."
+            paragraph "Manual on/off only -- there's no auto-revert timer. For something like \"turn PIR off " +
+                "below battery threshold X and back on above threshold Y,\" build that with Rule Machine using " +
+                "the existing battery attribute; no extra plumbing is needed here."
+        }
+        section {
             paragraph pillHeader("Snapshot tiles on dashboards")
             paragraph "Snapshot URLs point at a local relay endpoint on this app, not directly at the camera. " +
                 "The camera itself is only ever contacted on its own snapshot interval (device preference, " +
@@ -339,14 +375,12 @@ def tipsPage() {
         }
         section {
             paragraph pillHeader("Log levels")
-            paragraph logLevelPill("Errors Only") + " Default. Warnings and errors only -- matches the old " +
-                "debug-logging-off behavior, so nothing changes for anyone who hasn't touched this setting."
-            paragraph logLevelPill("Normal") + " Adds meaningful one-time events and state " +
-                "transitions: a fresh login, a device flipping asleep/awake, a device created, a config " +
-                "change. Routine polls that succeed with no change don't log anything."
-            paragraph logLevelPill("Full") + " Everything, including every routine poll step. Useful for " +
-                "actively chasing something intermittent. <b>Automatically reverts to Normal after 60 " +
-                "minutes</b> so it doesn't stay noisy indefinitely."
+            paragraph logLevelPill("Errors Only") + " Default. Warnings and errors only."
+            paragraph logLevelPill("Normal") + " Errors, plus meaningful one-time events and changes: " +
+                "a fresh login, a device flipping asleep/awake, a device created, a config change. Routine " +
+                "polls that succeed with no change don't log anything."
+            paragraph logLevelPill("Full") + " Everything, including every routine poll step. " +
+                "<b>Automatically reverts to Normal after 60 minutes</b> so it doesn't stay noisy indefinitely."
             paragraph "⚠️ It's normal for <b>Errors Only</b> and <b>Normal</b> to show nothing at all for " +
                 "long stretches -- that means nothing worth flagging has happened, not that the app has " +
                 "stopped working. If you want to confirm it's actually running, switch to <b>Full</b> " +
@@ -379,7 +413,7 @@ def tipsPage() {
             paragraph "<b>Confirmed working</b> against real hardware: PtzCtrl -- move, and ToPos (preset recall)."
             paragraph "<b>Built but not yet tested</b> against this setup's actual firmware: SetPtzPreset " +
                 "(save), SetWhiteLed (spotlight), SetIrLights (night vision), AudioAlarmPlay (siren), " +
-                "GetBatteryInfo (battery %), PtzCheck/GetPtzCheckState (calibration)."
+                "GetBatteryInfo (battery %), PtzCheck/GetPtzCheckState (calibration), SetPirInfo (PIR on/off)."
             paragraph "These are built from consistent patterns across several independent Reolink API " +
                 "references. If one doesn't work as expected, check Logs with the log level set to Full -- " +
                 "the exact response usually points to which field name needs adjusting for this device."
@@ -418,6 +452,9 @@ def addSourcePage(params) {
             input "newIsHub", "bool", title: "This is an NVR or Home Hub (multiple channels)", defaultValue: false
             paragraph "Fill in Label, IP address, Username, and Password, then tap Next to save. " +
                 "Leaving any of those blank just returns you to the Sources list without creating anything."
+            paragraph "<span style='color:#5F5E5A;font-size:12px;'>ℹ️ After tapping Next, especially for an " +
+                "NVR/Home Hub with several channels, it can take up to 30 seconds or so before the discover " +
+                "page finishes loading -- it's checking each channel individually. This is normal, not stuck.</span>"
         }
     }
 }
@@ -426,6 +463,10 @@ def discoverPage(params) {
     def sourceId = params?.sourceId ?: state.currentDiscoverySourceId
     state.currentDiscoverySourceId = sourceId
     def src = getSource(sourceId)
+
+    // Sync the event-connection child to the current toggle state on every
+    // page load -- idempotent, no-ops if already correct.
+    if (src) ensureSourceBridge(sourceId)
 
     // Auto-run discovery the first time this source's Discover page is opened
     // (no cached results yet for this source), in addition to an explicit
@@ -446,17 +487,16 @@ def discoverPage(params) {
         app.updateSetting("confirmCreate", [type: "bool", value: false])
     }
 
-    // v1.3.6 FIX: this used to only fire when the checkbox was TRUE
-    // (`if (settings[...]) { createSelectedChildren(...) }`), which meant
-    // unchecking an EXISTING single-channel device to remove it never
-    // triggered anything -- createSelectedChildren()'s delete branch simply
-    // never ran. Now fires on EITHER direction: checking an absent device
-    // (create) or unchecking a present one (remove), by comparing the
+    // v1.3.6 FIX: this used to only fire when the checkbox was TRUE, which
+    // meant unchecking an EXISTING single-channel device to remove it never
+    // triggered anything. Now fires on EITHER direction: checking an absent
+    // device (create) or unchecking a present one (remove), by comparing the
     // checkbox state against whether the device currently exists.
     if (channelCount == 1 && src) {
         def ch = lastDiscovery[0]
         def dni = childDni(sourceId, ch.channel)
-        def existing = getChildDevice(dni) != null
+        def bridge0 = getSourceBridge(sourceId)
+        def existing = bridge0?.getChildDevice(dni) != null
         def wantIt = settings["create_${sourceId}_${ch.channel}"]
         if ((wantIt ?: false) != existing) {
             createSelectedChildren(sourceId)
@@ -476,12 +516,18 @@ def discoverPage(params) {
             }
         } else {
             section {
+                paragraph pillHeader("Event Connection")
+                def connStatus = state.sourceConnMode?.get(sourceId.toString()) ?: "not started"
+                def statusColor = connStatus == "connected" ? "#22c55e" : connStatus == "reconnecting" ? "#f97316" : "#94a3b8"
+                input "useEventSubscription_${sourceId}", "bool",
+                    title: "Use event-driven updates for this source (falls back to polling automatically if it can't connect)",
+                    defaultValue: true, submitOnChange: true
+                paragraph "<span style='color:${statusColor};font-weight:700;font-size:12px;'>Status: ${connStatus}</span>"
+            }
+            section {
                 // v1.3.6: explicit warning added after a real-world case where a
                 // device deleted from Hubitat's Devices page (instead of this
-                // page) left the app's own checkbox state stale. Trimmed to one
-                // sentence after real-world feedback that the original 3-sentence
-                // version explaining both the standalone and multi-channel cases
-                // in full was slower to read than it needed to be.
+                // page) left the app's own checkbox state stale.
                 paragraph "<span style='display:inline-block;background:#FFEBEE;color:#C62828;font-weight:700;" +
                     "padding:2px 10px;border-radius:10px;font-size:11px;margin-right:6px;'>HEADS UP</span>" +
                     "<b>Remove devices from THIS page, not Hubitat's Devices page.</b> Deleting there can " +
@@ -490,6 +536,10 @@ def discoverPage(params) {
                     description: "Discovery already ran automatically when this page opened. Use this to " +
                         "refresh the channel list, e.g. after pairing a new camera to an NVR/Home Hub.",
                     page: "discoverPage", params: [sourceId: sourceId, run: true]
+                paragraph "<span style='color:#5F5E5A;font-size:12px;'>ℹ️ Discovery can take up to 30 " +
+                    "seconds or so on a brand-new source, especially one with several channels -- it's " +
+                    "checking each channel individually. This is normal, not stuck; already-added channels " +
+                    "re-discover much faster on future runs.</span>"
 
                 if (state.lastDiscoveryError) {
                     paragraph "⚠️ ${state.lastDiscoveryError}"
@@ -497,29 +547,8 @@ def discoverPage(params) {
 
                 lastDiscovery.each { ch ->
                     def dni = childDni(sourceId, ch.channel)
-                    def exists = getChildDevice(dni) != null
-                    // v1.3.6: dropped the generic "(camera)" tag from every row --
-                    // it added noise without disambiguating anything, since almost
-                    // every device already IS a camera. Only "(Doorbell)" earns a
-                    // tag now, since that's the one case worth calling out.
-                    // Existing/New status moved out of the checkbox title entirely
-                    // and into a colored pill directly below each toggle. Hubitat's
-                    // native toggle can't be wrapped in custom markup, so the pill
-                    // is pulled tight against it (negative top margin) and given a
-                    // colored left-border accent + indent, so it visually reads as
-                    // "belonging to" the toggle above it rather than a floating
-                    // line. A divider after each device's pill separates it from
-                    // the next device, so grouping is legible by proximity/gap
-                    // even though these are technically separate form elements.
-                    //
-                    // NOTE: a two-column grid (width: attribute) was tried here and
-                    // reverted -- Hubitat's "bool" toggle input does not honor
-                    // width: the way it does for other input types, so instead of
-                    // pairing each toggle with its pill side by side it rendered
-                    // every toggle full-width in one block and every pill floated
-                    // into a separate block, breaking the toggle-to-pill pairing
-                    // entirely. Single column is the reliable layout for this
-                    // control type.
+                    def bridgeForList = getSourceBridge(sourceId)
+                    def exists = bridgeForList?.getChildDevice(dni) != null
                     def doorbellTag = ch.deviceType == "doorbell" ? " (Doorbell)" : ""
                     input "create_${sourceId}_${ch.channel}", "bool",
                         title: "Ch ${ch.channel}: ${ch.name}${doorbellTag}",
@@ -541,12 +570,6 @@ def discoverPage(params) {
                 }
 
                 if (channelCount > 1) {
-                    // v1.3.6: "Apply changes" pulled visually out of the device list --
-                    // it's an action, not another device toggle, and was easy to mistake
-                    // for one sitting in the same list with the same control style. The
-                    // highlighted box above the toggle is the closest Hubitat's own form
-                    // rendering allows to visually separating it (the toggle input itself
-                    // can't be wrapped inside a custom container).
                     paragraph rawHtml: true, """
 <div style='border:2px solid #185FA5;border-radius:8px;background:#E6F1FB;padding:10px 14px;margin-top:14px;'>
   <div style='color:#042C53;font-weight:700;font-size:14px;'>Apply changes</div>
@@ -562,11 +585,6 @@ def discoverPage(params) {
             }
             section {
                 paragraph pillHeader("Danger zone")
-                // v1.3.6: reworded to make the scope unmistakable -- this is a completely
-                // separate, all-or-nothing action from the per-channel checkboxes above it.
-                // It does NOT apply to whatever's currently toggled in that list; it always
-                // removes this ENTIRE source and every one of its child devices, regardless
-                // of any per-channel selection state.
                 input "confirmRemoveSource", "bool",
                     title: "Remove this ENTIRE source and ALL ${childrenForSource(sourceId as Integer).size()} of its device(s) -- unrelated to the toggles above",
                     defaultValue: false, submitOnChange: true
@@ -594,16 +612,47 @@ def getSource(id) {
 }
 
 def childrenForSource(sourceId) {
-    getChildDevices().findAll { it.getDataValue("sourceId") as Integer == sourceId }
+    def bridge = getSourceBridge(sourceId)
+    // A DEVICE's getChildDevices() (unlike an app's) can return null instead
+    // of an empty list when it has zero children -- guard against that.
+    return bridge ? (bridge.getChildDevices() ?: []) : []
+}
+
+private String bridgeDni(sourceId) {
+    "reolink-bridge-${sourceId}"
+}
+
+/** Looks up an existing source's bridge device (app-owned). Returns null if not yet created. */
+private getSourceBridge(sourceId) {
+    getChildDevice(bridgeDni(sourceId))
+}
+
+/**
+ * Camera/Doorbell DNIs are "reolink-{sourceId}-{channel}" -- given one, finds
+ * the bridge that owns it without needing sourceId passed separately. Used
+ * anywhere only a dni string is available (e.g. runIn(...) callback data).
+ */
+private getSourceBridgeForChannelDni(String dni) {
+    def parts = dni?.tokenize("-")
+    if (!parts || parts.size() < 2) return null
+    def sourceId = parts[1] as Integer
+    return getSourceBridge(sourceId)
 }
 
 def removeSource(id) {
-    childrenForSource(id as Integer).each {
-        forgetSchedulingState(it.deviceNetworkId)
-        deleteChildDevice(it.deviceNetworkId)
+    def bridge = getSourceBridge(id as Integer)
+    if (bridge) {
+        try { bridge.stopEventSubscription() } catch (e) { /* best effort */ }
+        // Deleting the bridge cascades to delete its own children
+        // (Camera/Doorbell) -- standard Hubitat parent/child device
+        // behavior, same as deleting any multi-endpoint parent removes its
+        // child endpoints too.
+        bridge.getChildDevices()?.each { forgetSchedulingState(it.deviceNetworkId) }
+        deleteChildDevice(bridge.deviceNetworkId)
     }
     state.sources.removeAll { it.id == (id as Integer) }
     state.sourceUnreachable?.remove(id.toString())
+    state.sourceConnMode?.remove(id.toString())
     logNormal "Removed source ${id}"
 }
 
@@ -623,7 +672,7 @@ private String reolinkLogin(sourceId) {
     }
 
     logFull "Reolink source ${sourceId}: cached token missing/expired, logging in fresh"
-    def body = [[cmd: "Login", param: [User: [userName: src.username, password: src.password]]]]
+    def body = [[cmd: "Login", action: 0, param: [User: [userName: src.username, password: src.password]]]]
     def resp = reolinkRawPost(src, body)
     if (resp == null) {
         // reolinkRawPost() already logged (or suppressed, if this source is
@@ -638,8 +687,22 @@ private String reolinkLogin(sourceId) {
 
     src.token = token
     src.tokenExpires = now() + (leaseSec * 1000L) - 30000L
-    logNormal "Reolink source ${sourceId}: new token acquired, leaseTime=${leaseSec}s"
-    markSourceReachable(sourceId)
+
+    // v1.3.8 FIX: this success log previously fired unconditionally, as soon
+    // as the response parsed at all -- so a Login response that came back
+    // WITHOUT a usable Token.name (bad credentials, or an unexpected shape
+    // on some firmware) still logged "new token acquired" every time,
+    // masking the real failure and making every following "no token
+    // available" abort look inexplicable. Now only logs success when a real
+    // token came back; otherwise logs the raw response so the actual field
+    // shape/error is visible.
+    if (token) {
+        logNormal "Reolink source ${sourceId}: new token acquired, leaseTime=${leaseSec}s"
+        markSourceReachable(sourceId)
+    } else {
+        log.warn "Reolink source ${sourceId}: Login response parsed but no Token.name found (check " +
+            "credentials) -- raw: ${resp?.toString()?.take(500)}"
+    }
     return token
 }
 
@@ -674,17 +737,11 @@ private parseReolinkResponse(resp) {
 
 /**
  * A source going unreachable (host down, network issue, etc.) is ONE
- * condition, not a fresh event every poll cycle -- but before this, every
- * layer that touched the failure (the raw POST, the "no token" abort, the
- * response-shape parse) logged its own warning independently, every single
- * poll, for as long as the outage lasted. A camera down for a few minutes
- * could produce dozens of near-identical warnings.
- *
- * These two helpers gate on a per-source state flag so only the TRANSITION
- * into/out of unreachable gets logged -- same "log transitions, not steady
- * state" idea as sleepStatus/sendIfChanged elsewhere in this app. Full-tier
- * logging still shows every individual attempt via the existing logFull()
- * calls elsewhere, for anyone actively troubleshooting.
+ * condition, not a fresh event every poll cycle -- these two helpers gate
+ * on a per-source state flag so only the TRANSITION into/out of unreachable
+ * gets logged. Full-tier logging still shows every individual attempt via
+ * the existing logFull() calls elsewhere, for anyone actively
+ * troubleshooting.
  */
 private void markSourceUnreachable(sourceId, String reason) {
     def map = state.sourceUnreachable ?: [:]
@@ -740,9 +797,7 @@ def reolinkApiCall(sourceId, String cmd, Map param = [:], Integer channel = null
         // the camera's web server intermittently returns corrupted/garbled data
         // instead of a real response, NOT an auth problem, so a fresh LOGIN
         // wouldn't help -- confirmed via real-world testing that an immediate
-        // retry of the SAME call often succeeds right after a failed one. Retry
-        // once with the same token before giving up; if it fails again, this
-        // poll cycle reports no response as usual.
+        // retry of the SAME call often succeeds right after a failed one.
         logNormal "Reolink source ${sourceId}: ${cmd} (ch ${channel}) returned unparseable data (known older-firmware " +
             "bug, see Tips page), retrying once immediately"
         outcome = doReolinkApiCall(src, sourceId, cmd, token, param, channel)
@@ -768,13 +823,6 @@ private Map doReolinkApiCall(src, sourceId, String cmd, String token, Map param,
         markSourceReachable(sourceId)
         return [value: value, rspCode: rspCode, parseFailure: false]
     } catch (groovy.json.JsonException e) {
-        // Distinguished from other exceptions below -- this specific exception
-        // type means the HTTP call itself succeeded but the body wasn't valid
-        // JSON (the known older-firmware garbled-response bug, not a
-        // connectivity issue). Always logged, not suppressed -- it's
-        // intermittent by nature rather than a sustained outage, so it
-        // doesn't produce the same repeated-spam problem, and each
-        // occurrence is genuinely useful for the Tips-page troubleshooting.
         log.warn "Reolink cmd ${cmd} failed for source ${sourceId} ch ${channel}: ${e.message}"
         return [value: null, rspCode: null, parseFailure: true]
     } catch (e) {
@@ -789,6 +837,7 @@ def discoverChannels(sourceId) {
     def src = getSource(sourceId)
     def channels = []
     state.lastDiscoveryError = null
+    def bridgeForDiscovery = getSourceBridge(sourceId)
 
     // One GetAbility call per source covers ALL channels at once (the response
     // includes an abilityChn[] array indexed by channel) -- confirmed against
@@ -803,8 +852,13 @@ def discoverChannels(sourceId) {
                 "server at all -- those typically only become reachable once paired to a Home Hub or NVR."
             return channels
         }
+        // Skip the GetBatteryInfo round-trip entirely for a channel that
+        // already has a child device -- isBattery is ONLY ever read at
+        // device CREATION time, so recomputing it on every discovery run for
+        // an existing channel is a wasted HTTP round-trip.
+        def existing0 = bridgeForDiscovery?.getChildDevice(childDni(sourceId, 0)) != null
         channels << [channel: 0, name: info?.DevInfo?.name ?: src.label, deviceType: guessDeviceType(info),
-            isBattery: guessIsBattery(sourceId, 0),
+            isBattery: existing0 ? null : guessIsBattery(sourceId, 0),
             supportedFeatures: computeSupportedFeatures(abilityChnList?.getAt(0))]
     } else {
         def status = reolinkApiCall(sourceId, "GetChannelstatus")
@@ -814,8 +868,9 @@ def discoverChannels(sourceId) {
         }
         status?.status?.each { ch ->
             if (ch.online) {
+                def existing = bridgeForDiscovery?.getChildDevice(childDni(sourceId, ch.channel)) != null
                 channels << [channel: ch.channel, name: ch.name ?: "Channel ${ch.channel}", deviceType: guessChannelDeviceType(ch),
-                    isBattery: guessIsBattery(sourceId, ch.channel),
+                    isBattery: existing ? null : guessIsBattery(sourceId, ch.channel),
                     supportedFeatures: computeSupportedFeatures(abilityChnList?.getAt(ch.channel as Integer))]
             }
         }
@@ -825,8 +880,7 @@ def discoverChannels(sourceId) {
 
 /**
  * Standalone-source detection (GetDevInfo shape, has a real model field).
- * Unchanged from prior versions -- confirmed reliable against every
- * standalone camera/doorbell tested so far.
+ * Confirmed reliable against every standalone camera/doorbell tested so far.
  */
 private String guessDeviceType(info) {
     def model = (info?.DevInfo?.model ?: info?.model ?: "").toLowerCase()
@@ -834,27 +888,12 @@ private String guessDeviceType(info) {
 }
 
 /**
- * Hub/NVR-channel detection. FIXED in v1.3.6: this previously called
- * guessDeviceType(ch) using the SAME model-field check as standalone
- * sources -- but GetChannelstatus (the Hub/NVR API) never returns a model
- * field at all, only GetDevInfo (the standalone API) does. That meant
- * every single Hub/NVR-relayed channel silently fell through to "camera",
- * always, regardless of what the device actually was. Confirmed in the
- * field: a doorbell channel named "Doorbell" behind a Home Hub Pro showed
- * up labeled "(camera)" on the discover page.
- *
- * This isn't just a display bug -- deviceType also selects the DRIVER at
- * creation time (createSelectedChildren()), so a new doorbell discovered
- * behind a Hub/NVR would have been created with the Reolink Camera driver
- * instead of Reolink Doorbell, silently missing PushableButton/the visitor
- * (ring) event entirely.
- *
- * Fix: since GetChannelstatus has no model field, use the channel's own
- * name instead -- Reolink's own Hub/NVR channel naming already reflects
- * the device type (confirmed: a paired doorbell channel is named
- * "Doorbell" by default). Falls back to "camera" only when the name gives
- * no signal either way, same safe default as before, but now actually
- * checking for the doorbell case first instead of skipping it entirely.
+ * Hub/NVR-channel detection. GetChannelstatus (the Hub/NVR API) never
+ * returns a model field, only GetDevInfo (the standalone API) does -- so
+ * this uses the channel's own name instead. Reolink's own Hub/NVR channel
+ * naming already reflects the device type (a paired doorbell channel is
+ * named "Doorbell" by default). Falls back to "camera" if the name gives no
+ * signal either way.
  */
 private String guessChannelDeviceType(ch) {
     def name = (ch?.name ?: "").toLowerCase()
@@ -865,12 +904,6 @@ private String guessChannelDeviceType(ch) {
  * Battery vs wired isn't reported directly by GetDevInfo/GetChannelstatus, so
  * this uses GetBatteryInfo as a signal instead: a battery-class device
  * answers it with real data, a wired/PoE device returns nothing usable.
- * TODO: GetAbility's battery/batAnalysis fields are a candidate to replace
- * this once tested against a real battery device -- every camera tested so
- * far (7 across 5 models) is wired, so battery/batAnalysis have only ever
- * shown permit:0, an unconfirmed negative case. guessIsBattery() remains the
- * source of truth for batteryMode until that's verified against real
- * hardware, to avoid swapping a working heuristic for an untested one.
  */
 private Boolean guessIsBattery(sourceId, channel) {
     def batt = reolinkApiCall(sourceId, "GetBatteryInfo", [:], channel)
@@ -884,12 +917,6 @@ private Boolean guessIsBattery(sourceId, channel) {
  * falling back to an empty/unknown feature set, not by failing discovery
  * entirely, since capability detection is informational and should never
  * block a device from being creatable.
- *
- * Confirmed against real hardware (7 cameras, 5 models, firmware 2021-2024):
- * a single GetAbility call with no channel param returns ALL channels' data
- * at once under value.Ability.abilityChn[] -- calling it per-channel would
- * be redundant, every call returns the same full array regardless of any
- * channel param.
  */
 private List fetchAbilityChnList(sourceId) {
     def src = getSource(sourceId)
@@ -904,21 +931,13 @@ private List fetchAbilityChnList(sourceId) {
 }
 
 /**
- * Safe lookup: treats a missing key the SAME as unsupported. Confirmed
- * necessary -- older firmware omits some keys entirely rather than
- * reporting them as unsupported (e.g. supportPtzCalibration was entirely
- * absent on a 2021-firmware camera that had it present in 2024 firmware on
- * the same model).
- *
- * Checks BOTH the "permit" and "ver" sub-fields, not permit alone. Every
- * GetAbility entry has both. Reolink's own officially-backed reolink_aio
- * library checks "ver" exclusively; we'd been checking "permit" exclusively.
- * These move together on every field tested EXCEPT ptzType, where permit
- * stays 0 even on confirmed PTZ cameras while ver correctly shows nonzero --
- * we avoided that specific divergence by keying PTZ presence off ptzCtrl
- * instead of ptzType, but there's no guarantee some other field doesn't
- * diverge the same way on hardware not yet tested. Checking both costs
- * nothing and closes off that whole risk class.
+ * Safe lookup: treats a missing key the SAME as unsupported. Checks BOTH the
+ * "permit" and "ver" sub-fields, not permit alone -- these move together on
+ * every field tested except ptzType, where permit stays 0 even on confirmed
+ * PTZ cameras while ver correctly shows nonzero. PTZ presence is keyed off
+ * ptzType specifically BECAUSE of this behavior (see computeSupportedFeatures()
+ * below) -- checking both here is what makes ptzType usable at all as a PTZ
+ * signal, and closes off the same risk for any other field.
  */
 private int abilityPermit(Map abilityChn, String key) {
     def entry = abilityChn?.getAt(key)
@@ -932,61 +951,33 @@ private int abilityPermit(Map abilityChn, String key) {
  * supportedFeatures device attribute. Confirmed against real hardware across
  * 8+ cameras / 6+ models / firmware 2021-2024, cross-checked against
  * Reolink's own officially-backed reolink_aio library:
- *   - PTZ: ptzCtrl > 0. The exact value varies by camera (1 on a
- *     pan-tilt-only E1 Pro, 7 on full PTZ cameras) but >0 vs 0 reliably
- *     splits PTZ-capable from fixed cameras every time tested.
- *   - PTZ Calibration: supportPtzCheck > 0 OR supportPtzCalibration > 0 --
- *     confirmed a false negative on supportPtzCalibration alone (real-world
- *     contradicted it), switched supportPtzCheck to primary. This EXACT OR
- *     pattern is independently confirmed in reolink_aio's own capability
- *     logic.
- *   - Spotlight: supportFLswitch > 0 OR floodLight > 0. Camera-only --
- *     confirmed no camera or doorbell tested actually maps a true
- *     spotlight/floodlight to supportDoorbellLight (see Night Vision /
- *     Status LED below for what that key actually means on a doorbell).
- *     floodLight alone stayed 0 on every device tested including confirmed
- *     spotlight-equipped ones (independently corroborated by a Reolink
- *     community report of floodLight being unreliable even on genuine
- *     floodlight hardware) but reolink_aio's own logic ORs it in alongside
- *     supportFLswitch, so it's kept as a defensive fallback in case some
- *     future device reports it correctly.
- *   - Night Vision (IR): ledControl > 0 -- field found via reolink_aio,
- *     previously unmapped. Confirmed against a real doorbell that has an IR
- *     light but no spotlight.
- *   - Status LED: supportDoorbellLight > 0 -- CORRECTED. Originally (v1.3.1)
- *     folded into the Spotlight gate based on real hardware showing it
- *     nonzero on a doorbell with a light -- but that doorbell's only lights
- *     are IR (night vision) and a button/ring status light, no true
- *     spotlight. Confirmed via reolink_aio that this key governs the
- *     status/ring indicator LED (grouped with powerLed/indicatorLight in
- *     their code), not illumination. Split into its own feature.
- *   - Siren: alarmAudio > 0. Every camera tested had this until an older
- *     basic model (RLC-410W, no built-in speaker) finally gave a real
- *     negative case (permit:0, "talk" key absent entirely) -- confirms this
- *     field is trustworthy, not just uniformly present by coincidence.
+ *   - PTZ: ptzType > 0 (checked via abilityPermit()'s existing max(permit,
+ *     ver) logic). CORRECTED 2026-08-14: previously keyed off ptzCtrl > 0,
+ *     which turned out to report whether ANY PTZ-style command channel
+ *     exists (apparently including basic digital zoom on some fixed
+ *     cameras), not actual pan-tilt hardware -- confirmed via a real
+ *     RLC-1240A (no physical PTZ) showing ptzCtrl permit:7, ver:64, both
+ *     nonzero, a false positive. ptzType correctly read permit:0, ver:0 on
+ *     that same camera. The E1 Pro's documented ptzType values (permit:0,
+ *     ver nonzero) are exactly the case abilityPermit()'s check-both logic
+ *     was built for, so switching to ptzType keeps the E1 Pro correctly
+ *     detected while fixing the RLC-1240A false positive.
+ *   - PTZ Calibration: supportPtzCheck > 0 OR supportPtzCalibration > 0.
+ *   - Spotlight: supportFLswitch > 0 OR floodLight > 0 (camera-only).
+ *   - Night Vision (IR): ledControl > 0.
+ *   - Status LED: supportDoorbellLight > 0 (doorbell button/ring light, NOT
+ *     a spotlight).
+ *   - Siren: alarmAudio > 0.
  *   - Person / Vehicle: supportAiPeople / supportAiVehicle > 0.
- *   - Pet: supportAiDogCat OR supportAiAnimal > 0 -- field NAME varies by
- *     firmware (older firmware uses one, newer sometimes reports both
- *     simultaneously), so both are checked rather than picking one.
- *   - Package: supportAiPackage > 0 -- confirmed against a real doorbell
- *     (package detection is doorbell-specific; cameras don't have it at all,
- *     which is why no camera tested ever showed this key). Still matched via
- *     a defensive "ackage"-substring scan rather than the literal key name,
- *     since that already caught the real name correctly and costs nothing
- *     to leave in place as a safety net for any differently-named variant.
- *   - Basic/older models (e.g. RLC-410W) can be missing entire FAMILIES of
- *     keys (no AI keys at all, predating that feature) -- abilityPermit()'s
- *     missing-key-as-0 handling covers this correctly.
- *
- * Deliberately NOT included: battery status (see guessIsBattery() TODO,
- * unconfirmed against real hardware), NVR/Home Hub channel-specific ability
- * behavior (untested -- everything confirmed so far is a directly-connected
- * standalone camera).
+ *   - Pet: supportAiDogCat OR supportAiAnimal > 0.
+ *   - Package: supportAiPackage > 0 (doorbell-specific).
+ *   - Basic/older models can be missing entire families of keys --
+ *     abilityPermit()'s missing-key-as-0 handling covers this correctly.
  */
 private List<String> computeSupportedFeatures(Map abilityChn) {
     if (abilityChn == null) return []
     def features = []
-    if (abilityPermit(abilityChn, "ptzCtrl") > 0) features << "PTZ"
+    if (abilityPermit(abilityChn, "ptzType") > 0) features << "PTZ"
     if (abilityPermit(abilityChn, "supportPtzCheck") > 0 || abilityPermit(abilityChn, "supportPtzCalibration") > 0) {
         features << "PTZ Calibration"
     }
@@ -1012,28 +1003,135 @@ private String childDni(sourceId, channel) {
     "reolink-${sourceId}-${channel}"
 }
 
+// ---------- Event connection ----------
+
+/**
+ * The bridge device ALWAYS needs to exist (it's the real parent of Camera/
+ * Doorbell, not just an optional event-mode extra) -- this always creates
+ * the bridge if missing, then separately starts/stops the event
+ * subscription ON that bridge based on the per-source toggle. Idempotent --
+ * safe to call on every page load or initialize().
+ */
+def ensureSourceBridge(sourceId) {
+    def src = getSource(sourceId)
+    if (!src) return null
+    def dni = bridgeDni(sourceId)
+    def bridge = getChildDevice(dni)
+    if (!bridge) {
+        bridge = addChildDevice("jdthomas24", "Reolink Device Bridge", dni, [
+            name: "Reolink Device Bridge (${src.label})",
+            label: "Reolink Device Bridge (${src.label})",
+            isComponent: true
+        ])
+        bridge.updateDataValue("sourceId", "${sourceId}")
+        logNormal "Reolink source ${sourceId}: bridge device created"
+    }
+    // Unconditional -- always keeps the bridge's connection config in sync
+    // with state.sources, independent of whether the subscription is
+    // actually wanted right now.
+    bridge.configureConnection(src.host, BAICHUAN_PORT, src.username, src.password, sourceId as Integer)
+
+    def wantEvent = settings["useEventSubscription_${sourceId}"] != false  // default true
+    def currentStatus = state.sourceConnMode?.get(sourceId.toString())
+    def currentlyRunning = currentStatus in ["connected", "connecting", "reconnecting"]
+    if (wantEvent && !currentlyRunning) {
+        bridge.startEventSubscription()
+        logNormal "Reolink source ${sourceId}: event subscription starting"
+    } else if (!wantEvent && currentlyRunning) {
+        try { bridge.stopEventSubscription() } catch (e) { /* best effort */ }
+        state.sourceConnMode?.remove(sourceId.toString())
+        logNormal "Reolink source ${sourceId}: event subscription stopped (polling only)"
+    }
+    return bridge
+}
+
+/** Called by the bridge whenever its event-subscription status changes. */
+def componentEventConnectionStatus(child, sourceId, String status) {
+    def map = state.sourceConnMode ?: [:]
+    def key = sourceId.toString()
+    def prev = map[key]
+    map[key] = status
+    state.sourceConnMode = map
+    if (prev != status) {
+        logNormal "Reolink source ${sourceId}: event connection ${status}"
+    }
+    if (status != "connected") {
+        // Falling back to polling -- mark this source's children due
+        // immediately instead of waiting out whatever interval they were on,
+        // so there's no extra gap on top of the drop itself.
+        childrenForSource(sourceId as Integer).each { markPollDueNow(it.deviceNetworkId) }
+    }
+}
+
+/** True while a source's event connection is confirmed healthy -- schedulerTick() skips active polling for its children while this holds. */
+private boolean isSourceEventConnected(sourceId) {
+    return state.sourceConnMode?.get(sourceId.toString()) == "connected"
+}
+
+/**
+ * Called by the bridge for every genuine per-channel motion/AI/visitor
+ * change. Routes into the SAME parseReolinkState() the polling path already
+ * calls -- the camera/doorbell drivers have no idea this came from a push
+ * instead of a poll. The target child is looked up ON THE BRIDGE (its real
+ * parent), not the app.
+ */
+def componentEventChannelUpdate(child, sourceId, channelId, String status, String aiType) {
+    def bridge = getSourceBridge(sourceId)
+    def dni = childDni(sourceId, channelId)
+    def target = bridge?.getChildDevice(dni)
+    if (!target) return  // channel not added as a device, or not yet discovered -- nothing to update
+    def shapes = translateToLegacyShape(status, aiType)
+    target.parseReolinkState(shapes.aiState, shapes.mdState, "event")
+    logFull "Reolink source ${sourceId} ch ${channelId}: event push -- status='${status}', AItype='${aiType}'"
+}
+
+/** Called by the bridge for sleep-status pushes (cmd_id=145). Logged only for now -- not yet wired to markAsleep()/awake. */
+def componentEventSleepUpdate(child, sourceId, channelId, String sleepState) {
+    logFull "Reolink source ${sourceId} ch ${channelId}: event sleep push -- '${sleepState}' (not yet acted on)"
+}
+
+/**
+ * Reshapes a pushed status/AItype pair into the same Map shape
+ * parseReolinkState() already expects from POLLING (GetAiState/GetMdState
+ * JSON).
+ */
+private Map translateToLegacyShape(String status, String aiType) {
+    def aiActive = aiType && aiType != "none"
+    def motionActive = (status == "MD") || aiActive
+    return [
+        mdState: [state: motionActive ? 1 : 0],
+        aiState: [
+            people:  [alarm_state: (aiType == "people")  ? 1 : 0],
+            vehicle: [alarm_state: (aiType == "vehicle") ? 1 : 0],
+            dog_cat: [alarm_state: (aiType == "dog_cat") ? 1 : 0],
+            package: [alarm_state: (aiType == "package") ? 1 : 0],
+            visitor: [alarm_state: (status == "visitor") ? 1 : 0]
+        ]
+    ]
+}
+
 def createSelectedChildren(sourceId) {
+    // The bridge -- not the app -- creates/removes Camera/Doorbell, via
+    // createChannelDevice()/removeChannelDevice(), so they end up as ITS
+    // children (nested in the Devices list).
+    def bridge = ensureSourceBridge(sourceId)
+    if (!bridge) {
+        log.warn "Reolink source ${sourceId}: no bridge device available, cannot create/remove children"
+        return
+    }
     (state.lastDiscovery ?: []).each { ch ->
         def wantIt = settings["create_${sourceId}_${ch.channel}"]
         def dni = childDni(sourceId, ch.channel)
-        def existing = getChildDevice(dni)
+        def existing = bridge.getChildDevice(dni)
         if (wantIt && !existing) {
             def driverName = ch.deviceType == "doorbell" ? "Reolink Doorbell" : "Reolink Camera"
-            def child = addChildDevice("jdthomas24", driverName, dni, [
-                name: ch.name, label: ch.name, isComponent: true
-            ])
-            child.updateDataValue("sourceId", "${sourceId}")
-            child.updateDataValue("channel", "${ch.channel}")
-            // Poll interval is device-only, configurable ONLY on the device page (or via
-            // setPollInterval) -- these are just the one-time defaults applied at creation.
             def pollDefault = ch.isBattery ? DEFAULT_BATTERY_POLL_SEC : DEFAULT_WIRED_POLL_SEC
-            child.updateSetting("pollIntervalSec", [type: "number", value: pollDefault])
-            child.receiveSupportedFeatures(ch.supportedFeatures ?: [])
-            logNormal "Created child ${dni} (${driverName}), poll interval defaulted to ${pollDefault}s (${ch.isBattery ? 'battery' : 'wired'}), features: ${ch.supportedFeatures ? ch.supportedFeatures.join(', ') : 'none detected'}"
+            bridge.createChannelDevice(driverName, dni, ch.name, pollDefault as Integer, ch.supportedFeatures ?: [])
+            logNormal "Created child ${dni} (${driverName}) via bridge, poll interval defaulted to ${pollDefault}s (${ch.isBattery ? 'battery' : 'wired'}), features: ${ch.supportedFeatures ? ch.supportedFeatures.join(', ') : 'none detected'}"
         } else if (!wantIt && existing) {
-            deleteChildDevice(dni)
+            bridge.removeChannelDevice(dni)
             forgetSchedulingState(dni)
-            logNormal "Removed child ${dni} (unchecked in discovery list)"
+            logNormal "Removed child ${dni} via bridge (unchecked in discovery list)"
         }
     }
     initializePolling()
@@ -1083,30 +1181,29 @@ def revertToNormalLogging() {
 
 /**
  * Backward-compat stub for the pre-1.2.5 debugLogging system's scheduled
- * callback name. An install that had the old "Enable debug logging" toggle
- * on before updating to 1.2.5 would have a runIn(5400, "disableDebugLogging")
- * job already pending on the hub -- Hubitat's scheduler persists jobs by
- * method name independently of the code text, so updating the code (which
- * renamed this method to revertToNormalLogging()) left that stale job
- * pointing at a name that no longer existed, throwing
- * MissingMethodExceptionNoStack when it fired. This stub just gives that
- * leftover job somewhere safe to land instead of erroring; it has no other
- * purpose and nothing schedules a job under this name going forward.
+ * callback name. Gives any leftover pending job from an old install
+ * somewhere safe to land instead of erroring; nothing schedules a job under
+ * this name going forward.
  */
 def disableDebugLogging() {
     log.info "Reolink Integration: leftover pre-1.2.5 logging job fired, no action needed (see disableDebugLogging() comment)"
 }
 
 def initializePolling() {
-    // Seed every child so it's due immediately on the first tick, then start
-    // (or restart) the single central scheduler.
+    // Children live under each source's bridge, not the app directly --
+    // iterate sources -> bridge -> its real (Camera/Doorbell) children.
+    // Also (re)establishes each source's bridge/event-subscription state,
+    // since ensureSourceBridge() covers both jobs now.
     def now = now()
     def pollDue = state.nextPollDue ?: [:]
     def snapDue = state.nextSnapshotDue ?: [:]
-    getChildDevices().each { child ->
-        def dni = child.deviceNetworkId
-        if (!pollDue.containsKey(dni)) pollDue[dni] = now
-        if (!snapDue.containsKey(dni)) snapDue[dni] = now
+    (state.sources ?: []).each { src ->
+        def bridge = ensureSourceBridge(src.id)
+        bridge?.getChildDevices()?.each { child ->
+            def dni = child.deviceNetworkId
+            if (!pollDue.containsKey(dni)) pollDue[dni] = now
+            if (!snapDue.containsKey(dni)) snapDue[dni] = now
+        }
     }
     state.nextPollDue = pollDue
     state.nextSnapshotDue = snapDue
@@ -1114,31 +1211,16 @@ def initializePolling() {
 }
 
 /**
- * Single central scheduler, replacing the old per-device runIn(interval,
- * "pollChild", [data: [dni: ...], overwrite: true]) pattern.
+ * Single central scheduler -- exactly ONE recurring timer exists for the
+ * whole app (this method, ticking every second), and each device's own
+ * due-time is tracked independently in state (nextPollDue / nextSnapshotDue,
+ * keyed by DNI). Nothing here can ever cancel another device's schedule,
+ * because there is only one schedule.
  *
- * That pattern was broken: every device's call shared the SAME handler name
- * ("pollChild"), and Hubitat's overwrite: true cancels ANY pending call to
- * that handler, not just the calling device's own previous one. With 4
- * cameras, whichever device happened to (re)schedule last silently canceled
- * every other device's pending timer -- no error, nothing in the logs, they
- * just stopped polling. Found in the field: only 1 of 4 cameras was still
- * polling, the other 3 had gone silent since before this session started.
- * Same bug applied to pollChildSnapshot().
- *
- * The fix: exactly ONE recurring timer exists for the whole app (this
- * method, ticking every second), and each device's own due-time is tracked
- * independently in state (nextPollDue / nextSnapshotDue, keyed by DNI).
- * Nothing here can ever cancel another device's schedule, because there is
- * only one schedule.
- *
- * Two more robustness measures, since this single tick is now the ONE thing
- * every device's polling depends on -- a failure here has a much bigger
- * blast radius than the old per-device timers did, so it can't be allowed to
- * silently die:
+ * Two robustness measures, since this single tick is the ONE thing every
+ * device's polling depends on:
  *  1. Each device is processed in its own try/catch. One device throwing
- *     (bad API response, unexpected null, etc.) logs a warning and moves on
- *     instead of aborting the whole tick and silently stopping every camera.
+ *     logs a warning and moves on instead of aborting the whole tick.
  *  2. The next tick is re-armed in a finally block, so even an unexpected
  *     failure outside the per-device loop still can't prevent the scheduler
  *     from continuing to run.
@@ -1149,25 +1231,36 @@ def schedulerTick() {
         def pollDue = state.nextPollDue ?: [:]
         def snapDue = state.nextSnapshotDue ?: [:]
 
-        getChildDevices().each { child ->
-            def dni = child.deviceNetworkId
-            try {
-                if (nowMs >= ((pollDue[dni] ?: 0) as Long)) {
-                    pollChildNow(child)
+        (state.sources ?: []).each { src ->
+            def bridge = getSourceBridge(src.id)
+            if (!bridge) return
+            def sourceConnected = isSourceEventConnected(src.id)
+            (bridge.getChildDevices() ?: []).each { child ->
+                def dni = child.deviceNetworkId
+                try {
+                    // While this source has a confirmed-healthy event
+                    // connection, skip active polling for it -- the push path
+                    // is already delivering its state via
+                    // componentEventChannelUpdate(). nextPollDue is
+                    // deliberately left untouched here so if the connection
+                    // drops, componentEventConnectionStatus() marking it
+                    // due-now takes effect immediately.
+                    if (sourceConnected) return
+                    if (nowMs >= ((pollDue[dni] ?: 0) as Long)) {
+                        pollChildNow(child)
+                        def interval = (child.getSetting("pollIntervalSec") ?: 30) as Integer
+                        pollDue[dni] = nowMs + (interval * 1000L)
+                    }
+                    if (nowMs >= ((snapDue[dni] ?: 0) as Long)) {
+                        pollChildSnapshotNow(child)
+                        def sInterval = (child.getSetting("snapshotIntervalSec") ?: 30) as Integer
+                        snapDue[dni] = nowMs + (sInterval * 1000L)
+                    }
+                } catch (e) {
+                    log.warn "Reolink Integration: schedulerTick() failed for device ${dni} -- ${e.message}. Skipping this device this tick, will retry next tick."
                     def interval = (child.getSetting("pollIntervalSec") ?: 30) as Integer
                     pollDue[dni] = nowMs + (interval * 1000L)
                 }
-                if (nowMs >= ((snapDue[dni] ?: 0) as Long)) {
-                    pollChildSnapshotNow(child)
-                    def sInterval = (child.getSetting("snapshotIntervalSec") ?: 30) as Integer
-                    snapDue[dni] = nowMs + (sInterval * 1000L)
-                }
-            } catch (e) {
-                log.warn "Reolink Integration: schedulerTick() failed for device ${dni} -- ${e.message}. Skipping this device this tick, will retry next tick."
-                // Push this device's due time forward by its own interval anyway, so a
-                // persistently failing device can't get retried every single tick forever.
-                def interval = (child.getSetting("pollIntervalSec") ?: 30) as Integer
-                pollDue[dni] = nowMs + (interval * 1000L)
             }
         }
 
@@ -1195,7 +1288,8 @@ private markSnapshotDueNow(String dni) {
 }
 
 def pollChild(data) {
-    def child = getChildDevice(data.dni)
+    def bridge = getSourceBridgeForChannelDni(data.dni)
+    def child = bridge?.getChildDevice(data.dni)
     if (!child) return
     pollChildNow(child)
     markPollDueNow(child.deviceNetworkId)
@@ -1203,11 +1297,10 @@ def pollChild(data) {
 
 /**
  * Checks the child's CURRENT sleepStatus before logging, so "marking asleep"/
- * "marking awake" only hits Normal-tier logging on a real transition -- same
- * idea as the drivers' sendIfChanged(), applied to log lines instead of
- * sendEvent() calls. A device that's already asleep and stays asleep (or
- * already awake and stays awake) only logs at Full tier, since that's routine
- * and not worth surfacing by default.
+ * "marking awake" only hits Normal-tier logging on a real transition. A
+ * device that's already asleep and stays asleep (or already awake and stays
+ * awake) only logs at Full tier, since that's routine and not worth
+ * surfacing by default.
  */
 private void pollChildNow(child) {
     def sourceId = child.getDataValue("sourceId") as Integer
@@ -1237,15 +1330,15 @@ private void pollChildNow(child) {
 /**
  * Snapshot caching runs on its OWN schedule (nextSnapshotDue, see
  * schedulerTick() above), separate from AI/motion polling (nextPollDue).
- * Motion detection benefits from being fast (a few seconds); a dashboard
- * image does not need to be refreshed nearly that often, and pulling a full
- * JPEG every few seconds across several cameras against this app's
- * singleThreaded execution model risks the exact semaphore/queueing problem
- * the caching redesign was meant to fix in the first place. Defaults to a
- * much looser interval than the poll interval.
+ * Motion detection benefits from being fast; a dashboard image does not need
+ * to be refreshed nearly that often, and pulling a full JPEG every few
+ * seconds across several cameras against this app's singleThreaded
+ * execution model risks a semaphore/queueing problem. Defaults to a much
+ * looser interval than the poll interval.
  */
 def pollChildSnapshot(data) {
-    def child = getChildDevice(data.dni)
+    def bridge = getSourceBridgeForChannelDni(data.dni)
+    def child = bridge?.getChildDevice(data.dni)
     if (!child) return
     pollChildSnapshotNow(child)
     markSnapshotDueNow(child.deviceNetworkId)
@@ -1262,13 +1355,7 @@ private void pollChildSnapshotNow(child) {
  * device DNI. This is the ONLY place that hits the camera for a snapshot --
  * the dashboard-facing relay endpoint (handleSnapshotRequest) just serves
  * whatever's cached here, instantly, with no camera round-trip in the
- * request path. That's what keeps a busy dashboard (multiple tiles, fast
- * refresh) from backing up this app's single-threaded execution queue.
- *
- * TODO: verify uploadHubFile()/downloadHubFile() byte-array signatures and
- * any file size ceiling against your hub's actual platform version -- these
- * are standard Hubitat File Manager APIs (2.2.8+) but haven't been tested
- * against real hardware in this codebase yet.
+ * request path.
  */
 private void cacheSnapshot(child, sourceId, channel) {
     def src = getSource(sourceId)
@@ -1280,10 +1367,6 @@ private void cacheSnapshot(child, sourceId, channel) {
     }
     try {
         uploadHubFile(snapshotFileName(child.deviceNetworkId), imageBytes)
-        // Deliberately not logging the success case -- with snapshot caching
-        // running on its own recurring schedule, a line every cycle adds up
-        // to real log noise for no diagnostic benefit. Failures above and
-        // below are still logged, since those are the cases worth seeing.
     } catch (e) {
         log.warn "Reolink source ${sourceId} ch ${channel}: failed to write snapshot to hub file storage -- ${e.message}"
     }
@@ -1294,24 +1377,18 @@ private String snapshotFileName(dni) {
 }
 
 /**
- * Resolves a proper app-side child device reference via getChildDevice(),
- * given a dni passed explicitly from the driver (device.deviceNetworkId).
- * Falls back to the raw passed reference only for callers that haven't been
- * updated to pass dni yet.
- *
- * Why this exists: a driver's raw "this" reference does not reliably support
- * every platform-provided device method/property when called externally by
- * this app. Confirmed broken so far: deviceNetworkId (property) and
- * updateSetting() (method, throws MissingMethodException). Confirmed working
- * in the field: getDataValue() and user-defined driver methods like
- * receiveSnapshotUrl()/receiveBatteryInfo() (ordinary Groovy method dispatch,
- * not platform-injected). Rather than track which specific calls happen to
- * work on the raw reference, every componentX callback now resolves through
- * here whenever a dni is available, closing off the whole risk class at once.
+ * Resolves a proper child device reference given a dni passed explicitly
+ * from the driver (device.deviceNetworkId). Falls back to the raw passed
+ * reference only for callers that haven't been updated to pass dni yet.
+ * These calls arrive via the bridge's passthrough layer (Camera/Doorbell's
+ * real parent), not directly from the child -- the lookup routes through
+ * whichever bridge actually owns this dni.
  */
 private resolveChild(child, String dni) {
     def effectiveDni = dni ?: child?.deviceNetworkId
-    return effectiveDni ? (getChildDevice(effectiveDni) ?: child) : child
+    if (!effectiveDni) return child
+    def bridge = getSourceBridgeForChannelDni(effectiveDni)
+    return bridge ? (bridge.getChildDevice(effectiveDni) ?: child) : child
 }
 
 // ---------- Component callbacks (children call these via parent.X()) ----------
@@ -1330,17 +1407,7 @@ def componentRefresh(child, String dni = null) {
  * Builds the dashboard-facing snapshot URL and, since the person explicitly
  * asked for a snapshot right now, immediately refreshes the cached image
  * rather than waiting for the next poll cycle. The URL itself points at this
- * app's local relay endpoint (see mappings + handleSnapshotRequest() below),
- * which serves the cached file directly -- no camera round-trip happens on
- * the dashboard's own refresh timer, only here and during normal polling.
- *
- * dni is passed explicitly by the driver (via its own device.deviceNetworkId)
- * rather than read off child.deviceNetworkId. Found in the field: a driver's
- * "this" reference reliably exposes methods like getDataValue(), but does NOT
- * reliably expose deviceNetworkId as a property when passed into another app's
- * method this way -- child?.deviceNetworkId was silently coming back null,
- * building a broken "/snap/null" URL. child.deviceNetworkId is kept as a
- * fallback only for callers that haven't been updated to pass dni explicitly.
+ * app's local relay endpoint (see mappings + handleSnapshotRequest() below).
  */
 def componentTakeSnapshot(child, String dni = null) {
     def effectiveDni = dni ?: child?.deviceNetworkId
@@ -1368,11 +1435,8 @@ def componentTakeSnapshot(child, String dni = null) {
 /**
  * Handler for GET /snap/:dni?access_token=... -- called by the browser every
  * time a dashboard image tile refreshes. Serves whatever's currently cached
- * in local hub file storage for this device (kept fresh by cacheSnapshot(),
- * called from pollChild() and from componentTakeSnapshot()). Deliberately
- * does NOT talk to the camera itself -- doing that on every request is what
- * caused the semaphore/queueing problem in 1.2.2 when multiple dashboard
- * tiles refresh often against this app's singleThreaded execution model.
+ * in local hub file storage for this device. Deliberately does NOT talk to
+ * the camera itself on every request.
  */
 def handleSnapshotRequest() {
     def dni = params?.dni
@@ -1381,7 +1445,8 @@ def handleSnapshotRequest() {
         render status: 400, data: "Missing or stale device id, run takeSnapshot again to regenerate this URL", contentType: "text/plain"
         return
     }
-    def child = getChildDevice(dni)
+    def bridge = getSourceBridgeForChannelDni(dni)
+    def child = bridge?.getChildDevice(dni)
     if (!child) {
         render status: 404, data: "Unknown device: ${dni}", contentType: "text/plain"
         return
@@ -1418,11 +1483,9 @@ private byte[] fetchSnapshotBytes(src, sourceId, channel) {
 
 /**
  * Low-level Snap GET. On success the camera returns raw JPEG bytes as an
- * InputStream on resp.data -- NOT something with a usable .bytes property,
- * so it has to be drained explicitly (this was the 1.2.2 bug: relying on
- * resp.data.bytes silently produced null/empty and rendered as a blank
- * white page instead of an error). On failure (e.g. rspCode -6) the camera
- * returns a small JSON error payload instead, detected via content-type.
+ * InputStream on resp.data, which must be drained explicitly. On failure
+ * the camera returns a small JSON error payload instead, detected via
+ * content-type.
  */
 private byte[] doFetchSnapshot(src, sourceId, token, channel) {
     def uri = "https://${src.host}:${src.port}/cgi-bin/api.cgi?cmd=Snap&channel=${channel}&token=${token}"
@@ -1490,6 +1553,18 @@ def componentSetSiren(child, Boolean on, String dni = null) {
     def sourceId = c.getDataValue("sourceId") as Integer
     def channel = c.getDataValue("channel") as Integer
     reolinkApiCall(sourceId, "AudioAlarmPlay", [alarm_mode: "manul", manual_switch: (on ? 1 : 0), times: 2], channel)
+}
+
+/**
+ * v1.3.8 NEW: PIR enable/disable, cameras only. Field names unconfirmed
+ * against real hardware -- built following the same naming convention as
+ * GetIrLights/SetIrLights, see the Tips page's "built but not tested" list.
+ */
+def componentSetPir(child, Boolean on, String dni = null) {
+    def c = resolveChild(child, dni)
+    def sourceId = c.getDataValue("sourceId") as Integer
+    def channel = c.getDataValue("channel") as Integer
+    reolinkApiCall(sourceId, "SetPirInfo", [PirInfo: [channel: channel, enable: (on ? 1 : 0)]], null)
 }
 
 def componentCheckBattery(child, String dni = null) {
@@ -1566,12 +1641,32 @@ private int logLevelRank() {
     return idx < 0 ? 0 : idx
 }
 
-/** Logs at Normal tier and above (Normal, Full). Meaningful one-time events and state transitions -- not routine unchanged polls. */
-private void logNormal(msg) {
+/**
+ * Logs at Normal tier and above (Normal, Full). Meaningful one-time events
+ * and state transitions -- not routine unchanged polls.
+ *
+ * NOT private -- the Reolink Device Bridge device calls this via
+ * parent?.logNormal(...) so its own connection-status logging (starting,
+ * connected, reconnecting) obeys the app's Log level setting instead of
+ * writing to the hub log unconditionally, same as everything else in this
+ * app. (v1.3.8 FIX: the bridge previously used raw log.info/log.debug
+ * throughout, bypassing this tiering entirely -- at Full this reproduced
+ * the exact log-flooding pattern from BETA testing, and switching the app
+ * back to Errors Only did nothing to quiet it, since the bridge never
+ * checked that setting at all.)
+ */
+void logNormal(msg) {
     if (logLevelRank() >= 1) log.debug msg
 }
 
-/** Logs only at Full tier. Routine poll-by-poll detail -- token reuse, individual API calls succeeding, unchanged state repeats. */
-private void logFull(msg) {
+/**
+ * Logs only at Full tier. Routine poll-by-poll / push-by-push detail --
+ * token reuse, individual API calls succeeding, unchanged state repeats,
+ * and (via the bridge) every routine event push and corruption-resync
+ * detail. NOT private -- see logNormal()'s note above; same reasoning
+ * applies here, and this is the tier that actually floods if left
+ * unconditional.
+ */
+void logFull(msg) {
     if (logLevelRank() >= 2) log.debug msg
 }
