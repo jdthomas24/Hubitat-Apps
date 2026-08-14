@@ -1,47 +1,20 @@
 /**
  * Reolink Doorbell (Component Driver)
- * Version: 1.3.6 -- kept in sync with the parent app's version. No functional
- * change to this driver -- v1.3.6's changes (discovery-page toggle fix and
- * clarity improvements) are app-side only. Version bumped here only to stay
- * in sync.
+ * Version: 1.3.8
  *
- * v1.3.5 -- kept in sync with the parent app's version. No functional
- * change to this driver -- v1.3.5's changes (capability-detection
- * corrections: doorbell light re-mapped to a new "Status LED" feature
- * instead of Spotlight, new "Night Vision" feature, permit-or-ver ability
- * lookup, confirmed battery field name) are all app-side or in
- * CameraDriver. Version bumped here only to stay in sync.
  * Same delegation pattern as Reolink Camera, plus a "visitor" (button press)
- * event so Rule Machine can trigger straight off "pushed 1" for a doorbell ring,
- * separate from AI person/motion detection.
+ * event so Rule Machine can trigger straight off "pushed 1" for a doorbell
+ * ring, separate from AI person/motion detection.
  *
- * No functional change to THIS driver from 1.3.1 -- v1.3.2 is an app-side-only
- * fix (PTZ Calibration detection false negative, see the app's version
- * history; also not specific to doorbells). Version bumped here only to stay
- * in sync.
+ * v1.3.8 -- kept in sync with the parent app's version. No functional change
+ * to this driver -- v1.3.8's changes (event-driven updates, PIR, login/action
+ * fixes) are app-side and camera-only. "lastUpdateSource" (event/poll) was
+ * added here as well, same as the camera driver, so it's visible at a glance
+ * which mechanism produced this doorbell's current state.
  *
- * v1.3.1 -- Fixed a bug: this driver declares capability "PushableButton"
- * (needed for the pushed/numberOfButtons attributes) but never implemented
- * the push() command the capability requires. Declaring a capability adds
- * its commands to the device page -- it does NOT auto-implement them, so
- * clicking Push on the Commands tab (or any app/rule calling push()) threw
- * a MissingMethodException. Added push(buttonNumber) below and routed the
- * real doorbell-press event through it instead of duplicating the same
- * sendEvent() call in two places.
- * Also (still v1.3.1, app-side): fixed the app's supportedFeatures
- * detection under-reporting a doorbell's light -- doorbells report it under
- * supportDoorbellLight, not supportFLswitch like cameras do. No change
- * needed in this driver file for that fix, noted here for the version
- * history.
- *
- * v1.3.0 -- added the supportedFeatures attribute and checkAbilities command
- * (see receiveSupportedFeatures() below), same as the camera driver. Package
- * detection's exact GetAbility field name (supportAiPackage) has since been
- * confirmed against real doorbell hardware. No other functional change from
- * 1.2.5.
- *
- * v1.2.4 -- see camera driver's 1.2.4 note -- same sendIfChanged() fix
- * applied here to cut redundant sendEvent() load on lower-spec hubs.
+ * v1.3.6 -- kept in sync with the parent app's version. No functional
+ * change to this driver -- v1.3.6's changes (discovery-page toggle fix and
+ * clarity improvements) are app-side only.
  */
 metadata {
     definition(name: "Reolink Doorbell", namespace: "jdthomas24", author: "Jason", component: true) {
@@ -56,6 +29,9 @@ metadata {
         attribute "snapshotUrl", "string"
         attribute "batteryMode", "enum", ["wired", "battery", "unknown"]
         attribute "sleepStatus", "enum", ["awake", "asleep", "unknown"]
+        // Tracks whether the most recent state update came from the
+        // real-time event push path or the plain polling fallback.
+        attribute "lastUpdateSource", "enum", ["event", "poll"]
         attribute "supportedFeatures", "string"
         command "takeSnapshot"
         command "checkAbilities", [[name: "Refreshes the supportedFeatures attribute from the doorbell's current GetAbility data"]]
@@ -112,9 +88,10 @@ def push(buttonNumber) {
 def receiveSupportedFeatures(List features) {
     sendEvent(name: "supportedFeatures", value: features ? features.join(", ") : "None detected")
 }
-/** Called by the app after it polls GetAiState/GetMdState/visitor state for this channel. */
-def parseReolinkState(aiState, mdState) {
+/** Called by the app after either a poll or a real-time event push -- see CameraDriver.groovy's matching note. */
+def parseReolinkState(aiState, mdState, String source = "poll") {
     sendIfChanged("sleepStatus", "awake")
+    sendIfChanged("lastUpdateSource", source)
     // TODO confirm the visitor/doorbell-press field name in your firmware's GetAiState/GetMdState payload
     def visitorPressed = aiState?.visitor?.alarm_state == 1
     if (visitorPressed) {
