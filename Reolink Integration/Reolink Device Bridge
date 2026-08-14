@@ -1,5 +1,5 @@
 /**
- * Reolink Source Bridge (Internal Parent Driver)
+ * Reolink Device Bridge (Internal Parent Driver)
  * Version: 1.3.8
  *
  * NOT user-facing. Created and managed automatically by the Reolink
@@ -64,7 +64,7 @@ import javax.crypto.spec.SecretKeySpec
 import javax.crypto.spec.IvParameterSpec
 
 metadata {
-    definition(name: "Reolink Source Bridge", namespace: "jdthomas24", author: "Jason", component: true) {
+    definition(name: "Reolink Device Bridge", namespace: "jdthomas24", author: "Jason", component: true) {
         capability "Actuator"
         command "startEventSubscription"
         command "stopEventSubscription"
@@ -155,7 +155,7 @@ def configureConnection(String host, Integer port, String username, String passw
 }
 
 def startEventSubscription(boolean isReconnect = false) {
-    parent?.logNormal "Reolink Source Bridge (source ${state.sourceId}): ${isReconnect ? 'reconnecting' : 'starting'}"
+    parent?.logNormal "Reolink Device Bridge (source ${state.sourceId}): ${isReconnect ? 'reconnecting' : 'starting'}"
     if (!isReconnect) {
         state.reconnectAttempts = 0
         unschedule("reconnectEventSubscription")
@@ -171,7 +171,7 @@ def startEventSubscription(boolean isReconnect = false) {
     try {
         interfaces.rawSocket.connect(state.host, state.port as int, byteInterface: true)
     } catch (e) {
-        log.warn "Reolink Source Bridge (source ${state.sourceId}): FAILED to open socket -- ${e.message}"
+        log.warn "Reolink Device Bridge (source ${state.sourceId}): FAILED to open socket -- ${e.message}"
         state.stage = null
         sendEvent(name: "connectionStatus", value: "disconnected")
         return
@@ -181,7 +181,7 @@ def startEventSubscription(boolean isReconnect = false) {
 }
 
 def stopEventSubscription() {
-    parent?.logNormal "Reolink Source Bridge (source ${state.sourceId}): stopping event subscription"
+    parent?.logNormal "Reolink Device Bridge (source ${state.sourceId}): stopping event subscription"
     unschedule("sendKeepalive")
     unschedule("flowTimeoutCheck")
     unschedule("reconnectEventSubscription")
@@ -203,12 +203,12 @@ def socketStatus(String status) {
     if (status?.contains("error") || status?.contains("close")) {
         if (state.stage == "SUBSCRIBED") {
             unschedule("sendKeepalive")
-            log.warn "Reolink Source Bridge (source ${state.sourceId}): connection lost, scheduling reconnect"
+            log.warn "Reolink Device Bridge (source ${state.sourceId}): connection lost, scheduling reconnect"
             sendEvent(name: "connectionStatus", value: "reconnecting")
             parent?.componentEventConnectionStatus(this, state.sourceId, "reconnecting")
             scheduleReconnect()
         } else if (state.stage && state.stage != "DONE") {
-            log.warn "Reolink Source Bridge (source ${state.sourceId}): socket closed/errored mid-handshake (stage was ${state.stage})"
+            log.warn "Reolink Device Bridge (source ${state.sourceId}): socket closed/errored mid-handshake (stage was ${state.stage})"
             sendEvent(name: "connectionStatus", value: "disconnected")
             parent?.componentEventConnectionStatus(this, state.sourceId, "disconnected")
         }
@@ -222,13 +222,13 @@ private void scheduleReconnect() {
     int attempt = (state.reconnectAttempts ?: 0) + 1
     state.reconnectAttempts = attempt
     if (attempt > MAX_RECONNECT_ATTEMPTS) {
-        log.warn "Reolink Source Bridge (source ${state.sourceId}): giving up after ${MAX_RECONNECT_ATTEMPTS} attempts -- falling back to polling"
+        log.warn "Reolink Device Bridge (source ${state.sourceId}): giving up after ${MAX_RECONNECT_ATTEMPTS} attempts -- falling back to polling"
         sendEvent(name: "connectionStatus", value: "disconnected")
         parent?.componentEventConnectionStatus(this, state.sourceId, "disconnected")
         return
     }
     int delaySec = Math.min(300, 5 * (int) Math.pow(2, attempt - 1))
-    log.warn "Reolink Source Bridge (source ${state.sourceId}): reconnect attempt ${attempt}/${MAX_RECONNECT_ATTEMPTS} in ${delaySec}s"
+    log.warn "Reolink Device Bridge (source ${state.sourceId}): reconnect attempt ${attempt}/${MAX_RECONNECT_ATTEMPTS} in ${delaySec}s"
     runIn(delaySec, "reconnectEventSubscription")
 }
 
@@ -244,7 +244,7 @@ def reconnectEventSubscription() {
  */
 def flowTimeoutCheck() {
     if (state.stage && state.stage != "DONE" && state.stage != "SUBSCRIBED") {
-        log.warn "Reolink Source Bridge (source ${state.sourceId}): timed out waiting for handshake response (stage ${state.stage}), scheduling reconnect"
+        log.warn "Reolink Device Bridge (source ${state.sourceId}): timed out waiting for handshake response (stage ${state.stage}), scheduling reconnect"
         try { interfaces.rawSocket.close() } catch (e) { }
         state.stage = null
         sendEvent(name: "connectionStatus", value: "reconnecting")
@@ -282,20 +282,20 @@ def sendKeepalive() {
         byte[] header = buildHeader1464(93, 0, HOST_CH_ID, nextMessId(), 0)
         sendRaw(header)
     } catch (e) {
-        log.warn "Reolink Source Bridge (source ${state.sourceId}): keepalive send failed: ${e.message}"
+        log.warn "Reolink Device Bridge (source ${state.sourceId}): keepalive send failed: ${e.message}"
     }
     runIn(25, "sendKeepalive")
 }
 
 private void handlePushedEvent(int cmdId, String bodyText) {
     if (!bodyText?.trim()) {
-        parent?.logFull "Reolink Source Bridge (source ${state.sourceId}): cmd_id ${cmdId} body empty/undecoded, skipping"
+        parent?.logFull "Reolink Device Bridge (source ${state.sourceId}): cmd_id ${cmdId} body empty/undecoded, skipping"
         return
     }
     if (cmdId == 33) {
         def elements = findAllChannelElements(bodyText, "AlarmEvent")
         if (!elements) return
-        parent?.logFull "Reolink Source Bridge (source ${state.sourceId}): cmd_id 33 push parsed OK, channels present: ${elements.keySet().sort()}"
+        parent?.logFull "Reolink Device Bridge (source ${state.sourceId}): cmd_id 33 push parsed OK, channels present: ${elements.keySet().sort()}"
         def last = state.last33 ?: [:]
         elements.each { chId, elem ->
             def status = elem?.status?.text()
@@ -337,7 +337,7 @@ private Map findAllChannelElements(String xml, String elementName) {
         }
         return result
     } catch (e) {
-        parent?.logFull "Reolink Source Bridge (source ${state.sourceId}): failed to parse pushed event XML: ${e.message}"
+        parent?.logFull "Reolink Device Bridge (source ${state.sourceId}): failed to parse pushed event XML: ${e.message}"
         return [:]
     }
 }
@@ -370,7 +370,7 @@ private void processBuffer() {
         def detail = "Chunk position ${chunkPos} (0 = first message in this TCP read, 1+ = Nth message " +
             "after successfully parsing ${chunkPos} earlier message(s) from the SAME read). Previous msg: " +
             "${state.lastMsg}. Failing buffer (first 240 hex chars): ${hex.take(240)}"
-        parent?.logFull "Reolink Source Bridge (source ${state.sourceId}): invalid magic header, dropping buffer " +
+        parent?.logFull "Reolink Device Bridge (source ${state.sourceId}): invalid magic header, dropping buffer " +
             "(${recent.size()} in the last 60s). ${detail}"
 
         // Scans forward within the SAME buffer for the next real occurrence
@@ -384,14 +384,14 @@ private void processBuffer() {
         def attempts = (state.resyncAttempts ?: 0) + 1
         state.resyncAttempts = attempts
         if (attempts > 20) {
-            log.warn "Reolink Source Bridge (source ${state.sourceId}): giving up resyncing after 20 attempts " +
+            log.warn "Reolink Device Bridge (source ${state.sourceId}): giving up resyncing after 20 attempts " +
                 "this read, dropping buffer entirely"
             state.rxBufferHex = ""
             return
         }
         int nextIdx = findNextMagicHeaderIndex(hex, 2)
         if (nextIdx > 0) {
-            parent?.logFull "Reolink Source Bridge (source ${state.sourceId}): resyncing -- found next magic header " +
+            parent?.logFull "Reolink Device Bridge (source ${state.sourceId}): resyncing -- found next magic header " +
                 "${(nextIdx / 2) as Integer} bytes in, discarding only the leading garbage instead of the whole buffer"
             state.rxBufferHex = hex.substring(nextIdx)
             processBuffer()
@@ -419,7 +419,7 @@ private void processBuffer() {
     } else {
         // A genuinely unrecognized message type -- a real protocol
         // surprise, kept at warn.
-        log.warn "Reolink Source Bridge (source ${state.sourceId}): unknown message class '${messageClass}', dropping buffer"
+        log.warn "Reolink Device Bridge (source ${state.sourceId}): unknown message class '${messageClass}', dropping buffer"
         state.rxBufferHex = ""
         return
     }
@@ -469,7 +469,7 @@ private String decryptBody(String bodyHex, String encTypeMarker, int chId) {
             if (bcTry?.trim()?.startsWith("<?xml")) return bcTry
         } catch (e) { /* fall through */ }
     }
-    log.warn "Reolink Source Bridge (source ${state.sourceId}): unable to decrypt body (marker '${encTypeMarker}')"
+    log.warn "Reolink Device Bridge (source ${state.sourceId}): unable to decrypt body (marker '${encTypeMarker}')"
     return ""
 }
 
@@ -491,7 +491,7 @@ private void handleMessage(int cmdId, String bodyText) {
         case "AWAITING_NONCE":
             def nonce = findXmlValue(bodyText, "nonce")
             if (!nonce) {
-                log.warn "Reolink Source Bridge (source ${state.sourceId}): no nonce in response, cannot continue"
+                log.warn "Reolink Device Bridge (source ${state.sourceId}): no nonce in response, cannot continue"
                 state.stage = null
                 sendEvent(name: "connectionStatus", value: "disconnected")
                 parent?.componentEventConnectionStatus(this, state.sourceId, "disconnected")
@@ -509,7 +509,7 @@ private void handleMessage(int cmdId, String bodyText) {
             state.reconnectAttempts = 0
             unschedule("flowTimeoutCheck")
             runIn(25, "sendKeepalive")
-            parent?.logNormal "Reolink Source Bridge (source ${state.sourceId}): event subscription ACTIVE"
+            parent?.logNormal "Reolink Device Bridge (source ${state.sourceId}): event subscription ACTIVE"
             sendEvent(name: "connectionStatus", value: "connected")
             parent?.componentEventConnectionStatus(this, state.sourceId, "connected")
             break
