@@ -1,35 +1,29 @@
 /**
  * Reolink Camera (Component Driver)
- * Version: 1.3.6 -- kept in sync with the parent app's version. No functional
- * change to this driver -- v1.3.6's changes (discovery-page toggle fix and
- * clarity improvements) are app-side only. Version bumped here only to stay
- * in sync.
- *
- * v1.3.5 -- confirmed (not a guess) the battery percentage field name via
- * Reolink's officially-backed reolink_aio library: Battery.batteryPercent.
- * See receiveBatteryInfo() below. All other v1.3.5 changes are app-side
- * only (capability-detection corrections, see the app's version history).
+ * Version: 1.3.8
  *
  * Thin device: no HTTP of its own. Everything delegates to the parent app via
  * parent.componentX(this, ...). The app knows which source/channel this device
  * maps to (stored as data values sourceId/channel) and does the actual API call.
  *
- * No functional change to THIS driver from 1.3.1 -- v1.3.2 is an app-side-only
- * fix (PTZ Calibration detection false negative, see the app's version
- * history). Version bumped here only to stay in sync.
+ * v1.3.8:
+ *  1. NEW: PIR enable/disable -- pirOn()/pirOff() commands plus a pirEnabled
+ *     attribute (real boolean, usable directly in Rule Machine conditions)
+ *     and a pirStatusNote attribute (plain-text readable note, clears when
+ *     PIR is back on). Manual on/off only, no auto-revert timer -- an
+ *     "auto re-enable above threshold Y" need is already fully served by
+ *     Rule Machine using the existing battery attribute, no extra driver
+ *     logic needed. Note: turning PIR off does NOT stop an in-progress
+ *     recording -- it removes the trigger that would have woken a battery
+ *     camera to record in the first place.
+ *  2. NEW: "lastUpdateSource" attribute (event/poll) -- shows at a glance
+ *     whether this device's current state came from the real-time event
+ *     push path or the polling fallback. Set inside parseReolinkState() via
+ *     an optional third parameter that defaults to "poll".
  *
- * v1.3.0 -- added the supportedFeatures attribute and checkAbilities command
- * (see receiveSupportedFeatures() below). Populated by the app from Reolink's
- * GetAbility API, informational only -- see the app's Tips page for details.
- * No other functional change from 1.2.5.
- *
- * v1.2.4 -- parseReolinkState()/markAsleep() now only call sendEvent() when
- * a value actually changed, instead of unconditionally on every poll. Found
- * after a user on a lower-spec hub (base C-8, vs. a C-8 Pro on the hub this
- * was developed against) hit repeated "excessive hub load" errors on this
- * method -- 6 unconditional sendEvent() calls every poll (every 3s on a
- * wired camera) is real, avoidable load, more likely to trip Hubitat's
- * governor on a hub with less headroom. See sendIfChanged() below.
+ * v1.3.6 -- kept in sync with the parent app's version. No functional
+ * change to this driver -- v1.3.6's changes (discovery-page toggle fix and
+ * clarity improvements) are app-side only.
  */
 metadata {
     definition(name: "Reolink Camera", namespace: "jdthomas24", author: "Jason", component: true) {
@@ -45,11 +39,16 @@ metadata {
         attribute "snapshotUrl", "string"
         attribute "batteryMode", "enum", ["wired", "battery", "unknown"]
         attribute "sleepStatus", "enum", ["awake", "asleep", "unknown"]
+        // Tracks whether the most recent state update came from the
+        // real-time event push path or the plain polling fallback.
+        attribute "lastUpdateSource", "enum", ["event", "poll"]
         attribute "spotlight", "enum", ["on", "off"]
         attribute "nightVision", "enum", ["auto", "on", "off"]
         attribute "siren", "enum", ["on", "off"]
         attribute "ptzCalibrationStatus", "enum", ["unknown", "required", "running", "done"]
         attribute "supportedFeatures", "string"
+        attribute "pirEnabled", "enum", ["true", "false"]
+        attribute "pirStatusNote", "string"
 
         // ---- Core ----
         command "takeSnapshot"
@@ -75,6 +74,8 @@ metadata {
         command "setNightVision", [[name: "mode", type: "ENUM", constraints: ["auto", "on", "off"]]]
         command "sirenOn", [[name: "Siren-equipped cameras only"]]
         command "sirenOff", [[name: "Siren-equipped cameras only"]]
+        command "pirOn", [[name: "Enables the PIR motion trigger"]]
+        command "pirOff", [[name: "Disables the PIR motion trigger -- does not stop an in-progress recording"]]
     }
     preferences {
         input name: "pollIntervalSec", type: "number", title: "Poll interval (sec)", defaultValue: 30,
@@ -133,6 +134,28 @@ def sirenOff() {
     sendEvent(name: "siren", value: "off")
 }
 
+/**
+ * Disables the PIR motion trigger. Logged at warn the moment it's toggled
+ * off, since this is a meaningful change to the device's behavior worth
+ * seeing even at default logging. Does NOT stop an in-progress recording --
+ * only removes the trigger that would have woken a battery camera to record
+ * in the first place. If anything else on this camera is separately
+ * configured for continuous/scheduled recording outside PIR triggering,
+ * that recording is unaffected.
+ */
+def pirOff() {
+    parent?.componentSetPir(this, false, device.deviceNetworkId)
+    sendEvent(name: "pirEnabled", value: "false")
+    sendEvent(name: "pirStatusNote", value: "⏸️ PIR off, motion suppressed")
+    log.warn "${device.displayName}: PIR disabled -- motion trigger suppressed until turned back on"
+}
+
+def pirOn() {
+    parent?.componentSetPir(this, true, device.deviceNetworkId)
+    sendEvent(name: "pirEnabled", value: "true")
+    sendEvent(name: "pirStatusNote", value: "")
+}
+
 def checkBattery() {
     parent?.componentCheckBattery(this, device.deviceNetworkId)
 }
@@ -140,9 +163,8 @@ def checkBattery() {
 /**
  * Called by the app after GetBatteryInfo. Field name confirmed via Reolink's
  * own officially-backed reolink_aio library: response value is
- * Battery.batteryPercent. Not yet confirmed against real battery hardware
- * in THIS codebase (no battery device tested standalone yet), so the
- * batteryPercentage fallback is kept just in case a firmware variant uses it.
+ * Battery.batteryPercent. The batteryPercentage fallback is kept just in
+ * case a firmware variant uses it.
  */
 def receiveBatteryInfo(battInfo) {
     def pct = battInfo?.batteryPercent ?: battInfo?.batteryPercentage
@@ -186,9 +208,14 @@ def setSnapshotInterval(seconds) {
     parent?.componentSetSnapshotInterval(this, seconds as Integer, device.deviceNetworkId)
 }
 
-/** Called by the app after it polls GetAiState/GetMdState for this channel. */
-def parseReolinkState(aiState, mdState) {
+/**
+ * Called by the app after either a poll (GetAiState/GetMdState) or a real-
+ * time event push -- source defaults to "poll" so the existing polling call
+ * site needs no change; the app's event path explicitly passes "event".
+ */
+def parseReolinkState(aiState, mdState, String source = "poll") {
     sendIfChanged("sleepStatus", "awake")
+    sendIfChanged("lastUpdateSource", source)
 
     // TODO map real field names once GetAiState/GetMdState payloads are confirmed
     def motionActive = mdState?.state == 1
@@ -205,14 +232,9 @@ def parseReolinkState(aiState, mdState) {
 
 /**
  * Only calls sendEvent() when the value actually changed from the device's
- * current state. Found in the field: parseReolinkState() was calling
- * sendEvent() unconditionally for 6 attributes on EVERY poll (every 3s for a
- * wired camera), whether or not anything changed. sendEvent() isn't free --
- * event history, subscribed rule evaluation, etc. -- and a hub with less
- * headroom (e.g. a base C-8 vs. a C-8 Pro) can trip Hubitat's own
- * "excessive hub load" protection on that volume of calls where a
- * higher-spec hub doesn't. This cuts sendEvent() volume to only what
- * actually changes, on every hub regardless of spec.
+ * current state -- sendEvent() isn't free (event history, subscribed rule
+ * evaluation, etc.), and calling it unconditionally on every poll can trip
+ * Hubitat's "excessive hub load" protection on a lower-spec hub.
  */
 private void sendIfChanged(String name, value) {
     if (device.currentValue(name)?.toString() != value?.toString()) {
