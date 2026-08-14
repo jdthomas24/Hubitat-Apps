@@ -1,6 +1,6 @@
 {
     "packageName": "Reolink Integration",
-    "releaseNotes": "v1.3.8 -- BREAKING CHANGE: cameras/doorbells are now created under a new 'Reolink Device Bridge' device (one per source) instead of directly under the app, to support real-time event-driven updates and proper device grouping. Existing installs must delete their current camera/doorbell devices and re-run discovery under each source to recreate them; dashboards and rules referencing old device IDs will need to be repointed. New: real-time event-driven updates (falls back to polling automatically if the connection can't be established or drops). New: PIR enable/disable for cameras (pirOn/pirOff). Fixed: a login bug where the 'new token acquired' log line could fire even when the Login response didn't contain a usable token, masking the real failure behind a misleading success line -- login failures now log the raw response instead. Fixed: the Login API call was missing the 'action' field sent by every other command. Corruption-recovery logging for the event connection is quieter now that soak testing confirmed it's benign, self-recovering noise under load. v1.3.6 -- Fixed a discovery-page bug where unchecking an existing device on a standalone (single-channel) source never removed it. Also relabeled the multi-channel apply toggle and device rows for clarity, and reworded the source-removal toggle to spell out its scope.",
+    "releaseNotes": "v1.3.8 -- Big update! Cameras and doorbells now live under a new 'Reolink Device Bridge' device. After updating, delete your old camera/doorbell devices and run discovery again to recreate them under the new bridge -- update any dashboards or rules that pointed at the old ones too. New: real-time updates (with automatic fallback to polling). New: PIR on/off for cameras. New: standalone cameras now group together under one 'Reolink Standalone Devices' entry instead of showing separately. Fixed: a login bug that could hide real sign-in failures. Fixed: a camera with no PTZ could wrongly show a PTZ command. Fixed: some logging ignored the app's Log level setting and could flood your logs. v1.3.6 -- Fixed unchecking a device on a standalone source not actually removing it, plus some wording cleanup.",
     "documentationLink": "https://github.com/jdthomas24/Hubitat-Apps-Drivers/tree/main/Reolink%20Integration",
     "communityLink": "https://github.com/jdthomas24/Hubitat-Apps-Drivers/tree/main/Reolink%20Integration",
     "author": "jdthomas24",
@@ -44,6 +44,14 @@
             "location": "https://raw.githubusercontent.com/jdthomas24/Hubitat-Apps-Drivers/main/Reolink%20Integration/ReolinkDeviceBridge.groovy",
             "required": true,
             "description": "Internal per-source bridge device -- holds the real-time event connection and parents each source's camera/doorbell devices. Not user-facing; created automatically by the app."
+        },
+        {
+            "id": "1a9d5e72-6c4f-4b8a-93e0-7d2c8f5b4a61",
+            "name": "Reolink Standalone Devices",
+            "namespace": "jdthomas24",
+            "location": "https://raw.githubusercontent.com/jdthomas24/Hubitat-Apps-Drivers/main/Reolink%20Integration/ReolinkStandaloneDevices.groovy",
+            "required": true,
+            "description": "Internal nesting-only group device -- gives every standalone (non-Hub) camera/doorbell's bridge a shared parent so they group together in the Devices list instead of appearing separately. Not user-facing; created automatically by the app."
         }
     ]
 }
