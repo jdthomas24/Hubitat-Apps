@@ -959,14 +959,20 @@ def reolinkApiCall(sourceId, String cmd, Map param = [:], Integer channel = null
  * GetBatteryInfo probe must NOT be treated as evidence the whole SOURCE is
  * unreachable.
  */
-private Map doReolinkApiCall(src, sourceId, String cmd, String token, Map param, Integer channel, boolean quiet = false) {
+/**
+ * timeoutSec lets a caller shorten the HTTP timeout below the normal 10s --
+ * used by guessIsBattery() below, since a slow rejection and a fast one
+ * mean the same thing for that specific probe (see that method's comment
+ * for the full reasoning).
+ */
+private Map doReolinkApiCall(src, sourceId, String cmd, String token, Map param, Integer channel, boolean quiet = false, int timeoutSec = 10) {
     def p = channel != null ? param + [channel: channel] : param
     def uri = "https://${src.host}:${src.port}/cgi-bin/api.cgi?cmd=${cmd}&token=${token}"
     def body = [[cmd: cmd, action: 0, param: p]]
     def result = null
     try {
         httpPost([uri: uri, ignoreSSLIssues: true, requestContentType: "application/json",
-                  body: groovy.json.JsonOutput.toJson(body), timeout: 10]) { resp -> result = parseReolinkResponse(resp) }
+                  body: groovy.json.JsonOutput.toJson(body), timeout: timeoutSec]) { resp -> result = parseReolinkResponse(resp) }
         def value = firstResultValue(result, src)
         def rspCode = result?.getAt(0)?.error?.rspCode
         if (value == null) {
@@ -1079,12 +1085,25 @@ private String guessChannelDeviceType(ch) {
  * routine. Calls doReolinkApiCall() directly with quiet=true instead of
  * going through the public reolinkApiCall() wrapper, so a failure here logs
  * at Full tier only and never touches source-reachable state.
+ *
+ * FIXED (2026-08-17, same day): also passes a short 3s timeout instead of
+ * the normal 10s. discoverChannels() calls this once per NEW channel,
+ * sequentially, synchronously, within a single page render -- on a large
+ * Hub/NVR's FIRST-EVER discovery (every channel is "new" at once), a wired
+ * channel timing out here is the expected, common case, not rare. At 10s
+ * each, a 24-channel Hub with many wired cameras could block for minutes
+ * inside one page load, plausibly exceeding Hubitat's own execution-time
+ * limit and crashing the whole page ("Unexpected Error") -- confirmed
+ * plausible against real logs showing frequent "Read timed out" on this
+ * exact probe for this exact Hub. A slow rejection and a fast one mean the
+ * same thing here (not battery), so shortening the timeout loses no real
+ * information while cutting worst-case blocking time roughly 3x.
  */
 private Boolean guessIsBattery(sourceId, channel) {
     def src = getSource(sourceId)
     def token = reolinkLogin(sourceId)
     if (!token) return false
-    def outcome = doReolinkApiCall(src, sourceId, "GetBatteryInfo", token, [:], channel, true)
+    def outcome = doReolinkApiCall(src, sourceId, "GetBatteryInfo", token, [:], channel, true, 3)
     return outcome.value != null
 }
 
