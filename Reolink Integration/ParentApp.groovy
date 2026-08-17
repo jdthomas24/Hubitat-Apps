@@ -1,6 +1,6 @@
 /**
  * Reolink Integration (Parent App)
- * Version: 1.3.8
+ * Version: 1.3.9
  *
  * Architecture notes:
  *  - A "source" is anything that answers the Reolink HTTP/JSON API: a standalone
@@ -44,6 +44,31 @@
  * device IDs will need to be repointed at the newly created devices. See the
  * forum release notes for step-by-step upgrade instructions.
  * ============================================================================
+ *
+ * v1.3.9 -- post-release fixes and clarity improvements from real-world use
+ * behind a 23-channel NVR:
+ *  1. FIXED: the discovery-time battery probe (guessIsBattery(), used to
+ *     guess wired vs battery for a newly-added channel) was marking a
+ *     source's whole connection "unreachable" whenever it failed on a
+ *     wired camera -- which is the EXPECTED outcome for roughly half of all
+ *     cameras, not a real connectivity problem. This produced a misleading
+ *     warn immediately followed by "connection restored" once the next
+ *     unrelated command succeeded, even though the source was never
+ *     actually down. doReolinkApiCall() now takes a `quiet` flag; a quiet
+ *     probe failure logs at Full tier only and never touches source-
+ *     reachable state.
+ *  2. FIXED: Check Battery could succeed (a real response came back) but
+ *     the battery attribute never updated on the device page --
+ *     CameraDriver.groovy's receiveBatteryInfo() was reading
+ *     battInfo.batteryPercent flat, when the confirmed reolink_aio field
+ *     (already documented in that same file's own comment) is nested under
+ *     Battery.batteryPercent. Now checks the nested path first.
+ *  3. NEW: the bridge's 25-second keepalive now logs a Full-tier heartbeat
+ *     line each time it fires. With event-driven updates, a quiet source
+ *     (nothing has triggered a real push in a while) could look identical
+ *     in the logs whether it was working or silently stuck, even at Full --
+ *     this gives a predictable "still alive" signal without reintroducing
+ *     per-camera poll spam, since it's throttled to once per connection.
  *
  * v1.3.8:
  *  1. NEW: real-time event-driven updates. Each source now maintains a
@@ -137,7 +162,7 @@ definition(
     oauth: true // required for createAccessToken()/local endpoint access used by the snapshot relay
 )
 
-@Field static final String APP_VERSION = "1.3.8"
+@Field static final String APP_VERSION = "1.3.9"
 
 @Field static final List LOG_LEVELS = ["Errors Only", "Normal", "Full"]
 
@@ -859,7 +884,14 @@ def reolinkApiCall(sourceId, String cmd, Map param = [:], Integer channel = null
     return outcome.value
 }
 
-private Map doReolinkApiCall(src, sourceId, String cmd, String token, Map param, Integer channel) {
+/**
+ * quiet=true suppresses the usual failure escalation (markSourceUnreachable
+ * warn, or the JSON-parse-failure warn) and logs at Full tier instead. Used
+ * by guessIsBattery() below -- see that method's comment for why a failed
+ * GetBatteryInfo probe must NOT be treated as evidence the whole SOURCE is
+ * unreachable.
+ */
+private Map doReolinkApiCall(src, sourceId, String cmd, String token, Map param, Integer channel, boolean quiet = false) {
     def p = channel != null ? param + [channel: channel] : param
     def uri = "https://${src.host}:${src.port}/cgi-bin/api.cgi?cmd=${cmd}&token=${token}"
     def body = [[cmd: cmd, action: 0, param: p]]
@@ -877,10 +909,18 @@ private Map doReolinkApiCall(src, sourceId, String cmd, String token, Map param,
         markSourceReachable(sourceId)
         return [value: value, rspCode: rspCode, parseFailure: false]
     } catch (groovy.json.JsonException e) {
-        log.warn "Reolink cmd ${cmd} failed for source ${sourceId} ch ${channel}: ${e.message}"
+        if (quiet) {
+            logFull "Reolink source ${sourceId} ch ${channel}: ${cmd} returned unparseable data (quiet probe) -- ${e.message}"
+        } else {
+            log.warn "Reolink cmd ${cmd} failed for source ${sourceId} ch ${channel}: ${e.message}"
+        }
         return [value: null, rspCode: null, parseFailure: true]
     } catch (e) {
-        markSourceUnreachable(sourceId, "cmd ${cmd} (ch ${channel}) failed: ${e.message}")
+        if (quiet) {
+            logFull "Reolink source ${sourceId} ch ${channel}: ${cmd} failed (quiet probe, not treated as source-unreachable) -- ${e.message}"
+        } else {
+            markSourceUnreachable(sourceId, "cmd ${cmd} (ch ${channel}) failed: ${e.message}")
+        }
         return [value: null, rspCode: null, parseFailure: false]
     }
 }
@@ -957,11 +997,27 @@ private String guessChannelDeviceType(ch) {
 /**
  * Battery vs wired isn't reported directly by GetDevInfo/GetChannelstatus, so
  * this uses GetBatteryInfo as a signal instead: a battery-class device
- * answers it with real data, a wired/PoE device returns nothing usable.
+ * answers it with real data, a wired/PoE device returns nothing usable --
+ * and on some wired firmware, "nothing usable" is an outright timeout
+ * rather than a clean unsupported-command response.
+ *
+ * FIXED (2026-08-17): a real PoE camera timing out on this specific probe
+ * was marking its whole SOURCE unreachable (markSourceUnreachable() is a
+ * per-source flag, not per-command), which then immediately flipped back to
+ * "connection restored" on the very next unrelated successful call -- noisy
+ * and misleading, since every other command for that source was working
+ * fine the whole time. This probe is EXPECTED to fail for roughly half of
+ * all cameras (any wired one) -- that's not a source-health signal, it's
+ * routine. Calls doReolinkApiCall() directly with quiet=true instead of
+ * going through the public reolinkApiCall() wrapper, so a failure here logs
+ * at Full tier only and never touches source-reachable state.
  */
 private Boolean guessIsBattery(sourceId, channel) {
-    def batt = reolinkApiCall(sourceId, "GetBatteryInfo", [:], channel)
-    return batt != null
+    def src = getSource(sourceId)
+    def token = reolinkLogin(sourceId)
+    if (!token) return false
+    def outcome = doReolinkApiCall(src, sourceId, "GetBatteryInfo", token, [:], channel, true)
+    return outcome.value != null
 }
 
 /**
