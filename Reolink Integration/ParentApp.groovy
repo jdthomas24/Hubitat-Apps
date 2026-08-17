@@ -794,6 +794,7 @@ def removeSource(id) {
 private forgetSchedulingState(String dni) {
     state.nextPollDue?.remove(dni)
     state.nextSnapshotDue?.remove(dni)
+    state.nextBatteryCheckDue?.remove(dni)
 }
 
 // ---------- Auth ----------
@@ -1360,7 +1361,19 @@ def createSelectedChildren(sourceId) {
         if (wantIt && !existing) {
             def driverName = ch.deviceType == "doorbell" ? "Reolink Doorbell" : "Reolink Camera"
             def pollDefault = ch.isBattery ? DEFAULT_BATTERY_POLL_SEC : DEFAULT_WIRED_POLL_SEC
-            bridge.createChannelDevice(driverName, dni, ch.name, pollDefault as Integer, ch.supportedFeatures ?: [])
+            def child = bridge.createChannelDevice(driverName, dni, ch.name, pollDefault as Integer, ch.supportedFeatures ?: [])
+            // v1.3.9 FIX: batteryMode was declared as a device attribute
+            // but never actually populated anywhere -- the device had no
+            // way to know or expose whether it's battery-powered. This is
+            // the one moment ch.isBattery holds a real, freshly-probed
+            // value (it's null on a re-discovery of an already-existing
+            // channel, by design -- see discoverChannels()), so it's set
+            // here, once, at creation time. Set on both device types --
+            // both now also get the periodic auto-check (see schedulerTick(),
+            // gated on hasCapability("Battery"), which both drivers declare).
+            if (child) {
+                child.receiveBatteryMode(ch.isBattery ? "battery" : "wired")
+            }
             logNormal "Created child ${dni} (${driverName}) via bridge, poll interval defaulted to ${pollDefault}s (${ch.isBattery ? 'battery' : 'wired'}), features: ${ch.supportedFeatures ? ch.supportedFeatures.join(', ') : 'none detected'}"
         } else if (!wantIt && existing) {
             bridge.removeChannelDevice(dni)
@@ -1466,6 +1479,7 @@ def initializePolling() {
     def now = now()
     def pollDue = state.nextPollDue ?: [:]
     def snapDue = state.nextSnapshotDue ?: [:]
+    def battDue = state.nextBatteryCheckDue ?: [:]
     (state.sources ?: []).each { src ->
         // v1.3.9 FIX: this previously called ensureSourceBridge() for
         // EVERY configured source unconditionally, on every Done/Update
@@ -1486,10 +1500,12 @@ def initializePolling() {
             def dni = child.deviceNetworkId
             if (!pollDue.containsKey(dni)) pollDue[dni] = now
             if (!snapDue.containsKey(dni)) snapDue[dni] = now
+            if (!battDue.containsKey(dni)) battDue[dni] = now
         }
     }
     state.nextPollDue = pollDue
     state.nextSnapshotDue = snapDue
+    state.nextBatteryCheckDue = battDue
     runIn(1, "schedulerTick", [overwrite: true])
 }
 
@@ -1513,6 +1529,7 @@ def schedulerTick() {
         def nowMs = now()
         def pollDue = state.nextPollDue ?: [:]
         def snapDue = state.nextSnapshotDue ?: [:]
+        def battDue = state.nextBatteryCheckDue ?: [:]
 
         (state.sources ?: []).each { src ->
             def bridge = getSourceBridge(src.id)
@@ -1521,6 +1538,25 @@ def schedulerTick() {
             (bridge.getChildDevices() ?: []).each { child ->
                 def dni = child.deviceNetworkId
                 try {
+                    // v1.3.9 NEW: battery level is NEVER delivered via the
+                    // event push path (only motion/AI is), so this check
+                    // deliberately runs regardless of sourceConnected --
+                    // placed before that early-return below, unlike poll/
+                    // snapshot which correctly skip while event mode is
+                    // healthy. hasCapability("Battery") scopes this to
+                    // whichever devices actually declare it -- both Camera
+                    // and Doorbell drivers do, as of v1.3.9.
+                    if (child.hasCapability("Battery") && nowMs >= ((battDue[dni] ?: 0) as Long)) {
+                        def hours = (child.getSetting("batteryCheckIntervalHours") ?: 12) as Integer
+                        if (hours > 0 && child.currentValue("batteryMode") == "battery") {
+                            componentCheckBattery(child)
+                        }
+                        // Re-evaluated even when skipped (hours=0, or wired
+                        // device) so a later settings change or batteryMode
+                        // correction is picked up within an hour rather than
+                        // never re-checked again.
+                        battDue[dni] = nowMs + (Math.max(hours, 1) * 3600L * 1000L)
+                    }
                     // While this source has a confirmed-healthy event
                     // connection, skip active polling for it -- the push path
                     // is already delivering its state via
@@ -1549,6 +1585,7 @@ def schedulerTick() {
 
         state.nextPollDue = pollDue
         state.nextSnapshotDue = snapDue
+        state.nextBatteryCheckDue = battDue
     } catch (e) {
         log.warn "Reolink Integration: schedulerTick() failed outside the per-device loop -- ${e.message}"
     } finally {
