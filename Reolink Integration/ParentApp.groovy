@@ -69,6 +69,14 @@
  *     in the logs whether it was working or silently stuck, even at Full --
  *     this gives a predictable "still alive" signal without reintroducing
  *     per-camera poll spam, since it's throttled to once per connection.
+ *  4. LIKELY FIX: reverted the "action: 0" field on the Login request body
+ *     (added in 1.3.8, never confirmed against real hardware for Login
+ *     specifically -- see reolinkLogin() for the full explanation). Real
+ *     users on confirmed-correct credentials were getting a hard
+ *     rspCode:-7 "login failed" rejection since 1.3.8 that didn't happen on
+ *     older versions -- this field is the prime suspect since it's the one
+ *     change to that exact request in that timeframe. Every other command
+ *     keeps action:0, unaffected and separately confirmed.
  *
  * v1.3.8:
  *  1. NEW: real-time event-driven updates. Each source now maintains a
@@ -751,7 +759,20 @@ private String reolinkLogin(sourceId) {
     }
 
     logFull "Reolink source ${sourceId}: cached token missing/expired, logging in fresh"
-    def body = [[cmd: "Login", action: 0, param: [User: [userName: src.username, password: src.password]]]]
+    // v1.3.9 REVERT (2026-08-17): the "action: 0" field added here in 1.3.8
+    // was NEVER actually confirmed against real hardware for Login
+    // specifically -- it was added purely by inference/symmetry with every
+    // OTHER command, which all genuinely do send action:0 and have since
+    // been independently confirmed working across 5+ real devices. Login
+    // never got that same confirmation. Real-world reports on 2026-08-17
+    // (multiple sources, confirmed-correct credentials, a hard rspCode:-7
+    // "login failed" rejection -- not a timeout, not a parsing gap, an
+    // explicit reject) match exactly what you'd expect if some Reolink
+    // firmware is stricter about an unexpected field on Login than this app
+    // assumed. Reverted to the pre-1.3.8 body (no action field) as the
+    // prime regression suspect -- every OTHER command keeps action:0
+    // unchanged, since those are separately confirmed and unrelated.
+    def body = [[cmd: "Login", param: [User: [userName: src.username, password: src.password]]]]
     def resp = reolinkRawPost(src, body)
     if (resp == null) {
         // reolinkRawPost() already logged (or suppressed, if this source is
@@ -1138,16 +1159,40 @@ def ensureSourceBridge(sourceId) {
     def bridge = getSourceBridge(sourceId)
     if (!bridge) {
         def label = "Reolink Device Bridge (${src.label})"
-        if (src.isHub) {
-            bridge = addChildDevice("jdthomas24", "Reolink Device Bridge", dni, [
-                name: label, label: label, isComponent: true
-            ])
-            bridge.updateDataValue("sourceId", "${sourceId}")
-        } else {
-            def group = ensureStandaloneGroupDevice()
-            bridge = group.createBridgeDevice(dni, label, sourceId as Integer)
+        try {
+            if (src.isHub) {
+                bridge = addChildDevice("jdthomas24", "Reolink Device Bridge", dni, [
+                    name: label, label: label, isComponent: true
+                ])
+                bridge.updateDataValue("sourceId", "${sourceId}")
+            } else {
+                def group = ensureStandaloneGroupDevice()
+                bridge = group.createBridgeDevice(dni, label, sourceId as Integer)
+            }
+            logNormal "Reolink source ${sourceId}: bridge device created"
+        } catch (com.hubitat.device.exception.DuplicateDNIException e) {
+            // FIXED (2026-08-17): Hubitat enforces device network IDs as
+            // GLOBALLY unique across the ENTIRE hub, not just unique among
+            // one parent's children -- but getSourceBridge() above only
+            // checks the two places a bridge is supposed to live (direct
+            // app child, or under the standalone group device). If a device
+            // with this exact DNI exists ANYWHERE else on the hub (most
+            // likely an orphan left behind by a partial removal, a stale
+            // HPM-vs-manual driver mismatch, or an interrupted
+            // reinstall/wipe), that lookup finds nothing, concludes no
+            // bridge exists, tries to create one, and Hubitat rejects it --
+            // which previously crashed the ENTIRE page render with a bare
+            // "Unexpected Error," giving no indication what actually went
+            // wrong or how to fix it. Now fails loudly but safely instead:
+            // logs a clear, actionable warning and returns null so the
+            // caller can handle a missing bridge gracefully rather than the
+            // whole page throwing.
+            log.warn "Reolink source ${sourceId}: a device with DNI '${dni}' already exists somewhere on " +
+                "this hub but isn't reachable as this source's bridge -- likely an orphaned device from an " +
+                "earlier partial removal or reinstall. Search your full Devices list for Device Network Id " +
+                "'${dni}' and delete it, then re-run discovery for this source. (${e.message})"
+            return null
         }
-        logNormal "Reolink source ${sourceId}: bridge device created"
     }
     // Unconditional -- always keeps the bridge's connection config in sync
     // with state.sources, independent of whether the subscription is
