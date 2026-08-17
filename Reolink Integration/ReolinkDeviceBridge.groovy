@@ -90,10 +90,30 @@ metadata {
 // Child (Camera/Doorbell) management -- this bridge creates/removes Camera
 // and Doorbell as ITS OWN children, called by the app's createSelectedChildren().
 // ============================================================================
+/**
+ * v1.3.9 FIX: previously had no try/catch at all around addChildDevice() --
+ * same class of bug as the app-level DuplicateDNIException fix, one level
+ * down. If a camera/doorbell device with this exact DNI already exists
+ * anywhere else on the hub (e.g. an orphan from a partial removal),
+ * Hubitat's global DNI-uniqueness rule rejects the create, and this used to
+ * throw straight up through createSelectedChildren() -> discoverPage(),
+ * crashing the whole app page with no indication what went wrong. Now
+ * fails loudly but safely: logs a clear actionable warning and returns
+ * null instead.
+ */
 def createChannelDevice(String driverName, String dni, String name, Integer pollDefault, List supportedFeatures) {
-    def child = addChildDevice("jdthomas24", driverName, dni, [
-        name: name, label: name, isComponent: true
-    ])
+    def child
+    try {
+        child = addChildDevice("jdthomas24", driverName, dni, [
+            name: name, label: name, isComponent: true
+        ])
+    } catch (com.hubitat.device.exception.DuplicateDNIException e) {
+        log.warn "Reolink Device Bridge (source ${state.sourceId}): a device with DNI '${dni}' already exists " +
+            "somewhere on this hub but isn't reachable as this channel's device -- likely an orphaned device " +
+            "from an earlier partial removal or reinstall. Search your full Devices list for Device Network Id " +
+            "'${dni}' and delete it, then re-run discovery for this source. (${e.message})"
+        return null
+    }
     child.updateDataValue("sourceId", "${state.sourceId}")
     // dni format: "reolink-{sourceId}-{channel}" -- channel is the 3rd token.
     def channelToken = dni?.tokenize("-")?.getAt(2)
