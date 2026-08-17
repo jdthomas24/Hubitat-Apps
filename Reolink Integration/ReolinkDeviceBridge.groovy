@@ -1,6 +1,6 @@
 /**
  * Reolink Device Bridge (Internal Parent Driver)
- * Version: 1.3.8
+ * Version: 1.3.9
  *
  * NOT user-facing. Created and managed automatically by the Reolink
  * Integration parent app -- ONE instance per SOURCE (Hub/NVR or standalone).
@@ -276,11 +276,23 @@ def sendSubscribe() {
     sendRaw(header)
 }
 
+/**
+ * v1.3.9: added a Full-tier heartbeat line here (via
+ * parent?.logFull(...)) -- previously this ran silently every 25s with no
+ * log output at all, so a genuinely-connected-but-quiet source (nothing has
+ * triggered a real event push in a while) looked identical in the logs
+ * whether it was working perfectly or silently stuck, even with Log level
+ * set to Full. This gives a real "still alive" signal on a predictable
+ * cadence, throttled to once per CONNECTION rather than once per channel,
+ * so it doesn't reproduce the old per-camera poll-spam problem event mode
+ * was built to avoid.
+ */
 def sendKeepalive() {
     if (state.stage != "SUBSCRIBED") return
     try {
         byte[] header = buildHeader1464(93, 0, HOST_CH_ID, nextMessId(), 0)
         sendRaw(header)
+        parent?.logFull "Reolink Device Bridge (source ${state.sourceId}): keepalive sent, connection healthy"
     } catch (e) {
         log.warn "Reolink Device Bridge (source ${state.sourceId}): keepalive send failed: ${e.message}"
     }
