@@ -1,6 +1,6 @@
 /**
  * Reolink Camera (Component Driver)
- * Version: 1.3.8
+ * Version: 1.3.9
  *
  * Thin device: no HTTP of its own. Everything delegates to the parent app via
  * parent.componentX(this, ...). The app knows which source/channel this device
@@ -167,7 +167,15 @@ def checkBattery() {
  * case a firmware variant uses it.
  */
 def receiveBatteryInfo(battInfo) {
-    def pct = battInfo?.batteryPercent ?: battInfo?.batteryPercentage
+    // FIXED (2026-08-17): a real Check Battery run against known battery
+    // hardware showed "GetBatteryInfo succeeded" in the app's log, but the
+    // battery attribute here never updated -- this comment has always
+    // documented the confirmed reolink_aio field as nested under
+    // "Battery.batteryPercent", but the code below was reading it flat
+    // (battInfo.batteryPercent) instead. Checking the nested path first
+    // fixes real data; the flat checks stay as fallbacks in case some
+    // firmware variant genuinely returns it unnested.
+    def pct = battInfo?.Battery?.batteryPercent ?: battInfo?.batteryPercent ?: battInfo?.batteryPercentage
     if (pct != null) sendEvent(name: "battery", value: pct)
 }
 
