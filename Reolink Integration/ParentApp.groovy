@@ -225,10 +225,22 @@ mappings {
 def mainPage() {
     if (newLabel && newHost && newUser && newPass) {
         addSource()
+        // FIXED (2026-08-17): newPort and newIsHub were never cleared here,
+        // unlike the other four fields -- so a value typed for one source
+        // (even a typo, e.g. "440" instead of "443") silently persisted
+        // and got reused for every SUBSEQUENT "Add a source" too, since
+        // Hubitat only shows an input's defaultValue when the setting has
+        // never been set at all. Real-world impact: a single mistyped port
+        // early in a rapid add/remove testing session caused every later
+        // source to silently connect to the wrong port and fail outright,
+        // with no indication anything carried over. Every field this page
+        // collects now resets cleanly after each add.
         app.removeSetting("newLabel")
         app.removeSetting("newHost")
+        app.removeSetting("newPort")
         app.removeSetting("newUser")
         app.removeSetting("newPass")
+        app.removeSetting("newIsHub")
     }
     dynamicPage(name: "mainPage", install: true, uninstall: true) {
         section {
@@ -487,8 +499,10 @@ def addSourcePage(params) {
     if (params?.cancel) {
         app.removeSetting("newLabel")
         app.removeSetting("newHost")
+        app.removeSetting("newPort")
         app.removeSetting("newUser")
         app.removeSetting("newPass")
+        app.removeSetting("newIsHub")
         return mainPage()
     }
     dynamicPage(name: "addSourcePage", title: "Add a Reolink Source", nextPage: "mainPage") {
