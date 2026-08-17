@@ -1363,7 +1363,13 @@ def updated() { initialize() }
  * this app can't inspect or guarantee.
  */
 def uninstalled() {
-    (state.sources ?: []).each { src ->
+    // FIXED (2026-08-17, same day as introduced): removeSource() mutates
+    // state.sources internally (state.sources.removeAll {...}) -- iterating
+    // that SAME live list here while it's being mutated mid-loop is exactly
+    // what ConcurrentModificationException guards against. .collect() snapshots
+    // the list once up front, so removeSource()'s mutation of the real
+    // state.sources no longer affects the iteration in progress.
+    (state.sources ?: []).collect().each { src ->
         try {
             removeSource(src.id)
         } catch (e) {
