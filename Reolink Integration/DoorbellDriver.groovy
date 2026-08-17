@@ -22,6 +22,15 @@ metadata {
         capability "PushableButton"
         capability "Refresh"
         capability "Sensor"
+        // v1.3.9 NEW: previously this driver had no way to check or show a
+        // battery level at all, even for genuinely battery-powered doorbell
+        // hardware (e.g. Doorbell Battery, Gen 2 doorbells) -- batteryMode
+        // could say "battery" but there was nowhere to see the actual
+        // percentage. Adding this capability also automatically pulls this
+        // driver into the app's existing auto battery-check scheduler,
+        // which keys off hasCapability("Battery") rather than device type,
+        // so no app-side changes were needed for that part.
+        capability "Battery"
         attribute "person", "enum", ["active", "inactive"]
         attribute "vehicle", "enum", ["active", "inactive"]
         attribute "pet", "enum", ["active", "inactive"]
@@ -35,6 +44,7 @@ metadata {
         attribute "supportedFeatures", "string"
         command "takeSnapshot"
         command "checkAbilities", [[name: "Refreshes the supportedFeatures attribute from the doorbell's current GetAbility data"]]
+        command "checkBattery", [[name: "Battery-mode devices only"]]
         command "setPollInterval", [[name: "seconds", type: "NUMBER"]]
         command "setSnapshotInterval", [[name: "seconds", type: "NUMBER"]]
     }
@@ -47,6 +57,12 @@ metadata {
                 "own refresh rate does NOT make the image any fresher than this -- it just re-displays whatever " +
                 "was last cached at this interval. Kept separate from poll interval so motion/visitor detection " +
                 "can stay fast without forcing a full image download that often."
+        input name: "batteryCheckIntervalHours", type: "number", title: "Auto battery check interval (hours)", defaultValue: 12,
+            description: "Battery-mode devices only -- how often to automatically check and update the battery " +
+                "level shown on this device page. Set to 0 to disable and check only manually via the Check " +
+                "Battery command. Checking wakes the device briefly, same as any poll or event, so it does use " +
+                "a small amount of power -- negligible at the default interval, but increase it (or disable) if " +
+                "you want to minimize wakeups further. Ignored entirely for wired devices."
     }
 }
 def installed() {
@@ -66,6 +82,22 @@ def setSnapshotInterval(seconds) {
 }
 def checkAbilities() {
     parent?.componentCheckAbilities(this, device.deviceNetworkId)
+}
+def checkBattery() {
+    parent?.componentCheckBattery(this, device.deviceNetworkId)
+}
+/**
+ * v1.3.9 NEW: previously this driver had no way to receive a battery
+ * result at all -- calling Check Battery on a doorbell would have thrown,
+ * since the app's componentCheckBattery() calls c.receiveBatteryInfo(...)
+ * generically on whatever child it's given. Same field-nesting fix already
+ * validated on the camera driver: the confirmed reolink_aio field is
+ * Battery.batteryPercent, checked first, with flat fallbacks kept in case
+ * some firmware variant returns it unnested.
+ */
+def receiveBatteryInfo(battInfo) {
+    def pct = battInfo?.Battery?.batteryPercent ?: battInfo?.batteryPercent ?: battInfo?.batteryPercentage
+    if (pct != null) sendEvent(name: "battery", value: pct)
 }
 /**
  * Required by the PushableButton capability -- declaring the capability adds
@@ -116,6 +148,15 @@ private void sendIfChanged(String name, value) {
 /** Called by the app when a poll gets no response -- see camera driver for the reasoning. */
 def markAsleep() {
     sendIfChanged("sleepStatus", "asleep")
+}
+/**
+ * v1.3.9 NEW: called once by the app at device creation time with the
+ * result of the discovery-time battery probe -- see CameraDriver.groovy's
+ * matching note. Now that this driver has capability Battery, a battery-
+ * mode doorbell also gets the same periodic auto-check as cameras.
+ */
+def receiveBatteryMode(String mode) {
+    sendEvent(name: "batteryMode", value: mode)
 }
 def receiveSnapshotUrl(url) {
     sendEvent(name: "snapshotUrl", value: url)
