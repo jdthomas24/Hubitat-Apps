@@ -1,10 +1,10 @@
 {
     "packageName": "Reolink Integration",
-    "releaseNotes": "v1.3.8 -- Big update! Cameras and doorbells now live under a new 'Reolink Device Bridge' device. After updating, delete your old camera/doorbell devices and run discovery again to recreate them under the new bridge -- update any dashboards or rules that pointed at the old ones too. New: real-time updates (with automatic fallback to polling). New: PIR on/off for cameras. New: standalone cameras now group together under one 'Reolink Standalone Devices' entry instead of showing separately. Fixed: a login bug that could hide real sign-in failures. Fixed: a camera with no PTZ could wrongly show a PTZ command. Fixed: some logging ignored the app's Log level setting and could flood your logs. v1.3.6 -- Fixed unchecking a device on a standalone source not actually removing it, plus some wording cleanup.",
+    "releaseNotes": "v1.3.9 -- Fixed a false connection warning during camera setup. Fixed battery % not showing on some devices. Log heartbeat added so Full logging never looks totally silent. v1.3.8 -- Big update! Cameras/doorbells now live under a new 'Reolink Device Bridge' device -- delete old devices and re-run discovery after updating. New: real-time updates, PIR on/off, standalone cameras grouped together. Fixed a login bug and a PTZ display bug.",
     "documentationLink": "https://github.com/jdthomas24/Hubitat-Apps-Drivers/tree/main/Reolink%20Integration",
     "communityLink": "https://github.com/jdthomas24/Hubitat-Apps-Drivers/tree/main/Reolink%20Integration",
     "author": "jdthomas24",
-    "version": "1.3.8",
+    "version": "1.3.9",
     "minimumHEVersion": "2.3.0",
     "dateReleased": "2026-08-14",
     "category": "Integrations",
