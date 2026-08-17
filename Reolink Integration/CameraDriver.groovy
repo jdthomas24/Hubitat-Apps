@@ -86,6 +86,12 @@ metadata {
                 "own refresh rate does NOT make the image any fresher than this -- it just re-displays whatever " +
                 "was last cached at this interval. Kept separate from poll interval so motion detection can " +
                 "stay fast without forcing a full image download that often."
+        input name: "batteryCheckIntervalHours", type: "number", title: "Auto battery check interval (hours)", defaultValue: 12,
+            description: "Battery-mode devices only -- how often to automatically check and update the battery " +
+                "level shown on this device page. Set to 0 to disable and check only manually via the Check " +
+                "Battery command. Checking wakes the device briefly, same as any poll or event, so it does use " +
+                "a small amount of power -- negligible at the default interval, but increase it (or disable) if " +
+                "you want to minimize wakeups further. Ignored entirely for wired devices."
     }
 }
 
@@ -166,6 +172,16 @@ def checkBattery() {
  * Battery.batteryPercent. The batteryPercentage fallback is kept just in
  * case a firmware variant uses it.
  */
+/**
+ * v1.3.9 NEW: called once by the app at device creation time with the
+ * result of the discovery-time battery probe -- the batteryMode attribute
+ * was declared but never actually populated before this. Not called again
+ * afterward; batteryMode reflects what was true at creation.
+ */
+def receiveBatteryMode(String mode) {
+    sendEvent(name: "batteryMode", value: mode)
+}
+
 def receiveBatteryInfo(battInfo) {
     // FIXED (2026-08-17): a real Check Battery run against known battery
     // hardware showed "GetBatteryInfo succeeded" in the app's log, but the
