@@ -1422,12 +1422,26 @@ def disableDebugLogging() {
 def initializePolling() {
     // Children live under each source's bridge, not the app directly --
     // iterate sources -> bridge -> its real (Camera/Doorbell) children.
-    // Also (re)establishes each source's bridge/event-subscription state,
-    // since ensureSourceBridge() covers both jobs now.
+    // Also (re)establishes each source's bridge/event-subscription state
+    // for sources that already have one.
     def now = now()
     def pollDue = state.nextPollDue ?: [:]
     def snapDue = state.nextSnapshotDue ?: [:]
     (state.sources ?: []).each { src ->
+        // v1.3.9 FIX: this previously called ensureSourceBridge() for
+        // EVERY configured source unconditionally, on every Done/Update
+        // click -- creating a real bridge device (and attempting a live
+        // connection) for a source that had just been added, before the
+        // user had ever opened its discover page or selected a single
+        // channel. Same class of premature-creation bug as the one fixed
+        // in discoverPage() above, just triggered by "Done" instead of by
+        // viewing the page. Now only re-establishes a bridge that ALREADY
+        // exists (a source that was genuinely set up before this
+        // Done/Update cycle) -- a brand-new source with nothing selected
+        // yet stays completely untouched until real intent exists via
+        // createSelectedChildren(), which is the only place a bridge
+        // should ever get created.
+        if (!getSourceBridge(src.id)) return
         def bridge = ensureSourceBridge(src.id)
         bridge?.getChildDevices()?.each { child ->
             def dni = child.deviceNetworkId
