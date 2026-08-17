@@ -69,14 +69,34 @@
  *     in the logs whether it was working or silently stuck, even at Full --
  *     this gives a predictable "still alive" signal without reintroducing
  *     per-camera poll spam, since it's throttled to once per connection.
- *  4. LIKELY FIX: reverted the "action: 0" field on the Login request body
- *     (added in 1.3.8, never confirmed against real hardware for Login
- *     specifically -- see reolinkLogin() for the full explanation). Real
- *     users on confirmed-correct credentials were getting a hard
- *     rspCode:-7 "login failed" rejection since 1.3.8 that didn't happen on
- *     older versions -- this field is the prime suspect since it's the one
- *     change to that exact request in that timeframe. Every other command
- *     keeps action:0, unaffected and separately confirmed.
+ *  4. Reverted the "action: 0" field on the Login request body (added in
+ *     1.3.8, never confirmed against real hardware for Login specifically
+ *     -- see reolinkLogin()). Initially suspected as the cause of a real
+ *     rspCode:-7 "login failed" rejection seen across multiple production
+ *     sources -- DISPROVEN by direct evidence: the same rejection recurred
+ *     on a source tested WITHOUT this field. Reverted anyway since it was
+ *     always unconfirmed and every other command's action:0 stays
+ *     unaffected, but the actual login-rejection root cause turned out to
+ *     be unrelated (see item 6).
+ *  5. FIXED: ensureSourceBridge() could throw a raw
+ *     DuplicateDNIException and crash the ENTIRE app page ("Unexpected
+ *     Error") if a device with that bridge's DNI existed anywhere else on
+ *     the hub but wasn't reachable through the two places a bridge is
+ *     supposed to live (Hubitat enforces DNIs as globally unique across
+ *     the whole hub, not just unique among one parent's children). Now
+ *     catches that specific exception, logs a clear actionable warning
+ *     telling the user exactly what DNI to search for and delete, and
+ *     returns null so callers can handle a missing bridge gracefully
+ *     instead of the whole page throwing.
+ *  6. NEW: added an explicit uninstalled() that walks removeSource() for
+ *     every known source on full app removal, instead of relying purely on
+ *     Hubitat's own automatic cascade-delete of app-owned children -- see
+ *     uninstalled() for the full reasoning. Root-caused (with reasonable
+ *     confidence, not fully platform-verified) as the likely source of the
+ *     orphaned-bridge DuplicateDNIException in item 5: the 1.3.8 bridge
+ *     restructuring made the device tree 2-3 levels deep for the first
+ *     time (previously flat, one level), which may not survive a full app
+ *     removal as reliably under heavy/rapid reinstall churn.
  *
  * v1.3.8:
  *  1. NEW: real-time event-driven updates. Each source now maintains a
@@ -506,9 +526,22 @@ def discoverPage(params) {
     state.currentDiscoverySourceId = sourceId
     def src = getSource(sourceId)
 
-    // Sync the event-connection child to the current toggle state on every
-    // page load -- idempotent, no-ops if already correct.
-    if (src) ensureSourceBridge(sourceId)
+    // v1.3.9 FIX: this previously called ensureSourceBridge() unconditionally
+    // on EVERY page load, including the very first time this page is opened
+    // before any channel has ever been toggled on -- meaning just VIEWING
+    // the discover page created a real device and attempted a live socket
+    // connection, before the user had expressed any intent to add anything.
+    // Every read on this page (existing/new pill status, single-channel
+    // auto-apply check, connection status display) already handles a
+    // missing bridge safely via getSourceBridge()'s null-safe lookup, so
+    // nothing here actually needs the bridge to exist yet. It's created
+    // lazily now, at the moment real intent exists -- createSelectedChildren()
+    // already calls ensureSourceBridge() itself, right before creating the
+    // first camera/doorbell, which is the natural point for it to exist.
+    // This also meaningfully reduces exposure to orphaned-device risk: fewer
+    // needless bridge creations means less surface area for something to go
+    // wrong during a botched removal/reinstall (see uninstalled() above for
+    // the actual guarantee against that, which this doesn't replace).
 
     // Auto-run discovery the first time this source's Discover page is opened
     // (no cached results yet for this source), in addition to an explicit
@@ -1309,6 +1342,35 @@ def createSelectedChildren(sourceId) {
 
 def installed() { initialize() }
 def updated() { initialize() }
+
+/**
+ * v1.3.9 NEW: explicit teardown on full app removal. Without this,
+ * removing the entire app instance (via Hubitat's Apps list, NOT the
+ * in-app "Remove this ENTIRE source" toggle) relied purely on Hubitat's
+ * own built-in cascade-delete of app-owned children -- platform behavior
+ * this app doesn't control or fully verify, especially now that the
+ * v1.3.8 bridge restructuring made the device tree 2-3 levels deep (App ->
+ * Bridge -> Camera, or for standalone: App -> Group Device -> Bridge ->
+ * Camera) instead of the flat one-level tree this app had before. A
+ * genuine production DuplicateDNIException was traced to an orphaned
+ * bridge device surviving what should have been a full removal -- unclear
+ * whether that's a platform edge case with multi-level cascade delete
+ * under heavy/rapid churn, or something else, but this closes the gap
+ * either way: every source now goes through the SAME explicit,
+ * already-defensive removeSource() teardown (stop subscription, delete
+ * children, delete bridge) that the per-source Danger Zone toggle already
+ * uses and has been reliable, rather than trusting an implicit mechanism
+ * this app can't inspect or guarantee.
+ */
+def uninstalled() {
+    (state.sources ?: []).each { src ->
+        try {
+            removeSource(src.id)
+        } catch (e) {
+            log.warn "Reolink Integration: cleanup failed for source ${src.id} during uninstall -- ${e.message}"
+        }
+    }
+}
 
 /**
  * Ensures polling resumes automatically after a hub reboot. Hubitat does not
