@@ -1,6 +1,6 @@
 /**
  * Reolink Device Bridge (Internal Parent Driver)
- * Version: 1.3.9
+ * Version: 1.4.0
  *
  * NOT user-facing. Created and managed automatically by the Reolink
  * Integration parent app -- ONE instance per SOURCE (Hub/NVR or standalone).
@@ -18,6 +18,11 @@
  * device (since it's their real parent) instead of the app directly --
  * every componentX() method below is a one-line passthrough forwarding to
  * this bridge's OWN parent (the app).
+ *
+ * v1.4.0 -- kept in sync with the parent app's version. No functional
+ * change to this driver -- v1.4.0's fix (batteryMode self-heal in
+ * schedulerTick()) is app-side only; createChannelDevice() already returns
+ * the child correctly as-is.
  *
  * v1.3.8:
  *  - Magic-header resync logging (see processBuffer() below) now stays at
