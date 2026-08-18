@@ -1,6 +1,6 @@
 /**
  * Reolink Integration (Parent App)
- * Version: 1.3.9
+ * Version: 1.4.0
  *
  * Architecture notes:
  *  - A "source" is anything that answers the Reolink HTTP/JSON API: a standalone
@@ -44,6 +44,26 @@
  * device IDs will need to be repointed at the newly created devices. See the
  * forum release notes for step-by-step upgrade instructions.
  * ============================================================================
+ *
+ * v1.4.0 -- battery-check scheduler fix, found via a real device (created
+ * after 1.3.9, correctly probed as battery at discovery time) that never
+ * received a single automatic battery check and sat frozen at a stale 99%
+ * indefinitely, with no warning anywhere:
+ *  1. FIXED: schedulerTick()'s periodic battery-check gate required
+ *     child.currentValue("batteryMode") == "battery" before ever calling
+ *     componentCheckBattery(). If a device's batteryMode attribute is ever
+ *     unset for any reason (the exact real-world trigger wasn't
+ *     reproducible from code alone -- creation-time flow, page-reload
+ *     timing, or similar), that device silently failed this gate forever:
+ *     due-time still advanced every tick like a real check had happened,
+ *     nothing was ever logged, and the device's battery value never
+ *     updated again short of manually running Check Battery. The gate now
+ *     treats a null/missing batteryMode as "unknown" rather than "not
+ *     battery": it logs a warning, runs a live GetBatteryInfo probe once to
+ *     backfill batteryMode (battery if a value comes back, wired if not),
+ *     and proceeds normally from there. Self-heals automatically on the
+ *     next tick after upgrading -- no manual re-discovery or device
+ *     deletion needed for any device already stuck in this state.
  *
  * v1.3.9 -- post-release fixes and clarity improvements from real-world use
  * behind a 23-channel NVR:
@@ -190,7 +210,7 @@ definition(
     oauth: true // required for createAccessToken()/local endpoint access used by the snapshot relay
 )
 
-@Field static final String APP_VERSION = "1.3.9"
+@Field static final String APP_VERSION = "1.4.0"
 
 @Field static final List LOG_LEVELS = ["Errors Only", "Normal", "Full"]
 
@@ -577,9 +597,9 @@ def discoverPage(params) {
     }
 
     // v1.3.6 FIX: this used to only fire when the checkbox was TRUE, which
-    // meant unchecking an EXISTING single-channel device to remove it never
-    // triggered anything. Now fires on EITHER direction: checking an absent
-    // device (create) or unchecking a present one (remove), by comparing the
+    // meant unchecking an EXISTING device to remove it never triggered
+    // anything. Now fires on EITHER direction: checking an absent device
+    // (create) or unchecking a present one (remove), by comparing the
     // checkbox state against whether the device currently exists.
     if (channelCount == 1 && src) {
         def ch = lastDiscovery[0]
@@ -1362,15 +1382,22 @@ def createSelectedChildren(sourceId) {
             def driverName = ch.deviceType == "doorbell" ? "Reolink Doorbell" : "Reolink Camera"
             def pollDefault = ch.isBattery ? DEFAULT_BATTERY_POLL_SEC : DEFAULT_WIRED_POLL_SEC
             def child = bridge.createChannelDevice(driverName, dni, ch.name, pollDefault as Integer, ch.supportedFeatures ?: [])
-            // v1.3.9 FIX: batteryMode was declared as a device attribute
-            // but never actually populated anywhere -- the device had no
-            // way to know or expose whether it's battery-powered. This is
-            // the one moment ch.isBattery holds a real, freshly-probed
-            // value (it's null on a re-discovery of an already-existing
-            // channel, by design -- see discoverChannels()), so it's set
-            // here, once, at creation time. Set on both device types --
-            // both now also get the periodic auto-check (see schedulerTick(),
-            // gated on hasCapability("Battery"), which both drivers declare).
+            // v1.3.9: batteryMode was declared as a device attribute but
+            // never actually populated anywhere -- the device had no way to
+            // know or expose whether it's battery-powered. This is the one
+            // moment ch.isBattery holds a real, freshly-probed value (it's
+            // null on a re-discovery of an already-existing channel, by
+            // design -- see discoverChannels()), so it's set here, once, at
+            // creation time. Set on both device types -- both now also get
+            // the periodic auto-check (see schedulerTick(), gated on
+            // hasCapability("Battery"), which both drivers declare).
+            // v1.4.0: even with this in place, a real device (created after
+            // 1.3.9 shipped, this exact call path confirmed reachable since
+            // its supportedFeatures WAS populated correctly) still ended up
+            // with batteryMode never set -- exact trigger not reproducible
+            // from code alone. schedulerTick() now self-heals that case
+            // going forward (see its v1.4.0 comment below) rather than
+            // relying solely on this single creation-time call succeeding.
             if (child) {
                 child.receiveBatteryMode(ch.isBattery ? "battery" : "wired")
             }
@@ -1395,14 +1422,14 @@ def updated() { initialize() }
  * in-app "Remove this ENTIRE source" toggle) relied purely on Hubitat's
  * own built-in cascade-delete of app-owned children -- platform behavior
  * this app doesn't control or fully verify, especially now that the
- * v1.3.8 bridge restructuring made the device tree 2-3 levels deep (App ->
- * Bridge -> Camera, or for standalone: App -> Group Device -> Bridge ->
- * Camera) instead of the flat one-level tree this app had before. A
- * genuine production DuplicateDNIException was traced to an orphaned
- * bridge device surviving what should have been a full removal -- unclear
- * whether that's a platform edge case with multi-level cascade delete
- * under heavy/rapid churn, or something else, but this closes the gap
- * either way: every source now goes through the SAME explicit,
+ * v1.3.8 bridge restructuring made the device tree 2-3 levels deep for the
+ * first time (App -> Bridge -> Camera, or for standalone: App -> Group
+ * Device -> Bridge -> Camera) instead of the flat one-level tree this app
+ * had before. A genuine production DuplicateDNIException was traced to an
+ * orphaned bridge device surviving what should have been a full removal --
+ * unclear whether that's a platform edge case with multi-level cascade
+ * delete under heavy/rapid churn, or something else, but this closes the
+ * gap either way: every source now goes through the SAME explicit,
  * already-defensive removeSource() teardown (stop subscription, delete
  * children, delete bridge) that the per-source Danger Zone toggle already
  * uses and has been reliable, rather than trusting an implicit mechanism
@@ -1538,7 +1565,7 @@ def schedulerTick() {
             (bridge.getChildDevices() ?: []).each { child ->
                 def dni = child.deviceNetworkId
                 try {
-                    // v1.3.9 NEW: battery level is NEVER delivered via the
+                    // v1.3.9: battery level is NEVER delivered via the
                     // event push path (only motion/AI is), so this check
                     // deliberately runs regardless of sourceConnected --
                     // placed before that early-return below, unlike poll/
@@ -1547,8 +1574,33 @@ def schedulerTick() {
                     // whichever devices actually declare it -- both Camera
                     // and Doorbell drivers do, as of v1.3.9.
                     if (child.hasCapability("Battery") && nowMs >= ((battDue[dni] ?: 0) as Long)) {
+                        // v1.4.0 FIX: batteryMode is supposed to always be
+                        // set once, at device creation time (see
+                        // createSelectedChildren()) -- but a real device
+                        // was found stuck with batteryMode never set at
+                        // all, which meant this gate silently and
+                        // permanently skipped its battery check forever:
+                        // battDue still advanced every tick as if a real
+                        // check had happened, nothing was ever logged, and
+                        // the battery value never updated again short of
+                        // manually running Check Battery. A missing
+                        // batteryMode is now treated as "unknown, go find
+                        // out" rather than "not battery, skip forever" --
+                        // backfilled here via a live probe, once, the first
+                        // time this gate finds it unset. Self-heals on the
+                        // very next tick after upgrading, no manual
+                        // re-discovery or device deletion required.
+                        def batteryMode = child.currentValue("batteryMode")
+                        if (batteryMode == null) {
+                            log.warn "Reolink Integration: ${child.displayName} (${dni}) has no batteryMode set -- " +
+                                "backfilling via a live probe (see v1.4.0 release notes)"
+                            componentCheckBattery(child)
+                            def backfilled = child.currentValue("battery") != null ? "battery" : "wired"
+                            child.receiveBatteryMode(backfilled)
+                            batteryMode = backfilled
+                        }
                         def hours = (child.getSetting("batteryCheckIntervalHours") ?: 12) as Integer
-                        if (hours > 0 && child.currentValue("batteryMode") == "battery") {
+                        if (hours > 0 && batteryMode == "battery") {
                             componentCheckBattery(child)
                         }
                         // Re-evaluated even when skipped (hours=0, or wired
