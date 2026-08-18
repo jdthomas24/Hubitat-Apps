@@ -1,10 +1,14 @@
 /**
  * Reolink Camera (Component Driver)
- * Version: 1.3.9
+ * Version: 1.4.0
  *
  * Thin device: no HTTP of its own. Everything delegates to the parent app via
  * parent.componentX(this, ...). The app knows which source/channel this device
  * maps to (stored as data values sourceId/channel) and does the actual API call.
+ *
+ * v1.4.0 -- kept in sync with the parent app's version. No functional change
+ * to this driver -- v1.4.0's fix (batteryMode self-heal in schedulerTick())
+ * is app-side only; receiveBatteryMode() already worked correctly as-is.
  *
  * v1.3.8:
  *  1. NEW: PIR enable/disable -- pirOn()/pirOff() commands plus a pirEnabled
@@ -173,10 +177,14 @@ def checkBattery() {
  * case a firmware variant uses it.
  */
 /**
- * v1.3.9 NEW: called once by the app at device creation time with the
- * result of the discovery-time battery probe -- the batteryMode attribute
- * was declared but never actually populated before this. Not called again
- * afterward; batteryMode reflects what was true at creation.
+ * v1.3.9: called once by the app at device creation time with the result of
+ * the discovery-time battery probe -- the batteryMode attribute was
+ * declared but never actually populated before this. Not called again
+ * afterward under normal circumstances; batteryMode reflects what was true
+ * at creation. (v1.4.0: the app's scheduler can now also call this once,
+ * later, to backfill a device that somehow ended up without batteryMode set
+ * at all -- see ParentApp.groovy's schedulerTick() v1.4.0 note. No change
+ * needed here either way, this method's job stays the same.)
  */
 def receiveBatteryMode(String mode) {
     sendEvent(name: "batteryMode", value: mode)
