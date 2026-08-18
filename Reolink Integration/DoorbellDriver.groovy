@@ -1,10 +1,15 @@
 /**
  * Reolink Doorbell (Component Driver)
- * Version: 1.3.9
+ * Version: 1.4.0
  *
  * Same delegation pattern as Reolink Camera, plus a "visitor" (button press)
  * event so Rule Machine can trigger straight off "pushed 1" for a doorbell
  * ring, separate from AI person/motion detection.
+ *
+ * v1.4.0 -- kept in sync with the parent app's version. No functional change
+ * to this driver -- v1.4.0's fix (batteryMode self-heal in schedulerTick())
+ * is app-side only; receiveBatteryMode()/receiveBatteryInfo() already worked
+ * correctly as-is.
  *
  * v1.3.8 -- kept in sync with the parent app's version. No functional change
  * to this driver -- v1.3.8's changes (event-driven updates, PIR, login/action
@@ -153,7 +158,11 @@ def markAsleep() {
  * v1.3.9 NEW: called once by the app at device creation time with the
  * result of the discovery-time battery probe -- see CameraDriver.groovy's
  * matching note. Now that this driver has capability Battery, a battery-
- * mode doorbell also gets the same periodic auto-check as cameras.
+ * mode doorbell also gets the same periodic auto-check as cameras. (v1.4.0:
+ * the app's scheduler can now also call this once, later, to backfill a
+ * device that somehow ended up without batteryMode set at all -- see
+ * ParentApp.groovy's schedulerTick() v1.4.0 note. No change needed here
+ * either way.)
  */
 def receiveBatteryMode(String mode) {
     sendEvent(name: "batteryMode", value: mode)
