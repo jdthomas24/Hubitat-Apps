@@ -1,6 +1,6 @@
 /**
  * Reolink Standalone Devices (Internal Group Driver)
- * Version: 1.4.0
+ * Version: 1.4.1
  *
  * NOT user-facing. Created and managed automatically by the Reolink
  * Integration parent app -- exactly ONE instance total, shared across every
@@ -19,7 +19,7 @@
  * camera/doorbell's bridge (and, under each of those, its camera/doorbell),
  * instead of N separate unnested bridges.
  *
- * v1.4.0 FIX: a standalone source's "Reolink Device Bridge" has THIS
+ * v1.4.1 FIX: a standalone source's "Reolink Device Bridge" has THIS
  * device as its real Hubitat parent (not the app directly -- see
  * createBridgeDevice() below), so its parent?.logNormal(...)/
  * parent?.logFull(...) calls (used throughout ReolinkDeviceBridge.groovy
@@ -69,8 +69,8 @@ def removeBridgeDevice(String dni) {
 }
 
 /**
- * v1.4.0 NEW -- logging passthrough for standalone bridges. See this
- * file's v1.4.0 FIX note above for why this is needed. This device's OWN
+ * v1.4.1 NEW -- logging passthrough for standalone bridges. See this
+ * file's v1.4.1 FIX note above for why this is needed. This device's OWN
  * parent is always the app (never another group device), so this simply
  * forwards up one level -- same forwarding pattern already used elsewhere
  * in this integration (e.g. ReolinkDeviceBridge.groovy's componentX()
