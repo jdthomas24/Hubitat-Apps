@@ -74,6 +74,15 @@ metadata {
                 "Battery command. Checking wakes the device briefly, same as any poll or event, so it does use " +
                 "a small amount of power -- negligible at the default interval, but increase it (or disable) if " +
                 "you want to minimize wakeups further. Ignored entirely for wired devices."
+        input name: "checkBatteryOnEventWake", type: "bool", title: "Also check battery/charging on real motion/AI events", defaultValue: false,
+            description: "Battery-mode devices only -- OFF by default. When ON, a real motion/AI event push " +
+                "(the device already being awake and talking to us for an unrelated reason) also triggers a " +
+                "battery/charging check, instead of only ever updating on the next scheduled interval above or " +
+                "a manual Check Battery run. Piggybacking on an already-awake device costs essentially nothing " +
+                "extra -- unlike the scheduled interval, this does NOT force any additional wakeup on its own."
+        input name: "eventWakeBatteryThrottleSec", type: "number", title: "Minimum seconds between event-triggered checks", defaultValue: 60,
+            description: "Only relevant if the setting above is ON. A rapid burst of pushes (motion, then " +
+                "person, then vehicle, all within seconds) only triggers one check per burst, not one per push."
     }
 }
 def installed() {
@@ -184,4 +193,3 @@ def receiveBatteryMode(String mode) {
 def receiveSnapshotUrl(url) {
     sendEvent(name: "snapshotUrl", value: url)
 }
-
