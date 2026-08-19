@@ -373,15 +373,29 @@ def tipsPage() {
         section {
             paragraph pillHeader("Devices that won't work standalone")
             paragraph "⚠️ <b>Battery-class cameras/doorbells</b> (Argus line, Doorbell Battery, Gen 2 " +
-                "doorbells). This is a <b>deliberate, permanent firmware exclusion across Reolink's entire " +
-                "battery-powered product line</b> -- confirmed via Reolink's own community forum, not a " +
-                "quirk of any specific unit."
+                "doorbells) -- as a rule, treat these as requiring a Home Hub or NVR. Add the Hub/NVR as the " +
+                "source instead, and the device shows up as one of its channels -- confirmed working well " +
+                "across a real multi-device battery fleet as of v1.4.0."
             paragraph "It does NOT depend on how the device is powered. Even a battery-class device running " +
-                "continuously on a DC adapter (not just trickle-charging) still has no local HTTP/ONVIF API, " +
-                "because the firmware itself never includes that server stack on battery models. \"Wired " +
-                "Power Mode\" in the Reolink app only changes charging behavior, never the network API."
-            paragraph "They only become reachable once paired to a Home Hub or NVR. Add the Hub/NVR as the " +
-                "source instead, and the device shows up as one of its channels."
+                "continuously on a DC adapter (not just trickle-charging) is affected, because this is a " +
+                "firmware/network-stack limitation, not a charging-mode setting. \"Wired Power Mode\" in the " +
+                "Reolink app only changes charging behavior, never the network API."
+            paragraph "The exact failure mode varies by model, confirmed via two real, different units tested " +
+                "standalone (no Hub):"
+            paragraph "&nbsp;&nbsp;• <b>Argus 4 Pro</b> -- no local network API at ALL. Confirmed directly " +
+                "against real hardware: both the HTTP CGI API (port 443, what discovery/every poll uses) AND " +
+                "the separate Baichuan event-subscription port (9000, what real-time push events use) " +
+                "actively refuse the connection. There is nothing on this unit's own IP for this app -- or " +
+                "any local tool -- to talk to standalone, full stop."
+            paragraph "&nbsp;&nbsp;• <b>Doorbell 2K Gen 2</b> -- DOES have enough of a local API to pair and " +
+                "poll standalone (confirmed: shows up in the integration, GetDevInfo/HTTP works). The problem " +
+                "here is different: the device's own sleep/battery behavior makes real-time event delivery " +
+                "unreliable, so motion/AI state goes stale rather than never connecting at all."
+            paragraph "Bottom line either way: a battery-class device behind a Home Hub or NVR works " +
+                "reliably (the Hub does 100% of the actual network talking on the camera's behalf, so the " +
+                "camera's own local API story stops mattering entirely). Standalone is not supported for this " +
+                "device class, for one reason or the other depending on the specific model -- don't spend time " +
+                "chasing a standalone connection for any battery device before checking this section."
             paragraph "⚠️ <b>E1, E1 Pro, and Lumus</b> -- Reolink's own docs on whether these support local " +
                 "HTTP/HTTPS are inconsistent, and don't fully agree with each other model to model."
             paragraph "Don't rely on the model name to decide. <b>Check the camera's own Network > Advanced " +
