@@ -1,6 +1,6 @@
 /**
  * Reolink Integration (Parent App)
- * Version: 1.4.0
+ * Version: 1.4.1
  *
  * Architecture notes:
  *  - A "source" is anything that answers the Reolink HTTP/JSON API: a standalone
@@ -45,10 +45,9 @@
  * forum release notes for step-by-step upgrade instructions.
  * ============================================================================
  *
- * v1.4.0 -- battery-check scheduler fix, found via a real device (created
- * after 1.3.9, correctly probed as battery at discovery time) that never
- * received a single automatic battery check and sat frozen at a stale 99%
- * indefinitely, with no warning anywhere:
+ * v1.4.1 -- battery-check scheduler self-heal, standalone bridge logging fix,
+ * charging-status attribute, and updated standalone battery documentation --
+ * all found/built during one real-hardware testing session:
  *  1. FIXED: schedulerTick()'s periodic battery-check gate required
  *     child.currentValue("batteryMode") == "battery" before ever calling
  *     componentCheckBattery(). If a device's batteryMode attribute is ever
@@ -74,6 +73,39 @@
  *     schedule for any device with no batteryMode set, so the fix takes
  *     effect within the next second or so of updating instead of waiting
  *     out an untrustworthy old schedule.
+ *  3. FIXED (StandaloneDevices.groovy): a standalone source's "Reolink
+ *     Device Bridge" has the "Reolink Standalone Devices" group device as
+ *     its real Hubitat parent, not this app directly -- so its
+ *     parent?.logNormal(...)/parent?.logFull(...) calls (used throughout
+ *     ReolinkDeviceBridge.groovy, including the very first line of
+ *     startEventSubscription()) threw a MissingMethodException every time,
+ *     since that group driver had no such methods at all. This meant the
+ *     actual socket connection attempt never even started for ANY
+ *     standalone source -- found via real-hardware testing of a standalone
+ *     Argus 4 Pro. Fixed by adding logNormal()/logFull() passthrough
+ *     methods to that driver that simply forward to its own parent (the
+ *     app), same pattern already used elsewhere in this integration. A
+ *     Hub/NVR source's bridge was never affected, since its parent is
+ *     always the app directly.
+ *  4. NEW: chargingStatus attribute added to both Camera and Doorbell
+ *     drivers, populated from GetBatteryInfo's chargeStatus field
+ *     (nested under Battery, same as batteryPercent) any time Check
+ *     Battery runs, manual or scheduled. Both chargeStatus values are
+ *     directly confirmed against real hardware -- 1 (charging) and 0
+ *     (not charging), captured back-to-back on the same device plugged
+ *     in vs. unplugged, corroborated independently by the same response's
+ *     current field flipping sign (+216 vs -379) and adapterStatus
+ *     flipping 1/0 in step. Any other chargeStatus value maps to
+ *     "unknown" rather than guessing a label for it.
+ *  5. Tips page updated with what real-hardware testing confirmed about
+ *     standalone battery-class devices: an Argus 4 Pro has NO local
+ *     network API at all when standalone (both the HTTP CGI API and the
+ *     separate Baichuan event-subscription port actively refuse the
+ *     connection, confirmed directly), while a Doorbell 2K Gen 2 DOES
+ *     have enough of a local API to pair and poll standalone, but its own
+ *     sleep/battery behavior makes real-time event delivery unreliable
+ *     instead. Different failure modes, same practical conclusion either
+ *     way: battery-class devices need a Home Hub or NVR, not standalone.
  *
  * v1.3.9 -- post-release fixes and clarity improvements from real-world use
  * behind a 23-channel NVR:
@@ -220,7 +252,7 @@ definition(
     oauth: true // required for createAccessToken()/local endpoint access used by the snapshot relay
 )
 
-@Field static final String APP_VERSION = "1.4.0"
+@Field static final String APP_VERSION = "1.4.1"
 
 @Field static final List LOG_LEVELS = ["Errors Only", "Normal", "Full"]
 
@@ -375,7 +407,7 @@ def tipsPage() {
             paragraph "⚠️ <b>Battery-class cameras/doorbells</b> (Argus line, Doorbell Battery, Gen 2 " +
                 "doorbells) -- as a rule, treat these as requiring a Home Hub or NVR. Add the Hub/NVR as the " +
                 "source instead, and the device shows up as one of its channels -- confirmed working well " +
-                "across a real multi-device battery fleet as of v1.4.0."
+                "across a real multi-device battery fleet as of v1.4.1."
             paragraph "It does NOT depend on how the device is powered. Even a battery-class device running " +
                 "continuously on a DC adapter (not just trickle-charging) is affected, because this is a " +
                 "firmware/network-stack limitation, not a charging-mode setting. \"Wired Power Mode\" in the " +
@@ -1415,12 +1447,12 @@ def createSelectedChildren(sourceId) {
             // creation time. Set on both device types -- both now also get
             // the periodic auto-check (see schedulerTick(), gated on
             // hasCapability("Battery"), which both drivers declare).
-            // v1.4.0: even with this in place, a real device (created after
+            // v1.4.1: even with this in place, a real device (created after
             // 1.3.9 shipped, this exact call path confirmed reachable since
             // its supportedFeatures WAS populated correctly) still ended up
             // with batteryMode never set -- exact trigger not reproducible
             // from code alone. schedulerTick() now self-heals that case
-            // going forward (see its v1.4.0 comment below) rather than
+            // going forward (see its v1.4.1 comment below) rather than
             // relying solely on this single creation-time call succeeding.
             if (child) {
                 child.receiveBatteryMode(ch.isBattery ? "battery" : "wired")
@@ -1508,11 +1540,11 @@ def initialize() {
 }
 
 /**
- * v1.4.0 NEW: one-time upgrade migration, guarded by state.lastKnownAppVersion
+ * v1.4.1 NEW: one-time upgrade migration, guarded by state.lastKnownAppVersion
  * so it only ever runs once per actual version transition, not on every
  * Done/Update save (initialize() runs on every one of those too).
  *
- * The schedulerTick() batteryMode backfill fix (see that method's v1.4.0
+ * The schedulerTick() batteryMode backfill fix (see that method's v1.4.1
  * comment) only fires once a device's ALREADY-SCHEDULED nextBatteryCheckDue
  * time arrives -- and that stale due-time was itself set by the OLD, broken
  * gate logic, which kept pushing it a full batteryCheckIntervalHours into
@@ -1523,7 +1555,7 @@ def initialize() {
  * actually takes effect -- not because the fix doesn't work, just because
  * nothing prompted it to run sooner.
  *
- * On the first initialize() after upgrading to 1.4.0, clear
+ * On the first initialize() after upgrading to 1.4.1, clear
  * nextBatteryCheckDue for every device that currently has no batteryMode
  * set, so schedulerTick()'s backfill runs on its very next tick (~1s)
  * instead of waiting out a stale schedule that was never trustworthy to
@@ -1534,24 +1566,22 @@ private void runMigrations() {
     if (state.lastKnownAppVersion == APP_VERSION) return
     def fromVersion = state.lastKnownAppVersion ?: "(unknown/pre-migration-tracking)"
 
-    if (state.lastKnownAppVersion != "1.4.0") {
-        def battDue = state.nextBatteryCheckDue ?: [:]
-        int cleared = 0
-        (state.sources ?: []).each { src ->
-            def bridge = getSourceBridge(src.id)
-            (bridge?.getChildDevices() ?: []).each { child ->
-                if (child.hasCapability("Battery") && child.currentValue("batteryMode") == null) {
-                    battDue.remove(child.deviceNetworkId)
-                    cleared++
-                }
+    def battDue = state.nextBatteryCheckDue ?: [:]
+    int cleared = 0
+    (state.sources ?: []).each { src ->
+        def bridge = getSourceBridge(src.id)
+        (bridge?.getChildDevices() ?: []).each { child ->
+            if (child.hasCapability("Battery") && child.currentValue("batteryMode") == null) {
+                battDue.remove(child.deviceNetworkId)
+                cleared++
             }
         }
-        state.nextBatteryCheckDue = battDue
-        if (cleared > 0) {
-            logNormal "Reolink Integration: v1.4.0 migration -- cleared stale battery-check schedule for " +
-                "${cleared} device(s) with no batteryMode set, so the fix takes effect on the next tick " +
-                "instead of waiting out an old schedule"
-        }
+    }
+    state.nextBatteryCheckDue = battDue
+    if (cleared > 0) {
+        logNormal "Reolink Integration: v1.4.1 migration -- cleared stale battery-check schedule for " +
+            "${cleared} device(s) with no batteryMode set, so the fix takes effect on the next tick " +
+            "instead of waiting out an old schedule"
     }
 
     logNormal "Reolink Integration: upgraded ${fromVersion} -> ${APP_VERSION}"
@@ -1650,7 +1680,7 @@ def schedulerTick() {
                     // whichever devices actually declare it -- both Camera
                     // and Doorbell drivers do, as of v1.3.9.
                     if (child.hasCapability("Battery") && nowMs >= ((battDue[dni] ?: 0) as Long)) {
-                        // v1.4.0 FIX: batteryMode is supposed to always be
+                        // v1.4.1 FIX: batteryMode is supposed to always be
                         // set once, at device creation time (see
                         // createSelectedChildren()) -- but a real device
                         // was found stuck with batteryMode never set at
@@ -1669,7 +1699,7 @@ def schedulerTick() {
                         def batteryMode = child.currentValue("batteryMode")
                         if (batteryMode == null) {
                             log.warn "Reolink Integration: ${child.displayName} (${dni}) has no batteryMode set -- " +
-                                "backfilling via a live probe (see v1.4.0 release notes)"
+                                "backfilling via a live probe (see v1.4.1 release notes)"
                             componentCheckBattery(child)
                             def backfilled = child.currentValue("battery") != null ? "battery" : "wired"
                             child.receiveBatteryMode(backfilled)
