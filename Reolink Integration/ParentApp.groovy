@@ -64,6 +64,16 @@
  *     and proceeds normally from there. Self-heals automatically on the
  *     next tick after upgrading -- no manual re-discovery or device
  *     deletion needed for any device already stuck in this state.
+ *  2. NEW: since the OLD broken gate kept advancing nextBatteryCheckDue by
+ *     a full interval every tick even while silently skipping the actual
+ *     check, an affected device's stale due-time (set by that broken logic)
+ *     would otherwise still delay item 1's fix by up to a full
+ *     batteryCheckIntervalHours after upgrading. A one-time migration on
+ *     the first initialize() after upgrading (runMigrations(), guarded by
+ *     state.lastKnownAppVersion so it only runs once) clears that stale
+ *     schedule for any device with no batteryMode set, so the fix takes
+ *     effect within the next second or so of updating instead of waiting
+ *     out an untrustworthy old schedule.
  *
  * v1.3.9 -- post-release fixes and clarity improvements from real-world use
  * behind a 23-channel NVR:
@@ -1476,10 +1486,62 @@ def initialize() {
                 "If this persists, check that OAuth is enabled for this app under Apps Code."
         }
     }
+    runMigrations()
     initializePolling()
     if (logLevel == "Full") {
         runIn(3600, "revertToNormalLogging")
     }
+}
+
+/**
+ * v1.4.0 NEW: one-time upgrade migration, guarded by state.lastKnownAppVersion
+ * so it only ever runs once per actual version transition, not on every
+ * Done/Update save (initialize() runs on every one of those too).
+ *
+ * The schedulerTick() batteryMode backfill fix (see that method's v1.4.0
+ * comment) only fires once a device's ALREADY-SCHEDULED nextBatteryCheckDue
+ * time arrives -- and that stale due-time was itself set by the OLD, broken
+ * gate logic, which kept pushing it a full batteryCheckIntervalHours into
+ * the future every tick even while silently skipping the actual check. That
+ * stale schedule carries over untouched across the upgrade, so an affected
+ * device could still wait up to a full interval (default 12h, or whatever
+ * batteryCheckIntervalHours is set to) AFTER upgrading before the fix
+ * actually takes effect -- not because the fix doesn't work, just because
+ * nothing prompted it to run sooner.
+ *
+ * On the first initialize() after upgrading to 1.4.0, clear
+ * nextBatteryCheckDue for every device that currently has no batteryMode
+ * set, so schedulerTick()'s backfill runs on its very next tick (~1s)
+ * instead of waiting out a stale schedule that was never trustworthy to
+ * begin with. Devices that already have a valid batteryMode are left
+ * completely alone -- their normal schedule is untouched.
+ */
+private void runMigrations() {
+    if (state.lastKnownAppVersion == APP_VERSION) return
+    def fromVersion = state.lastKnownAppVersion ?: "(unknown/pre-migration-tracking)"
+
+    if (state.lastKnownAppVersion != "1.4.0") {
+        def battDue = state.nextBatteryCheckDue ?: [:]
+        int cleared = 0
+        (state.sources ?: []).each { src ->
+            def bridge = getSourceBridge(src.id)
+            (bridge?.getChildDevices() ?: []).each { child ->
+                if (child.hasCapability("Battery") && child.currentValue("batteryMode") == null) {
+                    battDue.remove(child.deviceNetworkId)
+                    cleared++
+                }
+            }
+        }
+        state.nextBatteryCheckDue = battDue
+        if (cleared > 0) {
+            logNormal "Reolink Integration: v1.4.0 migration -- cleared stale battery-check schedule for " +
+                "${cleared} device(s) with no batteryMode set, so the fix takes effect on the next tick " +
+                "instead of waiting out an old schedule"
+        }
+    }
+
+    logNormal "Reolink Integration: upgraded ${fromVersion} -> ${APP_VERSION}"
+    state.lastKnownAppVersion = APP_VERSION
 }
 
 /** Auto-reverts Full back to Normal after 60 minutes -- Full is meant for actively chasing something, not a steady state. Errors Only and Normal have no timer. */
