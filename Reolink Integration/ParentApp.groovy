@@ -97,7 +97,18 @@
  *     current field flipping sign (+216 vs -379) and adapterStatus
  *     flipping 1/0 in step. Any other chargeStatus value maps to
  *     "unknown" rather than guessing a label for it.
- *  5. Tips page updated with what real-hardware testing confirmed about
+ *  5. NEW: componentEventChannelUpdate() now opportunistically checks
+ *     battery/charging status (maybeCheckBatteryOnWake()) whenever a real
+ *     event push arrives for a battery-mode device, instead of only ever
+ *     updating on the next scheduled interval (up to batteryCheckIntervalHours
+ *     away) or a manual Check Battery run. A battery device only ever
+ *     answers anything while genuinely awake -- a real event push means
+ *     it's already awake for an unrelated reason, so piggybacking here
+ *     costs essentially nothing extra, unlike the scheduler's own
+ *     artificial wake-and-ask checks. Throttled to once per 60s per device
+ *     so a rapid burst of pushes (motion, then person, then vehicle, all
+ *     within seconds) triggers one check per wake, not one per push.
+ *  6. Tips page updated with what real-hardware testing confirmed about
  *     standalone battery-class devices: an Argus 4 Pro has NO local
  *     network API at all when standalone (both the HTTP CGI API and the
  *     separate Baichuan event-subscription port actively refuse the
@@ -871,6 +882,7 @@ private forgetSchedulingState(String dni) {
     state.nextPollDue?.remove(dni)
     state.nextSnapshotDue?.remove(dni)
     state.nextBatteryCheckDue?.remove(dni)
+    state.lastEventBatteryCheck?.remove(dni)
 }
 
 // ---------- Auth ----------
@@ -1394,6 +1406,50 @@ def componentEventChannelUpdate(child, sourceId, channelId, String status, Strin
     def shapes = translateToLegacyShape(status, aiType)
     target.parseReolinkState(shapes.aiState, shapes.mdState, "event")
     logFull "Reolink source ${sourceId} ch ${channelId}: event push -- status='${status}', AItype='${aiType}'"
+    maybeCheckBatteryOnWake(target)
+}
+
+/**
+ * NEW (2026-08-19): a battery-mode device only ever answers GetBatteryInfo
+ * (or anything else) when it's genuinely awake -- that's the whole reason
+ * batteryCheckIntervalHours exists on a long, conservative interval, so the
+ * periodic scheduler doesn't waste battery forcing a wake just to ask.
+ * But a REAL event push (this method's caller) means the device is ALREADY
+ * awake and already talking to us right now, for a completely unrelated
+ * reason -- piggybacking a battery/charging check onto that costs
+ * essentially nothing extra, unlike the scheduler's own artificial checks.
+ * Not doing this was a real gap: chargingStatus (see CameraDriver.groovy)
+ * could only ever update on the next scheduled check (up to
+ * batteryCheckIntervalHours away, default 12h) or a manual Check Battery
+ * run, even though the device may have been awake and reachable dozens of
+ * times in between via real motion/AI events.
+ *
+ * Throttled to once per 60s per device (state.lastEventBatteryCheck,
+ * keyed by DNI) so a rapid burst of pushes -- e.g. motion, then person,
+ * then vehicle, then motion-inactive, all within a few seconds, as seen in
+ * real logs -- triggers one check for that wake, not one per push.
+ * Wired/non-battery devices are skipped entirely (GetBatteryInfo is
+ * meaningless for them). Also nudges nextBatteryCheckDue forward by the
+ * device's own interval from now, same as a real scheduled check would,
+ * so schedulerTick() doesn't immediately re-check the same device again on
+ * its very next tick.
+ */
+private void maybeCheckBatteryOnWake(child) {
+    if (!child.hasCapability("Battery")) return
+    if (child.currentValue("batteryMode") != "battery") return
+    def dni = child.deviceNetworkId
+    def nowMs = now()
+    def lastCheck = state.lastEventBatteryCheck ?: [:]
+    def last = (lastCheck[dni] ?: 0) as Long
+    if (nowMs - last < 60000L) return
+    lastCheck[dni] = nowMs
+    state.lastEventBatteryCheck = lastCheck
+    componentCheckBattery(child)
+    def hours = (child.getSetting("batteryCheckIntervalHours") ?: 12) as Integer
+    def battDue = state.nextBatteryCheckDue ?: [:]
+    battDue[dni] = nowMs + (Math.max(hours, 1) * 3600L * 1000L)
+    state.nextBatteryCheckDue = battDue
+    logFull "Reolink Integration: ${child.displayName} (${dni}) checked battery/charging status opportunistically on a real event wake"
 }
 
 /** Called by the bridge for sleep-status pushes (cmd_id=145). Logged only for now -- not yet wired to markAsleep()/awake. */
@@ -2148,3 +2204,4 @@ void logNormal(msg) {
 void logFull(msg) {
     if (logLevelRank() >= 2) log.debug msg
 }
+
