@@ -1,15 +1,17 @@
 /**
  * Reolink Doorbell (Component Driver)
- * Version: 1.4.0
+ * Version: 1.4.1
  *
  * Same delegation pattern as Reolink Camera, plus a "visitor" (button press)
  * event so Rule Machine can trigger straight off "pushed 1" for a doorbell
  * ring, separate from AI person/motion detection.
  *
- * v1.4.0 -- kept in sync with the parent app's version. No functional change
- * to this driver -- v1.4.0's fix (batteryMode self-heal in schedulerTick())
- * is app-side only; receiveBatteryMode()/receiveBatteryInfo() already worked
- * correctly as-is.
+ * v1.4.1 -- chargingStatus attribute added (see receiveBatteryInfo()'s
+ * comment for full details on the confirmed GetBatteryInfo chargeStatus
+ * field). Everything else in this driver is unchanged from the last release -- that
+ * release's fix (batteryMode self-heal in schedulerTick()) was app-side
+ * only; receiveBatteryMode()/receiveBatteryInfo() already worked correctly
+ * as-is.
  *
  * v1.3.8 -- kept in sync with the parent app's version. No functional change
  * to this driver -- v1.3.8's changes (event-driven updates, PIR, login/action
@@ -42,6 +44,10 @@ metadata {
         attribute "package", "enum", ["active", "inactive"]
         attribute "snapshotUrl", "string"
         attribute "batteryMode", "enum", ["wired", "battery", "unknown"]
+        // NEW (2026-08-19): see CameraDriver.groovy's matching attribute
+        // comment -- both "charging" and "not_charging" confirmed against
+        // real hardware.
+        attribute "chargingStatus", "enum", ["unknown", "not_charging", "charging"]
         attribute "sleepStatus", "enum", ["awake", "asleep", "unknown"]
         // Tracks whether the most recent state update came from the
         // real-time event push path or the plain polling fallback.
@@ -103,6 +109,14 @@ def checkBattery() {
 def receiveBatteryInfo(battInfo) {
     def pct = battInfo?.Battery?.batteryPercent ?: battInfo?.batteryPercent ?: battInfo?.batteryPercentage
     if (pct != null) sendEvent(name: "battery", value: pct)
+
+    // NEW (2026-08-19): see CameraDriver.groovy's matching receiveBatteryInfo()
+    // comment for full context -- both chargeStatus values (1=charging,
+    // 0=not charging) confirmed via real hardware, captured back-to-back
+    // plugged in vs unplugged on the same device.
+    def chargeStatus = battInfo?.Battery?.chargeStatus
+    def chargingLabel = (chargeStatus == 1) ? "charging" : (chargeStatus == 0) ? "not_charging" : "unknown"
+    if (chargeStatus != null) sendEvent(name: "chargingStatus", value: chargingLabel)
 }
 /**
  * Required by the PushableButton capability -- declaring the capability adds
@@ -158,10 +172,10 @@ def markAsleep() {
  * v1.3.9 NEW: called once by the app at device creation time with the
  * result of the discovery-time battery probe -- see CameraDriver.groovy's
  * matching note. Now that this driver has capability Battery, a battery-
- * mode doorbell also gets the same periodic auto-check as cameras. (v1.4.0:
+ * mode doorbell also gets the same periodic auto-check as cameras. (v1.4.1:
  * the app's scheduler can now also call this once, later, to backfill a
  * device that somehow ended up without batteryMode set at all -- see
- * ParentApp.groovy's schedulerTick() v1.4.0 note. No change needed here
+ * ParentApp.groovy's schedulerTick() v1.4.1 note. No change needed here
  * either way.)
  */
 def receiveBatteryMode(String mode) {
@@ -170,3 +184,4 @@ def receiveBatteryMode(String mode) {
 def receiveSnapshotUrl(url) {
     sendEvent(name: "snapshotUrl", value: url)
 }
+
