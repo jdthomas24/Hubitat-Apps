@@ -77,20 +77,15 @@ metadata {
         command "pirOff", [[name: "Disables the PIR motion trigger -- does not stop an in-progress recording"]]
     }
     preferences {
-        input name: "pollIntervalSec", type: "number", title: "Poll interval (sec)", defaultValue: 30,
-            description: "Controls how often motion/AI state is polled. Does NOT control snapshot image " +
-                "freshness -- see Snapshot interval below."
-        input name: "snapshotIntervalSec", type: "number", title: "Snapshot interval (sec)", defaultValue: 30,
-            description: "Controls how often the cached dashboard snapshot image refreshes. A dashboard tile's " +
-                "own refresh rate does NOT make the image any fresher than this -- it just re-displays whatever " +
-                "was last cached at this interval. Kept separate from poll interval so motion detection can " +
-                "stay fast without forcing a full image download that often."
-        // Each paragraph below forces a fresh row in the 3-column preferences
-        // grid, so a toggle and its paired interval field always land next
-        // to each other instead of splitting across a row boundary.
-        // v1.4.2: bare paragraph("text") is App-DSL-only and does not exist
-        // on a driver's compiled script -- fixed to the driver-compatible
-        // input(type: "paragraph") form. Each needs its own unique name.
+        // v1.4.2 hotfix note: switched from bare paragraph("text") (App-DSL-
+        // only) to the driver-compatible input(type: "paragraph") form.
+        // v1.4.2 follow-up: reordered so each header is the FIRST of its own
+        // 3-item row in this 3-column grid. Unlike an App's paragraph(),
+        // input(type: "paragraph") on a driver does NOT span the full row --
+        // it's an ordinary single-column cell -- so a header only lines up
+        // correctly with its own toggle+interval when the group is exactly
+        // 3 items long and starts at column 1. Poll/Snapshot interval moved
+        // to the end for the same reason (2 items, cleanly fills the last row).
         input name: "battChkHdr", type: "paragraph", title: "<b>Scheduled battery check</b>"
         input name: "batteryCheckEnabled", type: "bool", title: "Enable auto battery check", defaultValue: false,
             description: "Battery devices only, OFF by default. When ON, auto-checks and updates battery level " +
@@ -107,6 +102,14 @@ metadata {
         input name: "eventWakeBatteryThrottleSec", type: "number", title: "Minimum seconds between event-triggered checks", defaultValue: 60,
             description: "Only used if the setting above is ON. Keeps a burst of events (motion, person, " +
                 "vehicle in seconds) from triggering more than one check."
+        input name: "pollIntervalSec", type: "number", title: "Poll interval (sec)", defaultValue: 30,
+            description: "Controls how often motion/AI state is polled. Does NOT control snapshot image " +
+                "freshness -- see Snapshot interval below."
+        input name: "snapshotIntervalSec", type: "number", title: "Snapshot interval (sec)", defaultValue: 30,
+            description: "Controls how often the cached dashboard snapshot image refreshes. A dashboard tile's " +
+                "own refresh rate does NOT make the image any fresher than this -- it just re-displays whatever " +
+                "was last cached at this interval. Kept separate from poll interval so motion detection can " +
+                "stay fast without forcing a full image download that often."
     }
 }
 
@@ -295,4 +298,3 @@ def markAsleep() {
 def receiveSnapshotUrl(url) {
     sendEvent(name: "snapshotUrl", value: url)
 }
-
