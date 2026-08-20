@@ -1,35 +1,25 @@
 /**
  * Reolink Camera (Component Driver)
- * Version: 1.4.1
+ * Version: 1.4.2
  *
- * Thin device: no HTTP of its own. Everything delegates to the parent app via
- * parent.componentX(this, ...). The app knows which source/channel this device
- * maps to (stored as data values sourceId/channel) and does the actual API call.
+ * Thin device: no HTTP of its own. Delegates everything to the parent app via
+ * parent.componentX(this, ...), using data values sourceId/channel to
+ * identify which source/channel this device maps to.
  *
- * v1.4.1 -- chargingStatus attribute added (see receiveBatteryInfo()'s
- * comment for full details on the confirmed GetBatteryInfo chargeStatus
- * field). Everything else in this driver is unchanged from the last release -- that
- * release's fix (batteryMode self-heal in schedulerTick()) was app-side
- * only; receiveBatteryMode() already worked correctly as-is.
- *
- * v1.3.8:
- *  1. NEW: PIR enable/disable -- pirOn()/pirOff() commands plus a pirEnabled
- *     attribute (real boolean, usable directly in Rule Machine conditions)
- *     and a pirStatusNote attribute (plain-text readable note, clears when
- *     PIR is back on). Manual on/off only, no auto-revert timer -- an
- *     "auto re-enable above threshold Y" need is already fully served by
- *     Rule Machine using the existing battery attribute, no extra driver
- *     logic needed. Note: turning PIR off does NOT stop an in-progress
- *     recording -- it removes the trigger that would have woken a battery
- *     camera to record in the first place.
- *  2. NEW: "lastUpdateSource" attribute (event/poll) -- shows at a glance
- *     whether this device's current state came from the real-time event
- *     push path or the polling fallback. Set inside parseReolinkState() via
- *     an optional third parameter that defaults to "poll".
- *
- * v1.3.6 -- kept in sync with the parent app's version. No functional
- * change to this driver -- v1.3.6's changes (discovery-page toggle fix and
- * clarity improvements) are app-side only.
+ * v1.4.2 -- HOTFIX: bare paragraph("text") calls in preferences are App-DSL
+ * only and don't exist on a driver's compiled script -- caused a fatal
+ * "No signature of method: Script1.paragraph()" on save/update, blocking the
+ * 1.4.1 update entirely. Fixed via input(type: "paragraph").
+ * v1.4.1 -- Added chargingStatus attribute (charging/not_charging/unknown)
+ * from GetBatteryInfo's Battery.chargeStatus, confirmed against real
+ * hardware (plugged in vs. unplugged). batteryMode self-heal was app-side
+ * only, no change needed here.
+ * v1.3.9 -- batteryMode can be backfilled by the app's scheduler if ever
+ * left unset; no change needed in this file for that.
+ * v1.3.8 -- Added PIR enable/disable (pirOn/pirOff, pirEnabled,
+ * pirStatusNote) -- manual only, no auto-revert. Added lastUpdateSource
+ * attribute (event/poll) to show which path produced the current state.
+ * v1.3.6 -- No functional change (app-side only).
  */
 metadata {
     definition(name: "Reolink Camera", namespace: "jdthomas24", author: "Jason", component: true) {
@@ -98,7 +88,10 @@ metadata {
         // Each paragraph below forces a fresh row in the 3-column preferences
         // grid, so a toggle and its paired interval field always land next
         // to each other instead of splitting across a row boundary.
-        paragraph "<b>Scheduled battery check</b>"
+        // v1.4.2: bare paragraph("text") is App-DSL-only and does not exist
+        // on a driver's compiled script -- fixed to the driver-compatible
+        // input(type: "paragraph") form. Each needs its own unique name.
+        input name: "battChkHdr", type: "paragraph", title: "<b>Scheduled battery check</b>"
         input name: "batteryCheckEnabled", type: "bool", title: "Enable auto battery check", defaultValue: false,
             description: "Battery devices only, OFF by default. When ON, auto-checks and updates battery level " +
                 "on the interval below. Checking briefly wakes the device (negligible power at default " +
@@ -106,7 +99,7 @@ metadata {
                 "of this setting."
         input name: "batteryCheckIntervalHours", type: "number", title: "Auto battery check interval (hours)", defaultValue: 12,
             description: "Only used if the setting above is ON."
-        paragraph "<b>Event-triggered battery check</b>"
+        input name: "eventWakeHdr", type: "paragraph", title: "<b>Event-triggered battery check</b>"
         input name: "checkBatteryOnEventWake", type: "bool", title: "Also check battery/charging on real motion/AI events", defaultValue: false,
             description: "Battery devices only, OFF by default. When ON, a real motion/AI event (device " +
                 "already awake) also triggers a battery/charging check -- free, unlike the interval above, " +
@@ -189,51 +182,29 @@ def checkBattery() {
 }
 
 /**
- * Called by the app after GetBatteryInfo. Field name confirmed via Reolink's
- * own officially-backed reolink_aio library: response value is
- * Battery.batteryPercent. The batteryPercentage fallback is kept just in
- * case a firmware variant uses it.
- */
-/**
- * v1.3.9: called once by the app at device creation time with the result of
- * the discovery-time battery probe -- the batteryMode attribute was
- * declared but never actually populated before this. Not called again
- * afterward under normal circumstances; batteryMode reflects what was true
- * at creation. (v1.4.1: the app's scheduler can now also call this once,
- * later, to backfill a device that somehow ended up without batteryMode set
- * at all -- see ParentApp.groovy's schedulerTick() v1.4.1 note. No change
- * needed here either way, this method's job stays the same.)
+ * v1.3.9: called by the app at device creation time with the discovery-time
+ * battery probe result (batteryMode was declared but never populated before
+ * this). v1.4.1: the app's scheduler can also call this later to backfill a
+ * device that ended up without batteryMode set -- see ParentApp.groovy's
+ * schedulerTick(). Method's job is unchanged either way.
  */
 def receiveBatteryMode(String mode) {
     sendEvent(name: "batteryMode", value: mode)
 }
 
+/**
+ * Called by the app after GetBatteryInfo. battery% ("2026-08-17" fix) reads
+ * the confirmed reolink_aio field Battery.batteryPercent nested first (flat
+ * fallbacks kept for firmware variants that return it unnested). chargingStatus
+ * reads Battery.chargeStatus (1=charging, 0=not_charging -- both confirmed
+ * against real hardware, corroborated by current's sign flip and adapterStatus;
+ * any other value maps to "unknown"). adapterStatus itself isn't its own
+ * attribute yet.
+ */
 def receiveBatteryInfo(battInfo) {
-    // FIXED (2026-08-17): a real Check Battery run against known battery
-    // hardware showed "GetBatteryInfo succeeded" in the app's log, but the
-    // battery attribute here never updated -- this comment has always
-    // documented the confirmed reolink_aio field as nested under
-    // "Battery.batteryPercent", but the code below was reading it flat
-    // (battInfo.batteryPercent) instead. Checking the nested path first
-    // fixes real data; the flat checks stay as fallbacks in case some
-    // firmware variant genuinely returns it unnested.
     def pct = battInfo?.Battery?.batteryPercent ?: battInfo?.batteryPercent ?: battInfo?.batteryPercentage
     if (pct != null) sendEvent(name: "battery", value: pct)
 
-    // NEW (2026-08-19): chargeStatus field confirmed via two real GetBatteryInfo
-    // responses captured back-to-back on the same device, plugged in vs
-    // unplugged: [Battery:[adapterStatus:1, batteryPercent:42, batteryVersion:2,
-    // chargeStatus:1, current:216, ...]] while charging, and
-    // [Battery:[adapterStatus:0, batteryPercent:43, ..., chargeStatus:0,
-    // current:-379, ...]] once unplugged. Both chargeStatus values (1=charging,
-    // 0=not charging) are now directly confirmed, not inferred -- the current
-    // field's sign flip (+216 vs -379) and adapterStatus's matching 1/0 flip
-    // independently corroborate the same conclusion. Any other chargeStatus
-    // value maps to "unknown" rather than guessing a label for it.
-    // adapterStatus (whether external power is connected at all, independent
-    // of active charging) is present in the same response but not yet
-    // exposed as its own attribute -- worth adding later if useful, now that
-    // its behavior is also confirmed here.
     def chargeStatus = battInfo?.Battery?.chargeStatus
     def chargingLabel = (chargeStatus == 1) ? "charging" : (chargeStatus == 0) ? "not_charging" : "unknown"
     if (chargeStatus != null) sendEvent(name: "chargingStatus", value: chargingLabel)
@@ -324,3 +295,4 @@ def markAsleep() {
 def receiveSnapshotUrl(url) {
     sendEvent(name: "snapshotUrl", value: url)
 }
+
