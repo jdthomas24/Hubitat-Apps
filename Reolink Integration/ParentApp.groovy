@@ -97,18 +97,30 @@
  *     current field flipping sign (+216 vs -379) and adapterStatus
  *     flipping 1/0 in step. Any other chargeStatus value maps to
  *     "unknown" rather than guessing a label for it.
- *  5. NEW: componentEventChannelUpdate() now opportunistically checks
+ *  5. NEW: componentEventChannelUpdate() can now opportunistically check
  *     battery/charging status (maybeCheckBatteryOnWake()) whenever a real
  *     event push arrives for a battery-mode device, instead of only ever
- *     updating on the next scheduled interval (up to batteryCheckIntervalHours
- *     away) or a manual Check Battery run. A battery device only ever
- *     answers anything while genuinely awake -- a real event push means
- *     it's already awake for an unrelated reason, so piggybacking here
- *     costs essentially nothing extra, unlike the scheduler's own
- *     artificial wake-and-ask checks. Throttled to once per 60s per device
- *     so a rapid burst of pushes (motion, then person, then vehicle, all
- *     within seconds) triggers one check per wake, not one per push.
- *  6. Tips page updated with what real-hardware testing confirmed about
+ *     updating on the next scheduled interval or a manual Check Battery
+ *     run. A battery device only ever answers anything while genuinely
+ *     awake -- a real event push means it's already awake for an
+ *     unrelated reason, so piggybacking here costs essentially nothing
+ *     extra, unlike the scheduler's own artificial wake-and-ask checks.
+ *     OFF by default (new checkBatteryOnEventWake device preference)
+ *     since it's still a behavior change from what every existing install
+ *     has been running; when enabled, throttled to a configurable
+ *     interval (new eventWakeBatteryThrottleSec device preference,
+ *     default 60s) so a rapid burst of pushes (motion, then person, then
+ *     vehicle, all within seconds) triggers one check per wake, not one
+ *     per push.
+ *  6. CHANGED: the existing scheduled auto battery check (previously
+ *     "0 hours = disabled") is now gated by an explicit
+ *     batteryCheckEnabled toggle (new device preference, OFF by default),
+ *     matching the same toggle-plus-interval pattern as item 5's new
+ *     setting instead of an implicit magic-number convention. The
+ *     interval field itself (batteryCheckIntervalHours) is unchanged,
+ *     just now only consulted when the toggle is on. Manually running
+ *     Check Battery is unaffected either way.
+ *  7. Tips page updated with what real-hardware testing confirmed about
  *     standalone battery-class devices: an Argus 4 Pro has NO local
  *     network API at all when standalone (both the HTTP CGI API and the
  *     separate Baichuan event-subscription port actively refuse the
@@ -1424,24 +1436,33 @@ def componentEventChannelUpdate(child, sourceId, channelId, String status, Strin
  * run, even though the device may have been awake and reachable dozens of
  * times in between via real motion/AI events.
  *
- * Throttled to once per 60s per device (state.lastEventBatteryCheck,
- * keyed by DNI) so a rapid burst of pushes -- e.g. motion, then person,
- * then vehicle, then motion-inactive, all within a few seconds, as seen in
- * real logs -- triggers one check for that wake, not one per push.
- * Wired/non-battery devices are skipped entirely (GetBatteryInfo is
- * meaningless for them). Also nudges nextBatteryCheckDue forward by the
- * device's own interval from now, same as a real scheduled check would,
- * so schedulerTick() doesn't immediately re-check the same device again on
- * its very next tick.
+ * OFF by default (checkBatteryOnEventWake device preference) -- even though
+ * the marginal cost of piggybacking is low, it's still a behavior change
+ * from what every existing installation has been running, and opt-in
+ * respects that rather than silently changing what happens on every event
+ * push for everyone. Throttle window is also configurable per device
+ * (eventWakeBatteryThrottleSec, default 60s) rather than hardcoded, so it
+ * can be tuned looser or tighter than the default guess.
+ *
+ * Throttled (state.lastEventBatteryCheck, keyed by DNI) so a rapid burst of
+ * pushes -- e.g. motion, then person, then vehicle, then motion-inactive,
+ * all within a few seconds, as seen in real logs -- triggers one check for
+ * that wake, not one per push. Wired/non-battery devices are skipped
+ * entirely (GetBatteryInfo is meaningless for them). Also nudges
+ * nextBatteryCheckDue forward by the device's own interval from now, same
+ * as a real scheduled check would, so schedulerTick() doesn't immediately
+ * re-check the same device again on its very next tick.
  */
 private void maybeCheckBatteryOnWake(child) {
     if (!child.hasCapability("Battery")) return
     if (child.currentValue("batteryMode") != "battery") return
+    if (child.getSetting("checkBatteryOnEventWake") != true) return
     def dni = child.deviceNetworkId
     def nowMs = now()
+    def throttleSec = (child.getSetting("eventWakeBatteryThrottleSec") ?: 60) as Integer
     def lastCheck = state.lastEventBatteryCheck ?: [:]
     def last = (lastCheck[dni] ?: 0) as Long
-    if (nowMs - last < 60000L) return
+    if (nowMs - last < (Math.max(throttleSec, 1) * 1000L)) return
     lastCheck[dni] = nowMs
     state.lastEventBatteryCheck = lastCheck
     componentCheckBattery(child)
@@ -1761,11 +1782,18 @@ def schedulerTick() {
                             child.receiveBatteryMode(backfilled)
                             batteryMode = backfilled
                         }
+                        // v1.4.1: replaced the old hours=0-means-disabled
+                        // convention with an explicit batteryCheckEnabled
+                        // toggle (OFF by default), same pattern as the new
+                        // checkBatteryOnEventWake setting -- clearer than a
+                        // magic number, and consistent across both battery-
+                        // check preferences on the device page.
+                        def checkEnabled = child.getSetting("batteryCheckEnabled") == true
                         def hours = (child.getSetting("batteryCheckIntervalHours") ?: 12) as Integer
-                        if (hours > 0 && batteryMode == "battery") {
+                        if (checkEnabled && hours > 0 && batteryMode == "battery") {
                             componentCheckBattery(child)
                         }
-                        // Re-evaluated even when skipped (hours=0, or wired
+                        // Re-evaluated even when skipped (disabled, or wired
                         // device) so a later settings change or batteryMode
                         // correction is picked up within an hour rather than
                         // never re-checked again.
@@ -2204,4 +2232,3 @@ void logNormal(msg) {
 void logFull(msg) {
     if (logLevelRank() >= 2) log.debug msg
 }
-
