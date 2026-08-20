@@ -68,6 +68,10 @@ metadata {
                 "own refresh rate does NOT make the image any fresher than this -- it just re-displays whatever " +
                 "was last cached at this interval. Kept separate from poll interval so motion/visitor detection " +
                 "can stay fast without forcing a full image download that often."
+        // Each paragraph below forces a fresh row in the 3-column preferences
+        // grid, so a toggle and its paired interval field always land next
+        // to each other instead of splitting across a row boundary.
+        paragraph "<b>Scheduled battery check</b>"
         input name: "batteryCheckEnabled", type: "bool", title: "Enable auto battery check", defaultValue: false,
             description: "Battery devices only, OFF by default. When ON, auto-checks and updates battery level " +
                 "on the interval below. Checking briefly wakes the device (negligible power at default " +
@@ -75,6 +79,7 @@ metadata {
                 "of this setting."
         input name: "batteryCheckIntervalHours", type: "number", title: "Auto battery check interval (hours)", defaultValue: 12,
             description: "Only used if the setting above is ON."
+        paragraph "<b>Event-triggered battery check</b>"
         input name: "checkBatteryOnEventWake", type: "bool", title: "Also check battery/charging on real motion/AI events", defaultValue: false,
             description: "Battery devices only, OFF by default. When ON, a real motion/AI event (device " +
                 "already awake) also triggers a battery/charging check -- free, unlike the interval above, " +
