@@ -68,21 +68,20 @@ metadata {
                 "own refresh rate does NOT make the image any fresher than this -- it just re-displays whatever " +
                 "was last cached at this interval. Kept separate from poll interval so motion/visitor detection " +
                 "can stay fast without forcing a full image download that often."
+        input name: "batteryCheckEnabled", type: "bool", title: "Enable auto battery check", defaultValue: false,
+            description: "Battery devices only, OFF by default. When ON, auto-checks and updates battery level " +
+                "on the interval below. Checking briefly wakes the device (negligible power at default " +
+                "interval). Ignored for wired devices. Check Battery still works manually any time regardless " +
+                "of this setting."
         input name: "batteryCheckIntervalHours", type: "number", title: "Auto battery check interval (hours)", defaultValue: 12,
-            description: "Battery-mode devices only -- how often to automatically check and update the battery " +
-                "level shown on this device page. Set to 0 to disable and check only manually via the Check " +
-                "Battery command. Checking wakes the device briefly, same as any poll or event, so it does use " +
-                "a small amount of power -- negligible at the default interval, but increase it (or disable) if " +
-                "you want to minimize wakeups further. Ignored entirely for wired devices."
+            description: "Only used if the setting above is ON."
         input name: "checkBatteryOnEventWake", type: "bool", title: "Also check battery/charging on real motion/AI events", defaultValue: false,
-            description: "Battery-mode devices only -- OFF by default. When ON, a real motion/AI event push " +
-                "(the device already being awake and talking to us for an unrelated reason) also triggers a " +
-                "battery/charging check, instead of only ever updating on the next scheduled interval above or " +
-                "a manual Check Battery run. Piggybacking on an already-awake device costs essentially nothing " +
-                "extra -- unlike the scheduled interval, this does NOT force any additional wakeup on its own."
+            description: "Battery devices only, OFF by default. When ON, a real motion/AI event (device " +
+                "already awake) also triggers a battery/charging check -- free, unlike the interval above, " +
+                "since it doesn't force an extra wakeup."
         input name: "eventWakeBatteryThrottleSec", type: "number", title: "Minimum seconds between event-triggered checks", defaultValue: 60,
-            description: "Only relevant if the setting above is ON. A rapid burst of pushes (motion, then " +
-                "person, then vehicle, all within seconds) only triggers one check per burst, not one per push."
+            description: "Only used if the setting above is ON. Keeps a burst of events (motion, person, " +
+                "vehicle in seconds) from triggering more than one check."
     }
 }
 def installed() {
