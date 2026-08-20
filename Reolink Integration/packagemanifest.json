@@ -1,10 +1,10 @@
 {
     "packageName": "Reolink Integration",
-    "releaseNotes": "v1.4.1 -- Fixed battery percentage getting permanently stuck on some devices, never auto-updating. Self-heals on its own, or tap Done in the app once after updating to speed it up. Fixed standalone (non-Hub) camera/doorbell event connections silently failing to even start due to a logging bug. Added a new chargingStatus attribute showing whether a battery device is actively charging. Updated Tips page with confirmed findings on standalone battery-device support. v1.3.9 -- Fixed a false connection warning during camera setup. Fixed battery % not showing on some devices. Log heartbeat added so Full logging never looks totally silent.",
+    "releaseNotes": "v1.4.2 (hotfix) -- Fixed a fatal error updating the Camera and Doorbell drivers through HPM (\"No signature of method: Script1.paragraph()\"), which blocked the 1.4.1 update entirely. v1.4.1 -- Fixed battery percentage getting permanently stuck on some devices, never auto-updating. Self-heals on its own, or tap Done in the app once after updating to speed it up. Fixed standalone (non-Hub) camera/doorbell event connections silently failing to even start due to a logging bug. Added a new chargingStatus attribute showing whether a battery device is actively charging. Updated Tips page with confirmed findings on standalone battery-device support.",
     "documentationLink": "https://github.com/jdthomas24/Hubitat-Apps-Drivers/tree/main/Reolink%20Integration",
     "communityLink": "https://github.com/jdthomas24/Hubitat-Apps-Drivers/tree/main/Reolink%20Integration",
     "author": "jdthomas24",
-    "version": "1.4.1",
+    "version": "1.4.2",
     "minimumHEVersion": "2.3.0",
     "dateReleased": "2026-08-14",
     "category": "Integrations",
