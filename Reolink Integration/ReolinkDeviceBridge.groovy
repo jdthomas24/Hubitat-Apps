@@ -1,66 +1,37 @@
 /**
  * Reolink Device Bridge (Internal Parent Driver)
- * Version: 1.4.1
+ * Version: 1.4.2
  *
  * NOT user-facing. Created and managed automatically by the Reolink
  * Integration parent app -- ONE instance per SOURCE (Hub/NVR or standalone).
- * Users never add this manually.
  *
- * Merges two roles into one device:
- *  1. Holds the persistent Baichuan TCP event subscription (cmd_id=31).
- *  2. Is the PARENT that creates Camera/Doorbell devices as ITS OWN children
- *     (not the app's) via createChannelDevice()/removeChannelDevice() below
- *     -- this is what makes them nest under this bridge in the Devices list
- *     (Hubitat's expand/collapse nested UI only applies to device-owned
- *     children, never app-owned children).
+ * Merges two roles: (1) holds the persistent Baichuan TCP event subscription
+ * (cmd_id=31), and (2) is the PARENT that creates Camera/Doorbell as ITS OWN
+ * children via createChannelDevice()/removeChannelDevice() -- this is what
+ * makes them nest under this bridge in the Devices list (Hubitat's nested UI
+ * only applies to device-owned children, never app-owned). Camera/Doorbell's
+ * parent?.componentX(...) calls resolve to THIS device (their real parent);
+ * every componentX() method below is a one-line passthrough up to this
+ * bridge's own parent (the app).
  *
- * Camera/Doorbell's existing parent?.componentX(...) calls resolve to THIS
- * device (since it's their real parent) instead of the app directly --
- * every componentX() method below is a one-line passthrough forwarding to
- * this bridge's OWN parent (the app).
+ * v1.4.2 -- No functional change to this driver (version kept in sync with
+ * the app); the paragraph() hotfix was in the Camera/Doorbell driver files.
+ * v1.4.1 -- No functional change (app-side batteryMode self-heal only).
+ * v1.3.8 -- Magic-header resync logging dropped to debug tier (confirmed
+ * benign, self-recovering Hub-side wire noise under load via multi-day soak
+ * testing; still warns after 20 failed resync attempts or an unrecognized
+ * message type). On a magic-header mismatch, now scans forward for the next
+ * real header and resyncs from there instead of discarding the whole buffer
+ * (capped at 20 attempts/read). Added componentSetPir() passthrough. Fixed
+ * this driver logging directly via log.info/log.debug, bypassing the app's
+ * Log level entirely -- routine logging now goes through
+ * parent?.logNormal()/logFull(); genuine failures (socket errors, give-up-
+ * after-20-resync, decrypt failure, unrecognized message type) stay
+ * unconditional log.warn.
  *
- * v1.4.1 -- kept in sync with the parent app's version. No functional
- * change to this driver -- v1.4.1's fix (batteryMode self-heal in
- * schedulerTick()) is app-side only; createChannelDevice() already returns
- * the child correctly as-is.
- *
- * v1.3.8:
- *  - Magic-header resync logging (see processBuffer() below) now stays at
- *    debug tier for both the routine and repeated-in-60s cases. Real-world
- *    multi-day soak testing confirmed this pattern is benign, self-
- *    recovering Hub-side wire noise under load (large multi-channel
- *    broadcasts), not a client-side parsing bug -- every burst captured
- *    across the soak resynced cleanly with zero leakage into actual camera
- *    state. Still logs at warn for a buffer that fails to resync after 20
- *    attempts (genuinely unrecovered), and for an unrecognized message
- *    type (a real protocol surprise).
- *  - On a magic-header mismatch, instead of always discarding the entire
- *    buffer, scans forward within that same buffer for the next real
- *    occurrence of the magic header and resyncs from there -- these
- *    failures tend to happen deep inside large pushes, so the rest of the
- *    buffer often still contains a genuine, recoverable message. Capped at
- *    20 resync attempts per incoming TCP read.
- *  - Added componentSetPir() passthrough for the new PIR feature (see the
- *    app and CameraDriver.groovy).
- *  - FIXED: this driver previously logged its own connection status and
- *    every routine event push directly via log.info/log.debug, completely
- *    bypassing the app's Log level setting -- switching the app to Errors
- *    Only did nothing to quiet it, and Full reproduced the exact
- *    log-flooding pattern from BETA testing. Routine logging (connection
- *    status transitions, per-push detail, resync detail) now goes through
- *    parent?.logNormal(...)/parent?.logFull(...) instead, obeying the
- *    app's tiered logging exactly like every other part of this
- *    integration. Genuine failures -- socket errors, giving up after 20
- *    resync attempts, decrypt failure, unrecognized message type -- stay
- *    as unconditional log.warn, since those should always be visible
- *    regardless of log level. Log verbosity for this device is controlled
- *    entirely from the Reolink Integration app's Log level setting, not
- *    here -- see the note on this device's preferences page.
- *
- * UNCONFIRMED assumptions, still unverified against real side-by-side data:
- *  - translateToLegacyShape()'s status/AItype -> aiState/mdState mapping
- *    (in ParentApp.groovy).
- *  - Sleep-status pushes (cmd_id=145) are received/logged but not yet acted on.
+ * UNCONFIRMED: translateToLegacyShape()'s status/AItype -> aiState/mdState
+ * mapping (in ParentApp.groovy). Sleep-status pushes (cmd_id=145) are
+ * received/logged but not yet acted on.
  */
 import groovy.transform.Field
 import java.security.MessageDigest
