@@ -1,262 +1,134 @@
 /**
  * Reolink Integration (Parent App)
- * Version: 1.4.1
+ * Version: 1.4.2
  *
- * Architecture notes:
- *  - A "source" is anything that answers the Reolink HTTP/JSON API: a standalone
- *    camera, a PoE NVR, or a network Home Hub. Each source has its own IP + creds.
- *  - A source with N paired channels (NVR/Home Hub) reports channels 0..N-1.
- *    A standalone camera is a degenerate source with exactly one channel: 0.
- *  - Every child device is tagged with (sourceId, channel). Children never talk
- *    HTTP directly -- they call parent.componentX() and this app does the call.
- *  - Poll interval is per-child, not global, because wired-mode doorbells/cams
- *    can be polled tight (2-5s) while battery-mode devices should be polled
- *    looser to avoid hammering a sleeping device.
- *  - Each source is fronted by a "Reolink Device Bridge" device (one per
- *    source). The bridge holds the persistent real-time event subscription
- *    AND is the real parent that creates Camera/Doorbell as its own children,
- *    so they nest under the bridge in the Devices list. Event-driven updates
- *    are the standard path; a source falls back to polling automatically if
- *    its event connection can't be established or drops, and resumes event
- *    mode silently on reconnect.
+ * Architecture: a "source" is anything answering the Reolink HTTP/JSON API
+ * (standalone camera, PoE NVR, or Home Hub), each with its own IP + creds. A
+ * multi-channel source (NVR/Hub) reports channels 0..N-1; a standalone camera
+ * is a degenerate source with one channel: 0. Every child device is tagged
+ * (sourceId, channel) and talks only through parent.componentX() -- never
+ * HTTP directly. Poll interval is per-child (wired 2-5s tight, battery loose)
+ * to avoid hammering sleeping devices. Each source is fronted by a "Reolink
+ * Device Bridge" device (one per source) that holds the persistent real-time
+ * event subscription and is the real parent of Camera/Doorbell, so they nest
+ * under it in the Devices list. Event-driven updates are the standard path;
+ * a source falls back to polling automatically on connection loss and
+ * silently resumes event mode on reconnect.
  *
- * Device-specific findings, known limitations, and setup gotchas are documented
- * in the README and the in-app Tips page -- not duplicated here to avoid the
- * two drifting out of sync.
+ * Device-specific findings/limitations/setup gotchas live in the README and
+ * in-app Tips page, not duplicated here. TODO markers mark spots needing
+ * exact command/param names verified against firmware (field names can
+ * drift by version). Full history prior to 1.3.6 is in GitHub commit history.
  *
- * TODO markers throughout mark spots that need exact command/param names
- * verified against your firmware's API guide (GetMdState / GetAiState /
- * GetChannelstatus / Snap / PtzCtrl / SetPirInfo field names can drift by
- * firmware version).
+ * BREAKING CHANGE (v1.3.8): every camera/doorbell became a child of a new
+ * per-source "Reolink Device Bridge" instead of a child of this app directly
+ * -- existing installs had to delete/recreate devices (and repoint
+ * dashboards/rules) via re-discovery under each source.
  *
- * Full version history prior to 1.3.6 is in the GitHub commit history and
- * past release notes -- not duplicated here.
+ * v1.4.2 -- HOTFIX: Camera/Doorbell driver preferences used bare
+ * paragraph("text") calls, which is App-DSL-only and doesn't compile on a
+ * driver -- blocked the 1.4.1 update entirely with "No signature of method:
+ * Script1.paragraph()". Fixed in both driver files via input(type:
+ * "paragraph"); no app-side code change.
  *
- * ============================================================================
- * BREAKING CHANGE NOTICE (v1.3.8): this release restructures how child
- * devices are organized -- every camera/doorbell is now created as a child
- * of a "Reolink Device Bridge" device (one per source) instead of a child of
- * this app directly. This is required to support the new event-driven
- * update path and to get proper nesting/grouping in the Devices list.
- * EXISTING INSTALLS MUST delete their current camera/doorbell devices and
- * re-run discovery under each source to recreate them under the new bridge.
- * Dashboards, Rule Machine rules, and dashboard tiles that reference the old
- * device IDs will need to be repointed at the newly created devices. See the
- * forum release notes for step-by-step upgrade instructions.
- * ============================================================================
+ * v1.4.1 -- one real-hardware testing session, four fixes:
+ *  1. schedulerTick()'s battery-check gate required batteryMode == "battery"
+ *     before ever checking -- a device with batteryMode ever left unset
+ *     (exact real-world trigger not reproducible from code alone) silently
+ *     failed this gate forever, due-time still advancing every tick with
+ *     nothing logged and battery never updating short of a manual check.
+ *     Now treats null as "unknown, go find out": backfills via a live
+ *     GetBatteryInfo probe once, self-heals on the next tick after
+ *     upgrading.
+ *  2. Since the old gate kept advancing the stale due-time even while
+ *     skipping the check, that stale schedule would otherwise delay fix #1
+ *     up to a full batteryCheckIntervalHours after upgrading. A one-time
+ *     runMigrations() (guarded by state.lastKnownAppVersion) clears it so
+ *     the fix takes effect within a second of updating.
+ *  3. A standalone source's bridge parents off "Reolink Standalone Devices"
+ *     (not this app directly), so its parent?.logNormal/logFull() calls
+ *     threw MissingMethodException on that driver -- meaning the socket
+ *     connection never even started for ANY standalone source (found via a
+ *     standalone Argus 4 Pro). Fixed by adding logNormal()/logFull()
+ *     passthroughs to StandaloneDevices.groovy. Hub/NVR bridges (parented
+ *     directly off the app) were never affected.
+ *  4. Added chargingStatus attribute (charging/not_charging/unknown) to
+ *     both drivers from GetBatteryInfo's Battery.chargeStatus -- both
+ *     values (1/0) confirmed against real hardware plugged in vs.
+ *     unplugged, corroborated by current's sign flip and adapterStatus.
+ *  5. maybeCheckBatteryOnWake(): a real event push means a battery device
+ *     is already awake for an unrelated reason, so opportunistically
+ *     checking battery/charging then costs nothing extra vs. waiting for
+ *     the next scheduled interval (up to 12h) or a manual check. OFF by
+ *     default (checkBatteryOnEventWake), throttled
+ *     (eventWakeBatteryThrottleSec, default 60s) so a burst of pushes
+ *     triggers one check per wake.
+ *  6. The scheduled battery check is now gated by an explicit
+ *     batteryCheckEnabled toggle (OFF by default) instead of the old
+ *     implicit "0 hours = disabled" convention.
+ *  7. Tips page updated: Argus 4 Pro has NO local network API standalone
+ *     (both HTTP CGI and the Baichuan event port refuse the connection,
+ *     confirmed directly); a Doorbell 2K Gen 2 pairs/polls fine standalone
+ *     but its sleep/battery behavior makes event delivery unreliable.
+ *     Different failure modes, same conclusion: battery-class devices need
+ *     a Home Hub or NVR.
  *
- * v1.4.1 -- battery-check scheduler self-heal, standalone bridge logging fix,
- * charging-status attribute, and updated standalone battery documentation --
- * all found/built during one real-hardware testing session:
- *  1. FIXED: schedulerTick()'s periodic battery-check gate required
- *     child.currentValue("batteryMode") == "battery" before ever calling
- *     componentCheckBattery(). If a device's batteryMode attribute is ever
- *     unset for any reason (the exact real-world trigger wasn't
- *     reproducible from code alone -- creation-time flow, page-reload
- *     timing, or similar), that device silently failed this gate forever:
- *     due-time still advanced every tick like a real check had happened,
- *     nothing was ever logged, and the device's battery value never
- *     updated again short of manually running Check Battery. The gate now
- *     treats a null/missing batteryMode as "unknown" rather than "not
- *     battery": it logs a warning, runs a live GetBatteryInfo probe once to
- *     backfill batteryMode (battery if a value comes back, wired if not),
- *     and proceeds normally from there. Self-heals automatically on the
- *     next tick after upgrading -- no manual re-discovery or device
- *     deletion needed for any device already stuck in this state.
- *  2. NEW: since the OLD broken gate kept advancing nextBatteryCheckDue by
- *     a full interval every tick even while silently skipping the actual
- *     check, an affected device's stale due-time (set by that broken logic)
- *     would otherwise still delay item 1's fix by up to a full
- *     batteryCheckIntervalHours after upgrading. A one-time migration on
- *     the first initialize() after upgrading (runMigrations(), guarded by
- *     state.lastKnownAppVersion so it only runs once) clears that stale
- *     schedule for any device with no batteryMode set, so the fix takes
- *     effect within the next second or so of updating instead of waiting
- *     out an untrustworthy old schedule.
- *  3. FIXED (StandaloneDevices.groovy): a standalone source's "Reolink
- *     Device Bridge" has the "Reolink Standalone Devices" group device as
- *     its real Hubitat parent, not this app directly -- so its
- *     parent?.logNormal(...)/parent?.logFull(...) calls (used throughout
- *     ReolinkDeviceBridge.groovy, including the very first line of
- *     startEventSubscription()) threw a MissingMethodException every time,
- *     since that group driver had no such methods at all. This meant the
- *     actual socket connection attempt never even started for ANY
- *     standalone source -- found via real-hardware testing of a standalone
- *     Argus 4 Pro. Fixed by adding logNormal()/logFull() passthrough
- *     methods to that driver that simply forward to its own parent (the
- *     app), same pattern already used elsewhere in this integration. A
- *     Hub/NVR source's bridge was never affected, since its parent is
- *     always the app directly.
- *  4. NEW: chargingStatus attribute added to both Camera and Doorbell
- *     drivers, populated from GetBatteryInfo's chargeStatus field
- *     (nested under Battery, same as batteryPercent) any time Check
- *     Battery runs, manual or scheduled. Both chargeStatus values are
- *     directly confirmed against real hardware -- 1 (charging) and 0
- *     (not charging), captured back-to-back on the same device plugged
- *     in vs. unplugged, corroborated independently by the same response's
- *     current field flipping sign (+216 vs -379) and adapterStatus
- *     flipping 1/0 in step. Any other chargeStatus value maps to
- *     "unknown" rather than guessing a label for it.
- *  5. NEW: componentEventChannelUpdate() can now opportunistically check
- *     battery/charging status (maybeCheckBatteryOnWake()) whenever a real
- *     event push arrives for a battery-mode device, instead of only ever
- *     updating on the next scheduled interval or a manual Check Battery
- *     run. A battery device only ever answers anything while genuinely
- *     awake -- a real event push means it's already awake for an
- *     unrelated reason, so piggybacking here costs essentially nothing
- *     extra, unlike the scheduler's own artificial wake-and-ask checks.
- *     OFF by default (new checkBatteryOnEventWake device preference)
- *     since it's still a behavior change from what every existing install
- *     has been running; when enabled, throttled to a configurable
- *     interval (new eventWakeBatteryThrottleSec device preference,
- *     default 60s) so a rapid burst of pushes (motion, then person, then
- *     vehicle, all within seconds) triggers one check per wake, not one
- *     per push.
- *  6. CHANGED: the existing scheduled auto battery check (previously
- *     "0 hours = disabled") is now gated by an explicit
- *     batteryCheckEnabled toggle (new device preference, OFF by default),
- *     matching the same toggle-plus-interval pattern as item 5's new
- *     setting instead of an implicit magic-number convention. The
- *     interval field itself (batteryCheckIntervalHours) is unchanged,
- *     just now only consulted when the toggle is on. Manually running
- *     Check Battery is unaffected either way.
- *  7. Tips page updated with what real-hardware testing confirmed about
- *     standalone battery-class devices: an Argus 4 Pro has NO local
- *     network API at all when standalone (both the HTTP CGI API and the
- *     separate Baichuan event-subscription port actively refuse the
- *     connection, confirmed directly), while a Doorbell 2K Gen 2 DOES
- *     have enough of a local API to pair and poll standalone, but its own
- *     sleep/battery behavior makes real-time event delivery unreliable
- *     instead. Different failure modes, same practical conclusion either
- *     way: battery-class devices need a Home Hub or NVR, not standalone.
- *
- * v1.3.9 -- post-release fixes and clarity improvements from real-world use
- * behind a 23-channel NVR:
- *  1. FIXED: the discovery-time battery probe (guessIsBattery(), used to
- *     guess wired vs battery for a newly-added channel) was marking a
- *     source's whole connection "unreachable" whenever it failed on a
- *     wired camera -- which is the EXPECTED outcome for roughly half of all
- *     cameras, not a real connectivity problem. This produced a misleading
- *     warn immediately followed by "connection restored" once the next
- *     unrelated command succeeded, even though the source was never
- *     actually down. doReolinkApiCall() now takes a `quiet` flag; a quiet
- *     probe failure logs at Full tier only and never touches source-
- *     reachable state.
- *  2. FIXED: Check Battery could succeed (a real response came back) but
- *     the battery attribute never updated on the device page --
- *     CameraDriver.groovy's receiveBatteryInfo() was reading
- *     battInfo.batteryPercent flat, when the confirmed reolink_aio field
- *     (already documented in that same file's own comment) is nested under
- *     Battery.batteryPercent. Now checks the nested path first.
- *  3. NEW: the bridge's 25-second keepalive now logs a Full-tier heartbeat
- *     line each time it fires. With event-driven updates, a quiet source
- *     (nothing has triggered a real push in a while) could look identical
- *     in the logs whether it was working or silently stuck, even at Full --
- *     this gives a predictable "still alive" signal without reintroducing
- *     per-camera poll spam, since it's throttled to once per connection.
- *  4. Reverted the "action: 0" field on the Login request body (added in
- *     1.3.8, never confirmed against real hardware for Login specifically
- *     -- see reolinkLogin()). Initially suspected as the cause of a real
- *     rspCode:-7 "login failed" rejection seen across multiple production
- *     sources -- DISPROVEN by direct evidence: the same rejection recurred
- *     on a source tested WITHOUT this field. Reverted anyway since it was
- *     always unconfirmed and every other command's action:0 stays
- *     unaffected, but the actual login-rejection root cause turned out to
- *     be unrelated (see item 6).
- *  5. FIXED: ensureSourceBridge() could throw a raw
- *     DuplicateDNIException and crash the ENTIRE app page ("Unexpected
- *     Error") if a device with that bridge's DNI existed anywhere else on
- *     the hub but wasn't reachable through the two places a bridge is
- *     supposed to live (Hubitat enforces DNIs as globally unique across
- *     the whole hub, not just unique among one parent's children). Now
- *     catches that specific exception, logs a clear actionable warning
- *     telling the user exactly what DNI to search for and delete, and
- *     returns null so callers can handle a missing bridge gracefully
- *     instead of the whole page throwing.
- *  6. NEW: added an explicit uninstalled() that walks removeSource() for
- *     every known source on full app removal, instead of relying purely on
- *     Hubitat's own automatic cascade-delete of app-owned children -- see
- *     uninstalled() for the full reasoning. Root-caused (with reasonable
- *     confidence, not fully platform-verified) as the likely source of the
- *     orphaned-bridge DuplicateDNIException in item 5: the 1.3.8 bridge
- *     restructuring made the device tree 2-3 levels deep for the first
- *     time (previously flat, one level), which may not survive a full app
- *     removal as reliably under heavy/rapid reinstall churn.
+ * v1.3.9 -- real-world use behind a 23-channel NVR:
+ *  1. The discovery-time battery probe (guessIsBattery()) was marking a
+ *     whole source "unreachable" on the EXPECTED failure of a wired camera
+ *     (~half of all cameras) -- doReolinkApiCall() now takes a `quiet` flag
+ *     so a probe failure logs at Full tier only, no source-health impact.
+ *  2. Check Battery could succeed but the attribute never updated --
+ *     receiveBatteryInfo() was reading batteryPercent flat instead of
+ *     nested under Battery.batteryPercent (the confirmed reolink_aio
+ *     field). Now checks nested first.
+ *  3. Bridge keepalive (25s) now logs a Full-tier heartbeat so a quiet-but-
+ *     healthy event connection doesn't look identical to a silently stuck
+ *     one, throttled to once per connection.
+ *  4. Reverted Login's "action: 0" field (added 1.3.8, never confirmed for
+ *     Login specifically) after a real rspCode:-7 login rejection --
+ *     disproven as the cause (recurred without the field too) but reverted
+ *     anyway since unconfirmed; every other command's action:0 is
+ *     unaffected and separately confirmed.
+ *  5. ensureSourceBridge() could throw a raw DuplicateDNIException and
+ *     crash the whole app page if an orphaned device shared its bridge's
+ *     DNI -- now caught, logs the DNI to search/delete, returns null
+ *     gracefully.
+ *  6. Added explicit uninstalled() walking removeSource() for every source
+ *     instead of relying solely on Hubitat's automatic cascade-delete --
+ *     likely root cause of the orphaned-bridge DNI collision in #5, since
+ *     the 1.3.8 bridge restructuring made the device tree 2-3 levels deep.
  *
  * v1.3.8:
- *  1. NEW: real-time event-driven updates. Each source now maintains a
- *     persistent connection to the camera/Hub/NVR and receives motion/AI/
- *     visitor changes as they happen, instead of relying solely on polling.
- *     Falls back to polling automatically if the event connection can't be
- *     established or drops, and silently resumes event mode on reconnect.
- *     Per-source on/off toggle on the discover page (defaults on).
- *  2. NEW: PIR enable/disable for cameras -- pirOn()/pirOn() commands plus a
- *     pirEnabled attribute, so a battery camera's motion trigger can be
- *     paused without removing the device (e.g. via a Rule Machine rule tied
- *     to battery level). Scoped to cameras; doorbells unaffected.
- *  3. FIXED: a login/token bug where the "new token acquired" log line fired
- *     even when the Login response didn't actually contain a usable token
- *     (e.g. a bad password, or a response shape this app doesn't expect on
- *     some firmware) -- previously this looked like a successful login in
- *     the log while every subsequent API call silently failed with "no
- *     token available," repeating forever. The success log now only fires
- *     when a real token comes back; a failure now logs the raw response so
- *     the actual cause is visible instead of a misleading success line.
- *  4. FIXED: the Login API call was missing the "action" field that every
- *     other command in this app sends -- added for consistency, and because
- *     it's plausible some firmware is stricter about requiring it than
- *     others.
- *  5. Corruption-recovery logging for the event connection (magic-header
- *     resync) now stays at debug tier for both the routine and repeated-in-
- *     60s cases, since real-world soak testing confirmed this pattern is
- *     benign, self-recovering Hub-side noise under load, not a client bug.
- *     Still logs at warn for a buffer that fails to resync after 20
- *     attempts, and for a genuinely unrecognized message type.
- *  6. FIXED: the bridge device logged its own connection status and every
- *     routine event push directly to the hub log (log.info/log.debug),
- *     completely bypassing the app's Log level setting -- so switching the
- *     app to Errors Only did nothing to quiet the bridge, and Full
- *     reproduced the exact log-flooding pattern from BETA testing. The
- *     bridge now routes its logging through the app's existing
- *     logNormal()/logFull() tiers via parent?.logNormal(...)/
- *     parent?.logFull(...) -- connection-status transitions (starting,
- *     connected, reconnecting) are Normal tier, routine per-push/resync
- *     detail is Full tier, and genuine failures (socket errors, give-up-
- *     after-20-resync, decrypt failure, unrecognized message type) remain
- *     unconditional warnings regardless of log level, same as the rest of
- *     this app.
- *  7. NEW: standalone (non-Hub) cameras/doorbells now nest together under a
- *     shared "Reolink Standalone Devices" entry in the Devices list instead
- *     of each source's bridge appearing as its own separate, unnested
- *     entry -- matching how an NVR/Home Hub's channels already group under
- *     one bridge. Each standalone camera still holds its own independent
- *     event connection underneath (Hubitat's rawSocket interface is one-
- *     connection-per-driver-instance, so that part can't be shared) -- only
- *     where the bridge nests in the Devices list changed, not how many
- *     connections exist. See ensureStandaloneGroupDevice()/getSourceBridge().
+ *  1. Real-time event-driven updates -- persistent per-source connection,
+ *     falls back to polling automatically on drop/failure, resumes event
+ *     mode silently on reconnect. Per-source toggle, defaults on.
+ *  2. PIR enable/disable for cameras (pirOn/pirOff, pirEnabled attribute),
+ *     doorbells unaffected.
+ *  3. Fixed a login bug where "new token acquired" logged even without a
+ *     usable Token.name (masking real auth failures) -- success now only
+ *     logs on a real token; failure logs the raw response.
+ *  4. Fixed Login missing the "action" field every other command sends.
+ *  5. Magic-header resync logging stays at debug tier (confirmed benign,
+ *     self-recovering Hub-side noise via soak testing); still warns after
+ *     20 failed resync attempts or a genuinely unrecognized message type.
+ *  6. Bridge device previously logged directly via log.info/log.debug,
+ *     bypassing the app's Log level entirely -- now routed through
+ *     logNormal()/logFull() like the rest of the app.
+ *  7. Standalone (non-Hub) cameras/doorbells now nest under a shared
+ *     "Reolink Standalone Devices" entry instead of each bridge appearing
+ *     separately -- matching how NVR/Hub channels already group. Each
+ *     standalone camera still holds its own independent event connection
+ *     (rawSocket is one-connection-per-driver-instance); only the nesting
+ *     changed.
  *
- * v1.3.6 -- Two related fixes to the device-discovery/toggle page
- * (discoverPage()), both found via real-world use:
- *  1. FIXED: unchecking an EXISTING device on a single-channel (standalone
- *     camera) source never actually deleted it. The auto-apply check only
- *     fired when the checkbox was TRUE -- unchecking an existing device sets
- *     that setting to FALSE, which never triggered the delete branch. Now
- *     fires on either direction: checking an absent device to create it, or
- *     unchecking a present one to remove it.
- *  2. Multi-channel (NVR/Home Hub) sources already applied removal
- *     correctly through the "Create selected devices" toggle, but the label
- *     only described creation -- relabeled to "Apply changes (create
- *     checked / remove unchecked)" and reworded the explanatory paragraph.
- *  3. Every per-channel row now says outright whether it's an "(Existing
- *     Device)" or "(New Device)".
- *  4. Reworded the "Danger zone" remove-source toggle to spell out that it
- *     removes the ENTIRE source and ALL of its child devices, separate from
- *     the per-channel checkboxes above it.
- *  5. Hub/NVR channel device-type detection (camera vs doorbell) now checks
- *     the channel's own name instead of a model field the Hub/NVR API never
- *     returns, fixing a mislabeled doorbell channel.
- *  6. Added a short note on the discover page about removing devices from
- *     this page rather than Hubitat's Devices page directly.
+ * v1.3.6 -- discoverPage() fixes: unchecking an existing single-channel
+ * device to remove it never actually fired (only checking-on did) -- now
+ * fires either direction. Multi-channel apply-toggle relabeled for clarity;
+ * each row now says Existing/New Device. Danger-zone wording clarified.
+ * Hub/NVR channel type detection now uses the channel's own name (API
+ * returns no model field), fixing a mislabeled doorbell. Added a note about
+ * removing devices from this page, not Hubitat's Devices page.
  */
 
 import groovy.transform.Field
@@ -275,7 +147,7 @@ definition(
     oauth: true // required for createAccessToken()/local endpoint access used by the snapshot relay
 )
 
-@Field static final String APP_VERSION = "1.4.1"
+@Field static final String APP_VERSION = "1.4.2"
 
 @Field static final List LOG_LEVELS = ["Errors Only", "Normal", "Full"]
 
@@ -1617,27 +1489,15 @@ def initialize() {
 }
 
 /**
- * v1.4.1 NEW: one-time upgrade migration, guarded by state.lastKnownAppVersion
- * so it only ever runs once per actual version transition, not on every
- * Done/Update save (initialize() runs on every one of those too).
- *
- * The schedulerTick() batteryMode backfill fix (see that method's v1.4.1
- * comment) only fires once a device's ALREADY-SCHEDULED nextBatteryCheckDue
- * time arrives -- and that stale due-time was itself set by the OLD, broken
- * gate logic, which kept pushing it a full batteryCheckIntervalHours into
- * the future every tick even while silently skipping the actual check. That
- * stale schedule carries over untouched across the upgrade, so an affected
- * device could still wait up to a full interval (default 12h, or whatever
- * batteryCheckIntervalHours is set to) AFTER upgrading before the fix
- * actually takes effect -- not because the fix doesn't work, just because
- * nothing prompted it to run sooner.
- *
- * On the first initialize() after upgrading to 1.4.1, clear
- * nextBatteryCheckDue for every device that currently has no batteryMode
- * set, so schedulerTick()'s backfill runs on its very next tick (~1s)
- * instead of waiting out a stale schedule that was never trustworthy to
- * begin with. Devices that already have a valid batteryMode are left
- * completely alone -- their normal schedule is untouched.
+ * One-time upgrade migration (since v1.4.1), guarded by
+ * state.lastKnownAppVersion so it runs once per version transition, not on
+ * every Done/Update save. The old broken battery-check gate kept advancing
+ * nextBatteryCheckDue a full interval every tick even while silently
+ * skipping the check, so that stale schedule would otherwise delay
+ * schedulerTick()'s batteryMode backfill fix by up to a full
+ * batteryCheckIntervalHours after upgrading. This clears nextBatteryCheckDue
+ * for every device with no batteryMode set, so the backfill runs on the very
+ * next tick (~1s) instead. Devices with a valid batteryMode are untouched.
  */
 private void runMigrations() {
     if (state.lastKnownAppVersion == APP_VERSION) return
@@ -1757,22 +1617,13 @@ def schedulerTick() {
                     // whichever devices actually declare it -- both Camera
                     // and Doorbell drivers do, as of v1.3.9.
                     if (child.hasCapability("Battery") && nowMs >= ((battDue[dni] ?: 0) as Long)) {
-                        // v1.4.1 FIX: batteryMode is supposed to always be
-                        // set once, at device creation time (see
-                        // createSelectedChildren()) -- but a real device
-                        // was found stuck with batteryMode never set at
-                        // all, which meant this gate silently and
-                        // permanently skipped its battery check forever:
-                        // battDue still advanced every tick as if a real
-                        // check had happened, nothing was ever logged, and
-                        // the battery value never updated again short of
-                        // manually running Check Battery. A missing
-                        // batteryMode is now treated as "unknown, go find
-                        // out" rather than "not battery, skip forever" --
-                        // backfilled here via a live probe, once, the first
-                        // time this gate finds it unset. Self-heals on the
-                        // very next tick after upgrading, no manual
-                        // re-discovery or device deletion required.
+                        // v1.4.1 FIX: a device stuck with batteryMode never
+                        // set silently and permanently skipped this gate
+                        // (due-time still advanced, nothing logged, battery
+                        // never updated short of a manual check). Missing
+                        // batteryMode is now "unknown, go find out" rather
+                        // than "not battery, skip forever" -- backfilled via
+                        // a live probe, once. Self-heals on the next tick.
                         def batteryMode = child.currentValue("batteryMode")
                         if (batteryMode == null) {
                             log.warn "Reolink Integration: ${child.displayName} (${dni}) has no batteryMode set -- " +
