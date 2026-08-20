@@ -1,46 +1,37 @@
 /**
  * Reolink Standalone Devices (Internal Group Driver)
- * Version: 1.4.1
+ * Version: 1.4.2
  *
  * NOT user-facing. Created and managed automatically by the Reolink
  * Integration parent app -- exactly ONE instance total, shared across every
- * standalone (non-Hub/NVR) source. Users never add this manually.
+ * standalone (non-Hub/NVR) source.
  *
  * Purpose: purely a nesting anchor in the Devices list. Each standalone
  * camera/doorbell still gets its own independent "Reolink Device Bridge"
- * (its own persistent event connection -- Hubitat's rawSocket interface is
- * one-connection-per-driver-instance, so that part genuinely can't be
- * shared across cameras). What CAN be shared is where those bridges nest:
- * instead of each standalone bridge sitting directly under the app
- * (unnested, one per source, unlike an NVR/Hub's channels which all nest
- * under one shared bridge), every standalone source's bridge becomes a
- * child of THIS device instead. Net effect: one collapsible "Reolink
- * Standalone Devices" entry in the Devices list holding every standalone
- * camera/doorbell's bridge (and, under each of those, its camera/doorbell),
- * instead of N separate unnested bridges.
+ * (its own persistent event connection -- Hubitat's rawSocket is one-
+ * connection-per-driver-instance, so that part can't be shared). What CAN
+ * be shared is where those bridges nest: instead of each standalone bridge
+ * sitting directly under the app (unnested, unlike an NVR/Hub's channels
+ * which all nest under one shared bridge), every standalone source's bridge
+ * becomes a child of THIS device instead -- one collapsible entry holding
+ * every standalone camera/doorbell's bridge, instead of N separate unnested
+ * bridges.
  *
- * v1.4.1 FIX: a standalone source's "Reolink Device Bridge" has THIS
- * device as its real Hubitat parent (not the app directly -- see
- * createBridgeDevice() below), so its parent?.logNormal(...)/
- * parent?.logFull(...) calls (used throughout ReolinkDeviceBridge.groovy
- * for its own connection-status/routine logging, see that file's v1.3.8
- * notes) resolve to THIS device, not the app. This driver had no such
- * methods at all, so every one of those calls threw a
- * MissingMethodException the moment a standalone source's bridge tried to
- * log anything -- including the very first line of startEventSubscription()
- * itself, which meant the actual socket connection attempt never even
- * started for a standalone source. A Hub/NVR source's bridge was never
- * affected, since its parent is the app directly, which always had these
- * methods. Found via real-hardware testing of a standalone battery camera
- * (Argus 4 Pro) whose HTTP CGI API is fully absent (Argus line has no
- * local HTTP/ONVIF stack at all -- see the app's Tips page), where testing
- * whether its separate Baichuan event-subscription port might still
- * respond surfaced this as a blocking bug before the socket attempt could
- * even happen. Both methods now simply forward up to this device's OWN
- * parent (the app), which already has the real logNormal()/logFull()
- * tiered-logging implementation -- identical pattern to how this driver's
- * createBridgeDevice()/removeBridgeDevice() already forward bridge
- * creation/removal to the app.
+ * v1.4.2 -- No functional change (version kept in sync with the app).
+ * v1.4.1 -- FIX: a standalone source's bridge has THIS device as its real
+ * Hubitat parent (not the app directly), so its parent?.logNormal()/
+ * logFull() calls (used throughout ReolinkDeviceBridge.groovy, including
+ * the first line of startEventSubscription()) threw a MissingMethodException
+ * every time -- this driver had no such methods at all, meaning the actual
+ * socket connection never even started for ANY standalone source. Hub/NVR
+ * bridges (parented directly off the app) were never affected. Found via
+ * real-hardware testing of a standalone battery camera (Argus 4 Pro, whose
+ * HTTP CGI API is fully absent -- see the app's Tips page) while testing
+ * whether its Baichuan event port might still respond, which surfaced this
+ * as a blocking bug before the socket attempt could even happen. Fixed by
+ * adding logNormal()/logFull() passthroughs that forward to this device's
+ * own parent (the app) -- same pattern already used for
+ * createBridgeDevice()/removeBridgeDevice() below.
  */
 metadata {
     definition(name: "Reolink Standalone Devices", namespace: "jdthomas24", author: "Jason", component: true) {
@@ -69,18 +60,17 @@ def removeBridgeDevice(String dni) {
 }
 
 /**
- * v1.4.1 NEW -- logging passthrough for standalone bridges. See this
- * file's v1.4.1 FIX note above for why this is needed. This device's OWN
- * parent is always the app (never another group device), so this simply
- * forwards up one level -- same forwarding pattern already used elsewhere
+ * v1.4.1: logging passthrough for standalone bridges -- see the header note
+ * above. This device's own parent is always the app (never another group
+ * device), so it simply forwards up one level, same pattern used elsewhere
  * in this integration (e.g. ReolinkDeviceBridge.groovy's componentX()
- * passthrough methods).
+ * passthroughs).
  */
 void logNormal(msg) {
     parent?.logNormal(msg)
 }
 
-/** See logNormal() above -- same reasoning, Full-tier tier. */
+/** See logNormal() above -- same reasoning, Full-tier. */
 void logFull(msg) {
     parent?.logFull(msg)
 }
