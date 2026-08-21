@@ -1,6 +1,6 @@
 /**
  * Reolink Integration (Parent App)
- * Version: 1.4.2
+ * Version: 1.5.0-beta2
  *
  * Architecture: a "source" is anything answering the Reolink HTTP/JSON API
  * (standalone camera, PoE NVR, or Home Hub), each with its own IP + creds. A
@@ -25,8 +25,14 @@
  * -- existing installs had to delete/recreate devices (and repoint
  * dashboards/rules) via re-discovery under each source.
  *
- * v1.5.0-beta1 -- UNCONFIRMED, single-tester private beta (not on HPM). Added
- * a continuous-recording toggle (componentSetSourceRecording(), Switch
+ * v1.5.0-beta2 -- UNCONFIRMED, private beta (not on HPM), app+bridge only --
+ * same two files as beta1, no Camera/Doorbell changes needed. Added a
+ * per-channel success/failure summary (e.g. "6/6 OK" or "5/6 OK, failed:
+ * ch3") pushed to the bridge's new lastRecordingResult attribute after every
+ * componentSetSourceRecording() call, so results are visible on the device
+ * page instead of requiring a log dive.
+ *
+ * v1.5.0-beta1 -- UNCONFIRMED. Added a continuous-recording toggle (componentSetSourceRecording(), Switch
  * capability on Reolink Device Bridge). Built from the Reolink Camera HTTP
  * API User Guide v7 (GetRec/SetRec, section 3.6) but not yet tested against
  * real hardware -- see that method's comment for the full design (cache-and-
@@ -156,7 +162,7 @@ definition(
     oauth: true // required for createAccessToken()/local endpoint access used by the snapshot relay
 )
 
-@Field static final String APP_VERSION = "1.5.0-beta1"
+@Field static final String APP_VERSION = "1.5.0-beta2"
 
 @Field static final List LOG_LEVELS = ["Errors Only", "Normal", "Full"]
 
@@ -2098,15 +2104,31 @@ def componentSetSourceRecording(child, sourceId, Boolean continuous) {
         return
     }
     int okCount = 0
+    def failedChannels = []
     channels.each { ch ->
+        def channelNum = ch.getDataValue("channel") as Integer
         try {
-            if (setChannelRecording(sourceId, ch.deviceNetworkId, ch.getDataValue("channel") as Integer, continuous)) okCount++
+            if (setChannelRecording(sourceId, ch.deviceNetworkId, channelNum, continuous)) {
+                okCount++
+            } else {
+                failedChannels << channelNum
+            }
         } catch (e) {
-            log.warn "Reolink source ${sourceId} ch ${ch.getDataValue('channel')}: recording mode change failed -- ${e.message}"
+            log.warn "Reolink source ${sourceId} ch ${channelNum}: recording mode change failed -- ${e.message}"
+            failedChannels << channelNum
         }
     }
-    logNormal "Reolink source ${sourceId}: recording mode set to ${continuous ? 'continuous' : 'normal (restored)'} on ${okCount}/${channels.size()} channel(s)"
+    // v1.5.0-beta2: e.g. "6/6 OK" or "5/6 OK, failed: ch3" -- pushed to the
+    // bridge's lastRecordingResult attribute so it's visible on the device
+    // page without a log dive. Individual failure reasons still only show
+    // in the log (via the warnings above/in setChannelRecording()) -- this
+    // summary is just "did it work," not "why not."
+    def summary = failedChannels ?
+        "${okCount}/${channels.size()} OK, failed: ${failedChannels.collect { "ch${it}" }.join(', ')}" :
+        "${okCount}/${channels.size()} OK"
+    logNormal "Reolink source ${sourceId}: recording mode set to ${continuous ? 'continuous' : 'normal (restored)'} -- ${summary}"
     bridge.receiveRecordingMode(continuous ? "continuous" : "normal")
+    bridge.receiveRecordingResult(summary)
 }
 
 /** True on apparent success. See componentSetSourceRecording() for the overall design. */
@@ -2145,6 +2167,26 @@ private Map fetchRecSchedule(sourceId, channel, boolean isV20) {
     def cmd = isV20 ? "GetRecV20" : "GetRec"
     def result = reolinkApiCall(sourceId, cmd, [:], channel as Integer)
     return result?.Rec
+}
+
+/**
+ * v1.5.0-beta1 diagnostic: read-only sanity check, does NOT call SetRec/
+ * SetRecV20 or touch the cache. Logs the raw GetRec/GetRecV20 response
+ * (Normal tier, so it shows without switching to Full) so scheduleVersion
+ * detection and the actual field shape can be confirmed against real
+ * hardware BEFORE ever calling componentSetSourceRecording(). Callable
+ * directly from a channel's device page as long as it's exposed there, or
+ * just call it ad hoc from this app for now.
+ */
+def componentCheckRecordingSchedule(child, String dni = null) {
+    def c = resolveChild(child, dni)
+    def sourceId = c.getDataValue("sourceId") as Integer
+    def channel = c.getDataValue("channel") as Integer
+    def abilityChnList = fetchAbilityChnList(sourceId)
+    def scheduleVer = (abilityChnList?.getAt(channel)?.scheduleVersion?.ver ?: 0) as int
+    boolean isV20 = scheduleVer >= 1
+    def schedule = fetchRecSchedule(sourceId, channel, isV20)
+    logNormal "Reolink source ${sourceId} ch ${channel}: scheduleVersion.ver=${scheduleVer} (using ${isV20 ? 'GetRecV20' : 'GetRec'}) -- raw Rec: ${schedule}"
 }
 
 /**
@@ -2207,4 +2249,3 @@ void logNormal(msg) {
 void logFull(msg) {
     if (logLevelRank() >= 2) log.debug msg
 }
-
