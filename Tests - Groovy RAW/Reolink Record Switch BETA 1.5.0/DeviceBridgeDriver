@@ -1,6 +1,6 @@
 /**
  * Reolink Device Bridge (Internal Parent Driver)
- * Version: 1.5.0-beta1
+ * Version: 1.5.0-beta2
  *
  * NOT user-facing. Created and managed automatically by the Reolink
  * Integration parent app -- ONE instance per SOURCE (Hub/NVR or standalone).
@@ -14,15 +14,19 @@
  * every componentX() method below is a one-line passthrough up to this
  * bridge's own parent (the app).
  *
- * v1.5.0-beta1 -- UNCONFIRMED, single-tester private beta (not on HPM). Added
- * Switch capability: on() forces every channel of this source into
- * continuous (24/7) recording, off() restores each channel's previously-
- * saved schedule. The actual GetRec/SetRec logic lives app-side (see
- * ParentApp.groovy's componentSetSourceRecording()) -- this driver just
- * forwards the command and reflects the resulting recordingMode attribute.
- * Built from the Reolink Camera HTTP API User Guide v7 (section 3.6) but not
- * yet tested against real hardware -- see the app-side comment for the full
- * design and open questions.
+ * v1.5.0-beta2 -- UNCONFIRMED, private beta (not on HPM), app+bridge only --
+ * same two files as beta1, no Camera/Doorbell changes needed. Added
+ * lastRecordingResult attribute so a per-channel success/failure summary
+ * (e.g. "6/6 OK" or "5/6 OK, failed: ch3") shows directly on this device
+ * page instead of requiring a log dive to tell whether on()/off() actually
+ * worked on every channel.
+ * v1.5.0-beta1 -- UNCONFIRMED. Added Switch capability: on() forces every
+ * channel of this source into continuous (24/7) recording, off() restores
+ * each channel's previously-saved schedule. The actual GetRec/SetRec logic
+ * lives app-side (see ParentApp.groovy's componentSetSourceRecording()) --
+ * this driver just forwards the command and reflects the resulting
+ * recordingMode attribute. Built from the Reolink Camera HTTP API User
+ * Guide v7 (section 3.6) but not yet tested against real hardware.
  * v1.4.2 -- No functional change to this driver (version kept in sync with
  * the app); the paragraph() hotfix was in the Camera/Doorbell driver files.
  * v1.4.1 -- No functional change (app-side batteryMode self-heal only).
@@ -40,7 +44,7 @@
  *
  * UNCONFIRMED: translateToLegacyShape()'s status/AItype -> aiState/mdState
  * mapping (in ParentApp.groovy). Sleep-status pushes (cmd_id=145) are
- * received/logged but not yet acted on. v1.5.0-beta1's recording-mode
+ * received/logged but not yet acted on. v1.5.0-beta1/beta2's recording-mode
  * feature, entirely.
  */
 import groovy.transform.Field
@@ -66,6 +70,10 @@ metadata {
         // the app.
         attribute "connectionStatus", "enum", ["disconnected", "connecting", "connected", "reconnecting"]
         attribute "recordingMode", "enum", ["unknown", "normal", "continuous"]
+        // v1.5.0-beta2: per-channel success/failure summary from the last
+        // on()/off() call, e.g. "6/6 OK" or "5/6 OK, failed: ch3" -- visible
+        // on this device page without a log dive.
+        attribute "lastRecordingResult", "string"
     }
     preferences {
         input name: "loggingInfo", type: "paragraph", element: "paragraph",
@@ -135,6 +143,8 @@ def componentSetSiren(child, Boolean on, String dni = null) { parent?.componentS
 def componentSetPir(child, Boolean on, String dni = null) { parent?.componentSetPir(child, on, dni) }
 def componentCheckBattery(child, String dni = null) { parent?.componentCheckBattery(child, dni) }
 def componentCheckAbilities(child, String dni = null) { parent?.componentCheckAbilities(child, dni) }
+/** v1.5.0-beta1 diagnostic passthrough -- see ParentApp.groovy's componentCheckRecordingSchedule(). */
+def componentCheckRecordingSchedule(child, String dni = null) { parent?.componentCheckRecordingSchedule(child, dni) }
 def componentCalibratePtz(child, String dni = null) { parent?.componentCalibratePtz(child, dni) }
 def componentCheckPtzCalibrationStatus(child, String dni = null) { parent?.componentCheckPtzCalibrationStatus(child, dni) }
 def componentSetPollInterval(child, Integer seconds, String dni = null) { parent?.componentSetPollInterval(child, seconds, dni) }
@@ -158,6 +168,11 @@ def off() {
 def receiveRecordingMode(String mode) {
     sendEvent(name: "recordingMode", value: mode)
     sendEvent(name: "switch", value: mode == "continuous" ? "on" : "off")
+}
+
+/** v1.5.0-beta2: per-channel success/failure summary from the app, e.g. "6/6 OK" or "5/6 OK, failed: ch3". */
+def receiveRecordingResult(String summary) {
+    sendEvent(name: "lastRecordingResult", value: summary)
 }
 
 // ============================================================================
@@ -699,4 +714,3 @@ private String findXmlValue(String xml, String tagName) {
 def closeSocket() {
     try { interfaces.rawSocket.close() } catch (e) { }
 }
-
