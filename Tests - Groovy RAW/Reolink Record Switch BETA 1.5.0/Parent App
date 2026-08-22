@@ -1,6 +1,6 @@
 /**
  * Reolink Integration (Parent App)
- * Version: 1.5.0-beta2
+ * Version: 1.5.0-beta3
  *
  * Architecture: a "source" is anything answering the Reolink HTTP/JSON API
  * (standalone camera, PoE NVR, or Home Hub), each with its own IP + creds. A
@@ -25,9 +25,18 @@
  * -- existing installs had to delete/recreate devices (and repoint
  * dashboards/rules) via re-discovery under each source.
  *
- * v1.5.0-beta2 -- UNCONFIRMED, private beta (not on HPM), app+bridge only --
- * same two files as beta1, no Camera/Doorbell changes needed. Added a
- * per-channel success/failure summary (e.g. "6/6 OK" or "5/6 OK, failed:
+ * v1.5.0-beta3 -- UNCONFIRMED, private beta (not on HPM), app+bridge only.
+ * Real-world testing against an RLN16-410 (7 channels) showed the beta2
+ * GetAbility-based V20/classic detection choosing classic GetRec, which
+ * then failed on every channel with rspCode -9 "not support" -- exactly the
+ * failure classic's own "model 52X only" documentation predicts. Detection
+ * now tries GetRecV20 directly and only falls back to classic GetRec if V20
+ * itself returns no usable value, instead of trusting a GetAbility field
+ * that didn't reflect this hardware's real behavior. No change to the
+ * cache-and-restore design otherwise; the cache now also records which API
+ * generation worked per channel, so "off" restores through the same one.
+ *
+ * v1.5.0-beta2 -- UNCONFIRMED. Added a per-channel success/failure summary (e.g. "6/6 OK" or "5/6 OK, failed:
  * ch3") pushed to the bridge's new lastRecordingResult attribute after every
  * componentSetSourceRecording() call, so results are visible on the device
  * page instead of requiring a log dive.
@@ -162,7 +171,7 @@ definition(
     oauth: true // required for createAccessToken()/local endpoint access used by the snapshot relay
 )
 
-@Field static final String APP_VERSION = "1.5.0-beta2"
+@Field static final String APP_VERSION = "1.5.0-beta3"
 
 @Field static final List LOG_LEVELS = ["Errors Only", "Normal", "Full"]
 
@@ -2075,22 +2084,28 @@ def componentSetSnapshotInterval(child, Integer seconds, String dni = null) {
  * table per trigger type (TIMING/MD/AI_PEOPLE/AI_VEHICLE), so "on" means
  * writing TIMING to all-1s, and "off" means writing back whatever schedule
  * existed before "on" was first called (cached in state.recScheduleCache,
- * keyed by channel DNI) -- NOT a guessed default, since guessing wrong
- * would silently change the user's normal recording setup. If a channel has
- * no cached schedule when "off" is called (this switch never turned it on),
- * that channel is skipped with a warning rather than risking an unwanted
+ * keyed by channel DNI, alongside which API generation worked for that
+ * channel) -- NOT a guessed default, since guessing wrong would silently
+ * change the user's normal recording setup. If a channel has no cached
+ * schedule when "off" is called (this switch never turned it on), that
+ * channel is skipped with a warning rather than risking an unwanted
  * overwrite.
  *
  * Two API generations exist -- GetRec/SetRec's own documentation says it
- * "supports model 52X only", so a modern NVR almost certainly needs the V20
- * pair. Detected per-channel via GetAbility's scheduleVersion.ver (0 =
- * classic, 1 = V20), same permit/ver pattern already used for ptzType etc.
+ * "supports model 52X only". CHANGED (2026-08-22): originally detected via
+ * GetAbility's scheduleVersion.ver, but real-hardware testing against an
+ * RLN16-410 showed that detection choosing classic GetRec, which then
+ * failed outright on every one of 7 channels with rspCode -9 "not support"
+ * -- exactly the failure the 52X-only caveat predicts. Detection now tries
+ * GetRecV20 directly and only falls back to classic GetRec if V20 itself
+ * returns no usable value, instead of trusting a GetAbility field that
+ * doesn't reflect this hardware's actual behavior.
  *
  * KNOWN OPEN QUESTION: the API guide's SetRec/SetRecV20 field table lists
  * "channel" as a top-level Rec field, but its own JSON example nests
- * "channel" inside "schedule" instead -- setChannelRecording()/
- * applyContinuousSchedule() below send it in multiple places to hedge until
- * real hardware settles which one actually matters.
+ * "channel" inside "schedule" instead -- applyContinuousSchedule() below
+ * sends it in multiple places to hedge until real hardware settles which
+ * one actually matters.
  */
 def componentSetSourceRecording(child, sourceId, Boolean continuous) {
     def bridge = getSourceBridge(sourceId)
@@ -2133,30 +2148,21 @@ def componentSetSourceRecording(child, sourceId, Boolean continuous) {
 
 /** True on apparent success. See componentSetSourceRecording() for the overall design. */
 private boolean setChannelRecording(sourceId, String dni, Integer channel, Boolean continuous) {
-    def abilityChnList = fetchAbilityChnList(sourceId)
-    def scheduleVer = (abilityChnList?.getAt(channel)?.scheduleVersion?.ver ?: 0) as int
-    boolean isV20 = scheduleVer >= 1
-    // v1.5.0-beta2 diagnostic (log-only, no behavior change): makes the
-    // classic-vs-V20 decision visible without needing Full logging or the
-    // separate checkRecordingSchedule command -- if this keeps choosing
-    // classic GetRec/SetRec on hardware that needs V20, that's the likely
-    // cause of an rspCode -9 "not support" response.
-    logNormal "Reolink source ${sourceId} ch ${channel}: GetAbility scheduleVersion.ver=${scheduleVer} -- using ${isV20 ? 'GetRecV20/SetRecV20' : 'GetRec/SetRec (classic)'}"
-
     if (continuous) {
         def cache = state.recScheduleCache ?: [:]
         if (!cache.containsKey(dni)) {
-            def current = fetchRecSchedule(sourceId, channel, isV20)
+            def current = fetchRecSchedule(sourceId, channel)
             if (current == null) {
-                log.warn "Reolink source ${sourceId} ch ${channel}: could not read current recording schedule, " +
-                    "skipping (won't guess and overwrite what's already configured)"
+                log.warn "Reolink source ${sourceId} ch ${channel}: could not read current recording schedule " +
+                    "via GetRecV20 or classic GetRec, skipping (won't guess and overwrite what's already configured)"
                 return false
             }
             cache[dni] = current
             state.recScheduleCache = cache
-            logNormal "Reolink source ${sourceId} ch ${channel}: cached current recording schedule before enabling continuous record"
+            logNormal "Reolink source ${sourceId} ch ${channel}: cached current recording schedule " +
+                "(${current.isV20 ? 'V20' : 'classic'} API) before enabling continuous record"
         }
-        return applyContinuousSchedule(sourceId, channel, isV20)
+        return applyContinuousSchedule(sourceId, channel, cache[dni].isV20 as boolean)
     } else {
         def saved = (state.recScheduleCache ?: [:])[dni]
         if (saved == null) {
@@ -2164,35 +2170,43 @@ private boolean setChannelRecording(sourceId, String dni, Integer channel, Boole
                 "record was never turned on via this switch) -- skipping, left as-is"
             return false
         }
-        return applyRecSchedule(sourceId, channel, isV20, saved)
+        return applyRecSchedule(sourceId, channel, saved.isV20 as boolean, saved.rec as Map)
     }
 }
 
-/** Reads the channel's CURRENT actual recording schedule (the "value" branch of GetRec/GetRecV20). reolinkApiCall() already unwraps to "value", so this just pulls out .Rec. */
-private Map fetchRecSchedule(sourceId, channel, boolean isV20) {
-    def cmd = isV20 ? "GetRecV20" : "GetRec"
-    def result = reolinkApiCall(sourceId, cmd, [:], channel as Integer)
-    return result?.Rec
+/**
+ * Reads the channel's CURRENT actual recording schedule. CHANGED
+ * (2026-08-22): tries GetRecV20 first regardless of any GetAbility
+ * capability flag, and only falls back to classic GetRec if V20 itself
+ * returns no usable value -- see componentSetSourceRecording()'s header
+ * comment for why. Returns [rec: Map, isV20: boolean] so the caller knows
+ * which API generation actually worked, or null if both failed.
+ */
+private Map fetchRecSchedule(sourceId, channel) {
+    def v20Result = reolinkApiCall(sourceId, "GetRecV20", [:], channel as Integer)
+    if (v20Result?.Rec != null) return [rec: v20Result.Rec, isV20: true]
+    logFull "Reolink source ${sourceId} ch ${channel}: GetRecV20 returned no usable value, trying classic GetRec"
+    def classicResult = reolinkApiCall(sourceId, "GetRec", [:], channel as Integer)
+    if (classicResult?.Rec != null) return [rec: classicResult.Rec, isV20: false]
+    return null
 }
 
 /**
  * v1.5.0-beta1 diagnostic: read-only sanity check, does NOT call SetRec/
- * SetRecV20 or touch the cache. Logs the raw GetRec/GetRecV20 response
- * (Normal tier, so it shows without switching to Full) so scheduleVersion
- * detection and the actual field shape can be confirmed against real
- * hardware BEFORE ever calling componentSetSourceRecording(). Callable
- * directly from a channel's device page as long as it's exposed there, or
- * just call it ad hoc from this app for now.
+ * SetRecV20 or touch the cache. Logs which API generation actually worked
+ * (or that neither did) for this channel, so real hardware can be confirmed
+ * BEFORE ever calling componentSetSourceRecording().
  */
 def componentCheckRecordingSchedule(child, String dni = null) {
     def c = resolveChild(child, dni)
     def sourceId = c.getDataValue("sourceId") as Integer
     def channel = c.getDataValue("channel") as Integer
-    def abilityChnList = fetchAbilityChnList(sourceId)
-    def scheduleVer = (abilityChnList?.getAt(channel)?.scheduleVersion?.ver ?: 0) as int
-    boolean isV20 = scheduleVer >= 1
-    def schedule = fetchRecSchedule(sourceId, channel, isV20)
-    logNormal "Reolink source ${sourceId} ch ${channel}: scheduleVersion.ver=${scheduleVer} (using ${isV20 ? 'GetRecV20' : 'GetRec'}) -- raw Rec: ${schedule}"
+    def result = fetchRecSchedule(sourceId, channel)
+    if (result == null) {
+        logNormal "Reolink source ${sourceId} ch ${channel}: neither GetRecV20 nor classic GetRec returned a usable schedule"
+    } else {
+        logNormal "Reolink source ${sourceId} ch ${channel}: ${result.isV20 ? 'GetRecV20' : 'GetRec (classic)'} succeeded -- raw Rec: ${result.rec}"
+    }
 }
 
 /**
