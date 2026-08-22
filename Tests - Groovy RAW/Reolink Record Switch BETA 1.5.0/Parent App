@@ -2136,6 +2136,12 @@ private boolean setChannelRecording(sourceId, String dni, Integer channel, Boole
     def abilityChnList = fetchAbilityChnList(sourceId)
     def scheduleVer = (abilityChnList?.getAt(channel)?.scheduleVersion?.ver ?: 0) as int
     boolean isV20 = scheduleVer >= 1
+    // v1.5.0-beta2 diagnostic (log-only, no behavior change): makes the
+    // classic-vs-V20 decision visible without needing Full logging or the
+    // separate checkRecordingSchedule command -- if this keeps choosing
+    // classic GetRec/SetRec on hardware that needs V20, that's the likely
+    // cause of an rspCode -9 "not support" response.
+    logNormal "Reolink source ${sourceId} ch ${channel}: GetAbility scheduleVersion.ver=${scheduleVer} -- using ${isV20 ? 'GetRecV20/SetRecV20' : 'GetRec/SetRec (classic)'}"
 
     if (continuous) {
         def cache = state.recScheduleCache ?: [:]
