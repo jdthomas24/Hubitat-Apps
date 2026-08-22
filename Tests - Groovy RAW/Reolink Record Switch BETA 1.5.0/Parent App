@@ -1,6 +1,6 @@
 /**
  * Reolink Integration (Parent App)
- * Version: 1.5.0-beta4
+ * Version: 1.5.0-beta5
  *
  * Architecture: a "source" is anything answering the Reolink HTTP/JSON API
  * (standalone camera, PoE NVR, or Home Hub), each with its own IP + creds. A
@@ -24,6 +24,17 @@
  * per-source "Reolink Device Bridge" instead of a child of this app directly
  * -- existing installs had to delete/recreate devices (and repoint
  * dashboards/rules) via re-discovery under each source.
+ *
+ * v1.5.0-beta5 -- UNCONFIRMED, private beta (not on HPM), app+bridge only.
+ * beta4's full read-modify-write did NOT fix the "succeeds but nothing
+ * changes" problem -- second real test round, same result. Remaining
+ * guess was the trigger-table key name itself (hardcoded "TIMING"). Now
+ * sets every key already present in the device's OWN fetched schedule
+ * table to all-1s, instead of assuming a specific key name -- see
+ * applyContinuousSchedule()'s comment for the full reasoning. Also added
+ * raw-schedule logging (Normal tier) at cache time, so if this round still
+ * doesn't work, the actual table structure/key names are visible without
+ * another guess-and-check cycle.
  *
  * v1.5.0-beta4 -- UNCONFIRMED, private beta (not on HPM), app+bridge only.
  * Real-world testing against an RLN16-410 confirmed beta3's GetRecV20
@@ -188,7 +199,7 @@ definition(
     oauth: true // required for createAccessToken()/local endpoint access used by the snapshot relay
 )
 
-@Field static final String APP_VERSION = "1.5.0-beta4"
+@Field static final String APP_VERSION = "1.5.0-beta5"
 
 @Field static final List LOG_LEVELS = ["Errors Only", "Normal", "Full"]
 
@@ -2177,7 +2188,7 @@ private boolean setChannelRecording(sourceId, String dni, Integer channel, Boole
             cache[dni] = current
             state.recScheduleCache = cache
             logNormal "Reolink source ${sourceId} ch ${channel}: cached current recording schedule " +
-                "(${current.isV20 ? 'V20' : 'classic'} API) before enabling continuous record"
+                "(${current.isV20 ? 'V20' : 'classic'} API) before enabling continuous record -- raw: ${current.rec}"
         }
         // v1.5.0-beta4: pass the cached ORIGINAL schedule as the base to
         // modify -- see applyContinuousSchedule()'s comment for why a
@@ -2245,23 +2256,27 @@ def componentCheckRecordingSchedule(child, String dni = null) {
  * CHANGED (2026-08-22): real-hardware testing showed this call returning
  * rspCode 200 "succeeded" on every channel, yet producing NO actual change
  * on the NVR -- the Reolink app's schedule grid never updated, and no new
- * recording ever started in NVR playback. A fresh, minimal Rec object
- * (just enable/channel/table.TIMING) was apparently accepted and silently
- * ignored rather than rejected -- a known pattern in embedded HTTP APIs
- * like this one, where a Set call expects something closer to a complete
- * object than a partial patch.
+ * recording ever started in NVR playback. First fix attempt (full read-
+ * modify-write instead of a minimal object) did NOT resolve it either --
+ * still 7/7 "succeeded" with zero real effect on a second test round.
  *
- * Fixed via proper read-modify-write: baseRec is the FULL schedule this
- * same channel's GetRecV20/GetRec already returned (captured and cached by
- * fetchRecSchedule() right before this runs) -- deep-cloned so the cached
- * original stays untouched for "off" to restore from later, then only
- * table.TIMING and enable are flipped inside that clone before sending the
- * whole thing back. Every other field (overwrite, postRec, preRec,
- * saveDay, and every OTHER trigger table -- MD/AI_PEOPLE/AI_VEHICLE) rides
- * along unchanged, exactly as the NVR itself reported it. This also
- * resolves the previously-flagged channel-field-nesting ambiguity for
- * free: whatever shape the device's own GetRecV20 response used is
- * preserved as-is, rather than guessed at.
+ * CHANGED AGAIN (v1.5.0-beta5): the remaining guess was the trigger-table
+ * key name itself -- hardcoding "TIMING" assumed that's what this
+ * firmware's time-based trigger is actually called. If it isn't, the
+ * previous code would have silently ADDED an unrecognized key while
+ * leaving the device's REAL trigger table(s) completely untouched --
+ * accepted, no error, no effect, which matches the symptom exactly on two
+ * separate real test rounds. Now sets EVERY key already present in the
+ * schedule's own table (from this same channel's GetRecV20 response) to
+ * all-1s, instead of guessing a specific key name -- since those keys are
+ * guaranteed to be real, current firmware-native trigger types for this
+ * exact hardware, not an assumption carried over from the API guide.
+ *
+ * Still a proper read-modify-write: baseRec is the FULL schedule this
+ * channel's GetRecV20/GetRec already returned (captured and cached right
+ * before this runs) -- deep-cloned so the cached original stays untouched
+ * for "off" to restore from later. Every other field (overwrite, postRec,
+ * preRec, saveDay) rides along unchanged, exactly as the NVR reported it.
  */
 private boolean applyContinuousSchedule(sourceId, channel, boolean isV20, Map baseRec) {
     def allOnes = "1" * 168
@@ -2273,7 +2288,18 @@ private boolean applyContinuousSchedule(sourceId, channel, boolean isV20, Map ba
         recParam.schedule.enable = 1
         recParam.schedule.channel = channel
         recParam.schedule.table = (recParam.schedule.table ?: [:]) as Map
-        recParam.schedule.table.TIMING = allOnes
+        if (recParam.schedule.table) {
+            // Set every key the device's own response already had --
+            // whatever this firmware actually calls its trigger tables,
+            // rather than guessing "TIMING" is one of them.
+            recParam.schedule.table.keySet().toList().each { key ->
+                recParam.schedule.table[key] = allOnes
+            }
+        } else {
+            // No table keys came back at all (shouldn't normally happen) --
+            // fall back to the documented key name as a last resort.
+            recParam.schedule.table.TIMING = allOnes
+        }
     } else {
         recParam.channel = channel
         recParam.enable = 1
