@@ -1,6 +1,6 @@
 /**
  * Reolink Integration (Parent App)
- * Version: 1.5.0-beta3
+ * Version: 1.5.0-beta4
  *
  * Architecture: a "source" is anything answering the Reolink HTTP/JSON API
  * (standalone camera, PoE NVR, or Home Hub), each with its own IP + creds. A
@@ -24,6 +24,23 @@
  * per-source "Reolink Device Bridge" instead of a child of this app directly
  * -- existing installs had to delete/recreate devices (and repoint
  * dashboards/rules) via re-discovery under each source.
+ *
+ * v1.5.0-beta4 -- UNCONFIRMED, private beta (not on HPM), app+bridge only.
+ * Real-world testing against an RLN16-410 confirmed beta3's GetRecV20
+ * detection working (7/7 OK both directions, correct API chosen every
+ * time) -- but SetRecV20 returning rspCode 200 "succeeded" was NOT actually
+ * changing anything: the Reolink app's schedule grid never updated and no
+ * new recording started in NVR playback. Cause: applyContinuousSchedule()
+ * was building a fresh, minimal Rec object from scratch, which the NVR
+ * apparently accepts and silently ignores rather than rejects -- a known
+ * pattern for embedded HTTP APIs like this one, where Set calls expect
+ * something closer to a complete object than a partial patch. Fixed via
+ * proper read-modify-write: the FULL schedule already fetched and cached
+ * (before the very first "on") is now deep-cloned, only table.TIMING and
+ * enable are flipped inside that clone, and the whole thing is sent back --
+ * every other field rides along unchanged, exactly as the NVR reported it.
+ * Also resolves the previously-flagged channel-field-nesting ambiguity for
+ * free, since whatever shape the device's own response used is preserved.
  *
  * v1.5.0-beta3 -- UNCONFIRMED, private beta (not on HPM), app+bridge only.
  * Real-world testing against an RLN16-410 (7 channels) showed the beta2
@@ -171,7 +188,7 @@ definition(
     oauth: true // required for createAccessToken()/local endpoint access used by the snapshot relay
 )
 
-@Field static final String APP_VERSION = "1.5.0-beta3"
+@Field static final String APP_VERSION = "1.5.0-beta4"
 
 @Field static final List LOG_LEVELS = ["Errors Only", "Normal", "Full"]
 
@@ -2101,11 +2118,11 @@ def componentSetSnapshotInterval(child, Integer seconds, String dni = null) {
  * returns no usable value, instead of trusting a GetAbility field that
  * doesn't reflect this hardware's actual behavior.
  *
- * KNOWN OPEN QUESTION: the API guide's SetRec/SetRecV20 field table lists
- * "channel" as a top-level Rec field, but its own JSON example nests
- * "channel" inside "schedule" instead -- applyContinuousSchedule() below
- * sends it in multiple places to hedge until real hardware settles which
- * one actually matters.
+ * RESOLVED (v1.5.0-beta4): the API guide's SetRec/SetRecV20 field table
+ * lists "channel" as a top-level Rec field, but its own JSON example nests
+ * "channel" inside "schedule" instead -- moot now that applyContinuousSchedule()
+ * sends back the device's own previously-fetched schedule (read-modify-write),
+ * which already carries whatever nesting shape this hardware itself uses.
  */
 def componentSetSourceRecording(child, sourceId, Boolean continuous) {
     def bridge = getSourceBridge(sourceId)
@@ -2162,7 +2179,10 @@ private boolean setChannelRecording(sourceId, String dni, Integer channel, Boole
             logNormal "Reolink source ${sourceId} ch ${channel}: cached current recording schedule " +
                 "(${current.isV20 ? 'V20' : 'classic'} API) before enabling continuous record"
         }
-        return applyContinuousSchedule(sourceId, channel, cache[dni].isV20 as boolean)
+        // v1.5.0-beta4: pass the cached ORIGINAL schedule as the base to
+        // modify -- see applyContinuousSchedule()'s comment for why a
+        // fresh minimal object wasn't enough.
+        return applyContinuousSchedule(sourceId, channel, cache[dni].isV20 as boolean, cache[dni].rec as Map)
     } else {
         def saved = (state.recScheduleCache ?: [:])[dni]
         if (saved == null) {
@@ -2192,6 +2212,18 @@ private Map fetchRecSchedule(sourceId, channel) {
 }
 
 /**
+ * Deep-clones a Map/List structure via a JSON round-trip -- Groovy Maps
+ * assign by reference, and applyContinuousSchedule() below must NOT mutate
+ * the cached original schedule in place, since that same cached copy is
+ * what "off" restores from later. Cheap and reliable in this sandboxed
+ * environment (JsonSlurper/JsonOutput are already used elsewhere in this
+ * app for the same reason -- see reolinkRawPost()/parseReolinkResponse()).
+ */
+private Map deepCopyRec(Map source) {
+    return new groovy.json.JsonSlurper().parseText(groovy.json.JsonOutput.toJson(source)) as Map
+}
+
+/**
  * v1.5.0-beta1 diagnostic: read-only sanity check, does NOT call SetRec/
  * SetRecV20 or touch the cache. Logs which API generation actually worked
  * (or that neither did) for this channel, so real hardware can be confirmed
@@ -2210,17 +2242,43 @@ def componentCheckRecordingSchedule(child, String dni = null) {
 }
 
 /**
- * Writes TIMING (time-based, ignores motion) to all-recording for the full
- * week, leaving other trigger tables (MD/AI_PEOPLE/AI_VEHICLE) untouched --
- * they only add MORE potential recording triggers on top of TIMING, which is
- * harmless. 168 = 7 days x 24 hours, one char per hour, "1" = recording.
+ * CHANGED (2026-08-22): real-hardware testing showed this call returning
+ * rspCode 200 "succeeded" on every channel, yet producing NO actual change
+ * on the NVR -- the Reolink app's schedule grid never updated, and no new
+ * recording ever started in NVR playback. A fresh, minimal Rec object
+ * (just enable/channel/table.TIMING) was apparently accepted and silently
+ * ignored rather than rejected -- a known pattern in embedded HTTP APIs
+ * like this one, where a Set call expects something closer to a complete
+ * object than a partial patch.
+ *
+ * Fixed via proper read-modify-write: baseRec is the FULL schedule this
+ * same channel's GetRecV20/GetRec already returned (captured and cached by
+ * fetchRecSchedule() right before this runs) -- deep-cloned so the cached
+ * original stays untouched for "off" to restore from later, then only
+ * table.TIMING and enable are flipped inside that clone before sending the
+ * whole thing back. Every other field (overwrite, postRec, preRec,
+ * saveDay, and every OTHER trigger table -- MD/AI_PEOPLE/AI_VEHICLE) rides
+ * along unchanged, exactly as the NVR itself reported it. This also
+ * resolves the previously-flagged channel-field-nesting ambiguity for
+ * free: whatever shape the device's own GetRecV20 response used is
+ * preserved as-is, rather than guessed at.
  */
-private boolean applyContinuousSchedule(sourceId, channel, boolean isV20) {
+private boolean applyContinuousSchedule(sourceId, channel, boolean isV20, Map baseRec) {
     def allOnes = "1" * 168
     def cmd = isV20 ? "SetRecV20" : "SetRec"
-    def recParam = isV20 ?
-        [channel: channel, schedule: [enable: 1, channel: channel, table: [TIMING: allOnes]]] :
-        [channel: channel, enable: 1, table: allOnes]
+    def recParam = deepCopyRec(baseRec)
+    if (isV20) {
+        recParam.channel = channel
+        recParam.schedule = (recParam.schedule ?: [:]) as Map
+        recParam.schedule.enable = 1
+        recParam.schedule.channel = channel
+        recParam.schedule.table = (recParam.schedule.table ?: [:]) as Map
+        recParam.schedule.table.TIMING = allOnes
+    } else {
+        recParam.channel = channel
+        recParam.enable = 1
+        recParam.table = allOnes
+    }
     def result = reolinkApiCall(sourceId, cmd, [Rec: recParam], channel as Integer)
     return result?.rspCode == 200 || result?.rspCode == 0
 }
