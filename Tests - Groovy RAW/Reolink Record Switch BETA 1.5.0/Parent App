@@ -1,6 +1,6 @@
 /**
  * Reolink Integration (Parent App)
- * Version: 1.5.0-beta6
+ * Version: 1.5.0-beta7
  *
  * Architecture: a "source" is anything answering the Reolink HTTP/JSON API
  * (standalone camera, PoE NVR, or Home Hub), each with its own IP + creds. A
@@ -24,6 +24,20 @@
  * per-source "Reolink Device Bridge" instead of a child of this app directly
  * -- existing installs had to delete/recreate devices (and repoint
  * dashboards/rules) via re-discovery under each source.
+ *
+ * v1.5.0-beta7 -- UNCONFIRMED, private beta (not on HPM), app+bridge only.
+ * Read the actual reolink_aio library source (the Python library behind
+ * Home Assistant's Reolink integration) for its confirmed set_recording()
+ * implementation, and found two real issues: (1) this code had been setting
+ * scheduleEnable nested inside schedule.enable, a field that doesn't exist
+ * in the real object -- reolink_aio confirms it's a TOP-LEVEL field on Rec,
+ * matching the raw schedule dumps captured in beta6 testing. Fixed. (2)
+ * reolink_aio treats SetRecV20 with no channel at all ({"Rec": {"enable":
+ * on_off}}) as a separate NVR-host-level record master switch, distinct
+ * from any per-channel schedule -- added as an additional call alongside
+ * the per-channel writes, since two real test rounds showed per-channel
+ * fields already reporting "continuous" with zero actual effect, hinting
+ * the real control might be this separate host-level switch instead.
  *
  * v1.5.0-beta6 -- UNCONFIRMED, private beta (not on HPM), app+bridge only.
  * FOUND (2026-08-22): a beta5 real-hardware test never logged "cached
@@ -210,7 +224,7 @@ definition(
     oauth: true // required for createAccessToken()/local endpoint access used by the snapshot relay
 )
 
-@Field static final String APP_VERSION = "1.5.0-beta6"
+@Field static final String APP_VERSION = "1.5.0-beta7"
 
 @Field static final List LOG_LEVELS = ["Errors Only", "Normal", "Full"]
 
@@ -2177,6 +2191,21 @@ def componentSetSourceRecording(child, sourceId, Boolean continuous) {
         log.warn "Reolink source ${sourceId}: no channel devices found, nothing to change"
         return
     }
+    // v1.5.0-beta7: reolink_aio's set_recording(channel=None, enable) sends
+    // SetRecV20 with NO channel scoping at all, just {"Rec": {"enable":
+    // on_off}} -- a separate, NVR-host-level record master switch, distinct
+    // from any per-channel schedule.scheduleEnable. Tried here alongside
+    // the per-channel writes: two real test rounds showed per-channel
+    // scheduleEnable and TIMING already reporting "continuous" with zero
+    // actual effect, so the "Enable Record" toggle the reporting user found
+    // in the Reolink app may be this separate host-level switch instead.
+    try {
+        def hostResult = reolinkApiCall(sourceId, "SetRecV20", [Rec: [enable: continuous ? 1 : 0]])
+        logNormal "Reolink source ${sourceId}: host-level SetRecV20 enable=${continuous ? 1 : 0} -- rspCode=${hostResult?.rspCode}"
+    } catch (e) {
+        logNormal "Reolink source ${sourceId}: host-level SetRecV20 failed -- ${e.message}"
+    }
+
     int okCount = 0
     def failedChannels = []
     channels.each { ch ->
@@ -2291,17 +2320,15 @@ def componentCheckRecordingSchedule(child, String dni = null) {
  * modify-write instead of a minimal object) did NOT resolve it either --
  * still 7/7 "succeeded" with zero real effect on a second test round.
  *
- * CHANGED AGAIN (v1.5.0-beta5): the remaining guess was the trigger-table
- * key name itself -- hardcoding "TIMING" assumed that's what this
- * firmware's time-based trigger is actually called. If it isn't, the
- * previous code would have silently ADDED an unrecognized key while
- * leaving the device's REAL trigger table(s) completely untouched --
- * accepted, no error, no effect, which matches the symptom exactly on two
- * separate real test rounds. Now sets EVERY key already present in the
- * schedule's own table (from this same channel's GetRecV20 response) to
- * all-1s, instead of guessing a specific key name -- since those keys are
- * guaranteed to be real, current firmware-native trigger types for this
- * exact hardware, not an assumption carried over from the API guide.
+ * CHANGED AGAIN (v1.5.0-beta7): found and fixed a real bug by reading the
+ * actual reolink_aio library source (the Python library behind Home
+ * Assistant's Reolink integration) -- its confirmed set_recording()
+ * writes params["scheduleEnable"] = on_off as a TOP-LEVEL field on Rec,
+ * sibling to "schedule", NOT nested inside schedule.enable. This code had
+ * been setting recParam.schedule.enable, a field that doesn't exist
+ * anywhere in the real object -- confirmed by the raw schedule dumps
+ * captured in beta6 testing, which show scheduleEnable as a top-level key
+ * alongside "schedule", never nested inside it. Fixed to match.
  *
  * Still a proper read-modify-write: baseRec is the FULL schedule this
  * channel's GetRecV20/GetRec already returned (captured and cached right
@@ -2315,8 +2342,8 @@ private boolean applyContinuousSchedule(sourceId, channel, boolean isV20, Map ba
     def recParam = deepCopyRec(baseRec)
     if (isV20) {
         recParam.channel = channel
+        recParam.scheduleEnable = 1
         recParam.schedule = (recParam.schedule ?: [:]) as Map
-        recParam.schedule.enable = 1
         recParam.schedule.channel = channel
         recParam.schedule.table = (recParam.schedule.table ?: [:]) as Map
         if (recParam.schedule.table) {
