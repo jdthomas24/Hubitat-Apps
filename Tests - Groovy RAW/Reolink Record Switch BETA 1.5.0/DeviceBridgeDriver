@@ -1,6 +1,6 @@
 /**
  * Reolink Device Bridge (Internal Parent Driver)
- * Version: 1.5.0-beta2
+ * Version: 1.5.0-beta8
  *
  * NOT user-facing. Created and managed automatically by the Reolink
  * Integration parent app -- ONE instance per SOURCE (Hub/NVR or standalone).
@@ -14,6 +14,15 @@
  * every componentX() method below is a one-line passthrough up to this
  * bridge's own parent (the app).
  *
+ * v1.5.0-beta8 -- UNCONFIRMED, private beta (not on HPM), app+bridge only.
+ * Jumped straight from beta2 -- beta3 through beta7 were app-only fixes
+ * that didn't need this driver touched. Dropped the generic Switch
+ * capability's on()/off() in favor of explicit recordOn()/recordOff()
+ * commands, at the reporting user's request, anticipating similar toggles
+ * for other Reolink settings (email, push notifications) on this same
+ * bridge device later -- shared on()/off() naming couldn't have
+ * accommodated that without ambiguity. Dropped the "switch" attribute
+ * along with it; recordingMode is the status indicator now.
  * v1.5.0-beta2 -- UNCONFIRMED, private beta (not on HPM), app+bridge only --
  * same two files as beta1, no Camera/Doorbell changes needed. Added
  * lastRecordingResult attribute so a per-channel success/failure summary
@@ -44,8 +53,8 @@
  *
  * UNCONFIRMED: translateToLegacyShape()'s status/AItype -> aiState/mdState
  * mapping (in ParentApp.groovy). Sleep-status pushes (cmd_id=145) are
- * received/logged but not yet acted on. v1.5.0-beta1/beta2's recording-mode
- * feature, entirely.
+ * received/logged but not yet acted on. v1.5.0's recording-mode feature,
+ * entirely.
  */
 import groovy.transform.Field
 import java.security.MessageDigest
@@ -56,12 +65,18 @@ import javax.crypto.spec.IvParameterSpec
 metadata {
     definition(name: "Reolink Device Bridge", namespace: "jdthomas24", author: "Jason", component: true) {
         capability "Actuator"
-        // v1.5.0-beta1: on() = continuous record across every channel of
-        // this source, off() = restore each channel's saved schedule. See
-        // ParentApp.groovy's componentSetSourceRecording() for the real logic.
-        capability "Switch"
         command "startEventSubscription"
         command "stopEventSubscription"
+        // v1.5.0-beta8: was the Switch capability's on()/off() through
+        // beta7 -- switched to explicit named commands at the reporting
+        // user's request, anticipating similar toggles for other Reolink
+        // settings (email, push notifications) on this same bridge device
+        // later, which the shared on()/off() naming couldn't accommodate
+        // without ambiguity. recordOn/recordOff auto-display as "Record On"
+        // / "Record Off" on the Commands tab. See ParentApp.groovy's
+        // componentSetSourceRecording() for the real logic.
+        command "recordOn", [[name: "Forces continuous (24/7) recording on every channel of this source"]]
+        command "recordOff", [[name: "Restores each channel's recording schedule to what it was before Record On was last used"]]
         // configureConnection() is NOT declared as a UI command -- it's
         // always called programmatically by the app (ensureSourceBridge(),
         // unconditionally, every time it runs), so a manual "Configure
@@ -71,8 +86,8 @@ metadata {
         attribute "connectionStatus", "enum", ["disconnected", "connecting", "connected", "reconnecting"]
         attribute "recordingMode", "enum", ["unknown", "normal", "continuous"]
         // v1.5.0-beta2: per-channel success/failure summary from the last
-        // on()/off() call, e.g. "6/6 OK" or "5/6 OK, failed: ch3" -- visible
-        // on this device page without a log dive.
+        // recordOn()/recordOff() call, e.g. "6/6 OK" or "5/6 OK, failed:
+        // ch3" -- visible on this device page without a log dive.
         attribute "lastRecordingResult", "string"
     }
     preferences {
@@ -151,23 +166,22 @@ def componentSetPollInterval(child, Integer seconds, String dni = null) { parent
 def componentSetSnapshotInterval(child, Integer seconds, String dni = null) { parent?.componentSetSnapshotInterval(child, seconds, dni) }
 
 // ============================================================================
-// v1.5.0-beta1: Switch capability -- continuous recording toggle for every
-// channel of this source. UNCONFIRMED, see the header note and
-// ParentApp.groovy's componentSetSourceRecording() for the real logic; this
-// driver only forwards the command and reflects the result.
+// v1.5.0-beta8: continuous-recording toggle for every channel of this
+// source. UNCONFIRMED, see the header note and ParentApp.groovy's
+// componentSetSourceRecording() for the real logic; this driver only
+// forwards the command and reflects the result.
 // ============================================================================
-def on() {
+def recordOn() {
     parent?.componentSetSourceRecording(this, state.sourceId, true)
 }
 
-def off() {
+def recordOff() {
     parent?.componentSetSourceRecording(this, state.sourceId, false)
 }
 
 /** Called by the app once the continuous-record request has been applied (or restored) across every channel of this source. */
 def receiveRecordingMode(String mode) {
     sendEvent(name: "recordingMode", value: mode)
-    sendEvent(name: "switch", value: mode == "continuous" ? "on" : "off")
 }
 
 /** v1.5.0-beta2: per-channel success/failure summary from the app, e.g. "6/6 OK" or "5/6 OK, failed: ch3". */
