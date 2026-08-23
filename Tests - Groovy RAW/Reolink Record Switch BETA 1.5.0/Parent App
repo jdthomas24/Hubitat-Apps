@@ -1,6 +1,6 @@
 /**
  * Reolink Integration (Parent App)
- * Version: 1.5.0-beta5
+ * Version: 1.5.0-beta6
  *
  * Architecture: a "source" is anything answering the Reolink HTTP/JSON API
  * (standalone camera, PoE NVR, or Home Hub), each with its own IP + creds. A
@@ -24,6 +24,17 @@
  * per-source "Reolink Device Bridge" instead of a child of this app directly
  * -- existing installs had to delete/recreate devices (and repoint
  * dashboards/rules) via re-discovery under each source.
+ *
+ * v1.5.0-beta6 -- UNCONFIRMED, private beta (not on HPM), app+bridge only.
+ * FOUND (2026-08-22): a beta5 real-hardware test never logged "cached
+ * current recording schedule" at all -- the channel's schedule was already
+ * cached from beta3/beta4 testing days earlier, so that whole test round
+ * silently ran against OLD cached data instead of exercising beta5's fix.
+ * runMigrations() now clears state.recScheduleCache on every version
+ * transition, so each beta test starts from a real, freshly-fetched
+ * schedule rather than whatever an earlier beta happened to cache. No
+ * other logic changed -- this is purely about making the NEXT test round
+ * a valid one.
  *
  * v1.5.0-beta5 -- UNCONFIRMED, private beta (not on HPM), app+bridge only.
  * beta4's full read-modify-write did NOT fix the "succeeds but nothing
@@ -199,7 +210,7 @@ definition(
     oauth: true // required for createAccessToken()/local endpoint access used by the snapshot relay
 )
 
-@Field static final String APP_VERSION = "1.5.0-beta5"
+@Field static final String APP_VERSION = "1.5.0-beta6"
 
 @Field static final List LOG_LEVELS = ["Errors Only", "Normal", "Full"]
 
@@ -1571,6 +1582,26 @@ private void runMigrations() {
         logNormal "Reolink Integration: v1.4.1 migration -- cleared stale battery-check schedule for " +
             "${cleared} device(s) with no batteryMode set, so the fix takes effect on the next tick " +
             "instead of waiting out an old schedule"
+    }
+
+    // v1.5.0-beta6: state.recScheduleCache (see componentSetSourceRecording())
+    // must NOT survive a version change during active beta testing -- each
+    // beta iteration has changed HOW the "on" write is built, but
+    // setChannelRecording() only re-fetches a channel's schedule when it has
+    // no cache entry yet, so a schedule cached under an OLDER beta's logic
+    // could silently mask whether a NEWER beta's fix actually works.
+    // Confirmed as a real gap on 2026-08-22: a beta5 test never logged
+    // "cached current recording schedule" at all, because the channel was
+    // already cached from beta3/beta4 testing days earlier -- meaning that
+    // whole test round ran against old cached data, not fresh. Clearing this
+    // on every version bump forces a real GetRecV20 (and the raw-schedule
+    // log line) on the very next "on," so every beta test starts from
+    // current, real data.
+    if (state.recScheduleCache) {
+        int clearedRec = state.recScheduleCache.size()
+        state.recScheduleCache = [:]
+        logNormal "Reolink Integration: cleared ${clearedRec} cached recording schedule(s) on upgrade " +
+            "(${fromVersion} -> ${APP_VERSION}) -- will re-fetch fresh on next use"
     }
 
     logNormal "Reolink Integration: upgraded ${fromVersion} -> ${APP_VERSION}"
