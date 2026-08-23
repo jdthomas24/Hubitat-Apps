@@ -1,6 +1,6 @@
 /**
  * Reolink Integration (Parent App)
- * Version: 1.5.0-beta7
+ * Version: 1.5.0-beta8
  *
  * Architecture: a "source" is anything answering the Reolink HTTP/JSON API
  * (standalone camera, PoE NVR, or Home Hub), each with its own IP + creds. A
@@ -24,6 +24,28 @@
  * per-source "Reolink Device Bridge" instead of a child of this app directly
  * -- existing installs had to delete/recreate devices (and repoint
  * dashboards/rules) via re-discovery under each source.
+ *
+ * v1.5.0-beta8 -- UNCONFIRMED, private beta (not on HPM), app+bridge only.
+ * CONFIRMED (2026-08-23): beta7's host-level SetRecV20 enable field is the
+ * real master switch -- turning it on genuinely started recording on every
+ * channel of a real RLN16-410, including one channel whose own
+ * scheduleEnable was OFF, proving per-channel schedule fields don't gate
+ * actual recording at all; only this host-level field does. Also confirmed:
+ * the individual-camera "Enable Record" screen in the Reolink app does
+ * nothing for NVR-side recording -- it's for onboard SD-card recording
+ * only, which these cameras don't have.
+ * However, turning host-level enable OFF did NOT stop recording. Root
+ * cause: host-level enable was sent BEFORE the per-channel schedule
+ * restores, so a per-channel schedule write likely re-flips the host-level
+ * flag back on as a side effect, undoing the OFF that preceded it. Fixed by
+ * sending the host-level call LAST, after every per-channel write, so it's
+ * always the final word.
+ * Also, per a reporting-user request anticipating future toggles (email,
+ * push notifications) on the same bridge device: dropped the generic
+ * Switch capability's on()/off() in favor of explicit recordOn()/
+ * recordOff() commands, so automations built against this feature won't
+ * need renaming if similar toggles for other Reolink settings are added
+ * later.
  *
  * v1.5.0-beta7 -- UNCONFIRMED, private beta (not on HPM), app+bridge only.
  * Read the actual reolink_aio library source (the Python library behind
@@ -224,7 +246,7 @@ definition(
     oauth: true // required for createAccessToken()/local endpoint access used by the snapshot relay
 )
 
-@Field static final String APP_VERSION = "1.5.0-beta7"
+@Field static final String APP_VERSION = "1.5.0-beta8"
 
 @Field static final List LOG_LEVELS = ["Errors Only", "Normal", "Full"]
 
@@ -2191,20 +2213,6 @@ def componentSetSourceRecording(child, sourceId, Boolean continuous) {
         log.warn "Reolink source ${sourceId}: no channel devices found, nothing to change"
         return
     }
-    // v1.5.0-beta7: reolink_aio's set_recording(channel=None, enable) sends
-    // SetRecV20 with NO channel scoping at all, just {"Rec": {"enable":
-    // on_off}} -- a separate, NVR-host-level record master switch, distinct
-    // from any per-channel schedule.scheduleEnable. Tried here alongside
-    // the per-channel writes: two real test rounds showed per-channel
-    // scheduleEnable and TIMING already reporting "continuous" with zero
-    // actual effect, so the "Enable Record" toggle the reporting user found
-    // in the Reolink app may be this separate host-level switch instead.
-    try {
-        def hostResult = reolinkApiCall(sourceId, "SetRecV20", [Rec: [enable: continuous ? 1 : 0]])
-        logNormal "Reolink source ${sourceId}: host-level SetRecV20 enable=${continuous ? 1 : 0} -- rspCode=${hostResult?.rspCode}"
-    } catch (e) {
-        logNormal "Reolink source ${sourceId}: host-level SetRecV20 failed -- ${e.message}"
-    }
 
     int okCount = 0
     def failedChannels = []
@@ -2221,6 +2229,27 @@ def componentSetSourceRecording(child, sourceId, Boolean continuous) {
             failedChannels << channelNum
         }
     }
+
+    // v1.5.0-beta8 FIX: CHANGED ORDER -- this now fires AFTER the per-channel
+    // loop, not before. Real-hardware testing (2026-08-23) showed "on"
+    // (host-level fired first) actually starting recording on every
+    // channel, but "off" (host-level fired first, then per-channel restores)
+    // did NOT stop it -- recording kept running. Working theory: writing a
+    // per-channel schedule is itself treated by the NVR as "this channel
+    // wants to record," silently re-flipping the host-level enable flag
+    // back on as a side effect, undoing an enable=0 sent before it. Sending
+    // this LAST makes it the final word regardless of any such side effect.
+    // See componentSetSourceRecording()'s original v1.5.0-beta7 note below
+    // for why this call exists at all (reolink_aio's set_recording(channel=
+    // None, enable) treats it as a separate, NVR-host-level record master
+    // switch, distinct from any per-channel schedule.scheduleEnable).
+    try {
+        def hostResult = reolinkApiCall(sourceId, "SetRecV20", [Rec: [enable: continuous ? 1 : 0]])
+        logNormal "Reolink source ${sourceId}: host-level SetRecV20 enable=${continuous ? 1 : 0} -- rspCode=${hostResult?.rspCode}"
+    } catch (e) {
+        logNormal "Reolink source ${sourceId}: host-level SetRecV20 failed -- ${e.message}"
+    }
+
     // v1.5.0-beta2: e.g. "6/6 OK" or "5/6 OK, failed: ch3" -- pushed to the
     // bridge's lastRecordingResult attribute so it's visible on the device
     // page without a log dive. Individual failure reasons still only show
