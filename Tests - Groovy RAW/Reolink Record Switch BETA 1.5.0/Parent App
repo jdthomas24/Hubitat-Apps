@@ -1,6 +1,6 @@
 /**
  * Reolink Integration (Parent App)
- * Version: 1.5.0-beta8
+ * Version: 1.5.0-beta9
  *
  * Architecture: a "source" is anything answering the Reolink HTTP/JSON API
  * (standalone camera, PoE NVR, or Home Hub), each with its own IP + creds. A
@@ -24,6 +24,15 @@
  * per-source "Reolink Device Bridge" instead of a child of this app directly
  * -- existing installs had to delete/recreate devices (and repoint
  * dashboards/rules) via re-discovery under each source.
+ *
+ * v1.5.0-beta9 -- UNCONFIRMED, private beta (not on HPM), app+bridge only.
+ * Real-hardware testing (2026-08-23) against 6 WiFi floodlight channels
+ * showed intermittent, seemingly random per-channel misses -- suspected
+ * race condition: writes were firing back-to-back only ~100-150ms apart,
+ * likely faster than the NVR actually finishes applying each channel's
+ * change internally before the HTTP response returns. Added a 300ms pause
+ * (REC_CHANNEL_SETTLE_MS) after each per-channel write in
+ * componentSetSourceRecording()'s loop.
  *
  * v1.5.0-beta8 -- UNCONFIRMED, private beta (not on HPM), app+bridge only.
  * CONFIRMED (2026-08-23): beta7's host-level SetRecV20 enable field is the
@@ -246,7 +255,7 @@ definition(
     oauth: true // required for createAccessToken()/local endpoint access used by the snapshot relay
 )
 
-@Field static final String APP_VERSION = "1.5.0-beta8"
+@Field static final String APP_VERSION = "1.5.0-beta9"
 
 @Field static final List LOG_LEVELS = ["Errors Only", "Normal", "Full"]
 
@@ -262,6 +271,11 @@ definition(
 // port (src.port, default 443, used for GetAiState/GetChannelstatus/etc.).
 // Always use this constant for the event socket, never src.port.
 @Field static final Integer BAICHUAN_PORT = 9000
+
+// v1.5.0-beta9: pause between per-channel recording-schedule writes in
+// componentSetSourceRecording() -- see that method's comment for why. Not
+// user-configurable; adjust here if 300ms proves too short/long in practice.
+@Field static final int REC_CHANNEL_SETTLE_MS = 300
 
 preferences {
     page(name: "mainPage")
@@ -2214,6 +2228,19 @@ def componentSetSourceRecording(child, sourceId, Boolean continuous) {
         return
     }
 
+    // v1.5.0-beta9: real-hardware testing (2026-08-23) showed intermittent,
+    // seemingly random per-channel misses when actually writing to the NVR
+    // -- calls were firing back-to-back with only ~100-150ms between them
+    // (visible in Full-tier logs), fast even for one wired device, let
+    // alone 6 WiFi floodlights that each have to individually renegotiate
+    // their own recording session with the NVR. Working theory: the NVR's
+    // HTTP response returns before it's actually finished applying the
+    // change internally, so the next write in line can land before the
+    // previous one settles -- a standard race condition with embedded
+    // devices under rapid sequential writes. A short pause after each
+    // channel's write (REC_CHANNEL_SETTLE_MS, defined near the top of this
+    // file with the other @Field constants) gives the NVR time to digest
+    // before the next one.
     int okCount = 0
     def failedChannels = []
     channels.each { ch ->
@@ -2228,6 +2255,7 @@ def componentSetSourceRecording(child, sourceId, Boolean continuous) {
             log.warn "Reolink source ${sourceId} ch ${channelNum}: recording mode change failed -- ${e.message}"
             failedChannels << channelNum
         }
+        pauseExecution(REC_CHANNEL_SETTLE_MS)
     }
 
     // v1.5.0-beta8 FIX: CHANGED ORDER -- this now fires AFTER the per-channel
