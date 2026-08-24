@@ -1,6 +1,6 @@
 /**
  * Reolink Integration (Parent App)
- * Version: 1.4.4
+ * Version: 1.4.5
  *
  * Architecture: a "source" is anything answering the Reolink HTTP/JSON API
  * (standalone camera, PoE NVR, or Home Hub), each with its own IP + creds. A
@@ -25,10 +25,29 @@
  * -- existing installs had to delete/recreate devices (and repoint
  * dashboards/rules) via re-discovery under each source.
  *
- * v1.4.4 -- HOTFIX (app-side: version bump only): the actual fix for a
- * connection that reports "connected" indefinitely while silently dead
- * (half-open TCP) lives entirely in ReolinkDeviceBridge.groovy -- see that
- * file's header. No app-side logic changed.
+ * v1.4.5 -- HOTFIX: a hub reboot could leave a source's event subscription
+ * silently dead indefinitely, with connectionStatus still showing
+ * "connected" and no polling fallback kicking in either. Root cause:
+ * state.sourceConnMode (tracks whether a source's event connection is
+ * running) is APP-level state, which Hubitat persists across a reboot --
+ * but the actual rawSocket TCP connection does NOT survive a reboot.
+ * ensureSourceBridge()'s guard ("only reconnect if not already running")
+ * trusted the stale leftover "connected" value and silently skipped
+ * reconnecting. Confirmed via real logs: the reboot handler fired
+ * correctly, then 20+ minutes of complete silence (no keepalives, no
+ * events) until manually stopping the subscription forced the stale state
+ * to clear and everything to resume. systemStartHandler() now clears
+ * sourceConnMode unconditionally before calling initialize(), since a
+ * genuine reboot is a hard boundary where "was connected" can never be
+ * trusted regardless of what got persisted.
+ *
+ * v1.4.4 -- HOTFIX (ReolinkDeviceBridge.groovy only): a separate connection
+ * problem -- an event connection could report "connected" indefinitely
+ * while actually dead (half-open TCP, no close/error ever received) if
+ * something silently dropped the connection without a proper socket-level
+ * signal. Fixed by tracking the last genuinely received message and forcing
+ * a reconnect if nothing arrives for 90s despite regular keepalives. See
+ * that file for the full design.
  *
  * v1.4.3 -- HOTFIX (StandaloneDevices.groovy only): a standalone source's
  * bridge has the "Reolink Standalone Devices" group device as its real
@@ -124,7 +143,7 @@ definition(
     oauth: true // required for createAccessToken()/local endpoint access used by the snapshot relay
 )
 
-@Field static final String APP_VERSION = "1.4.4"
+@Field static final String APP_VERSION = "1.4.5"
 
 @Field static final List LOG_LEVELS = ["Errors Only", "Normal", "Full"]
 
@@ -1439,9 +1458,26 @@ def uninstalled() {
  * in this app gets called on boot -- without this, a hub reboot could leave
  * every camera silently un-polled until someone happened to open the app and
  * hit Done/Update, with no error or indication anything was wrong.
+ *
+ * v1.4.5 FIX: real-world testing found this alone wasn't enough --
+ * state.sourceConnMode (tracks whether each source's event connection is
+ * currently running) is APP-level state, which Hubitat persists across a
+ * hub reboot. The actual rawSocket TCP connection the bridge holds does NOT
+ * survive a reboot (it's a real OS-level connection) -- but a leftover
+ * "connected" value here made ensureSourceBridge()'s guard ("only call
+ * startEventSubscription() if not already running") believe a live
+ * connection still existed, so it silently skipped reconnecting entirely.
+ * Confirmed via real logs: "hub restarted, resuming polling" fired
+ * correctly, then 20 minutes of complete silence (no keepalives, no
+ * events, nothing) until manually stopping the subscription forced the
+ * stale state to clear and polling to resume immediately. Cleared
+ * unconditionally on every restart now, since a genuine reboot is a hard
+ * boundary where any previously "connected" state can no longer be
+ * trusted regardless of what was persisted.
  */
 def systemStartHandler(evt) {
     logNormal "Reolink Integration: hub restarted, resuming polling"
+    state.sourceConnMode = [:]
     initialize()
 }
 
