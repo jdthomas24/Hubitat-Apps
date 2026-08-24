@@ -1,10 +1,10 @@
 {
     "packageName": "Reolink Integration",
-    "releaseNotes": "v1.4.4 (hotfix) -- Fixed the event connection sometimes reporting \"connected\" indefinitely while actually dead (a half-open TCP connection that never triggers a proper disconnect). Motion/AI events could silently stop being delivered for days with no error anywhere. Now detects when nothing has genuinely been received despite regular keepalives and forces a reconnect. v1.4.3 (hotfix) -- Fixed Take Snapshot, Refresh, PTZ, spotlight, night vision, siren, PIR, and other manual commands silently doing nothing on standalone (non-Hub/NVR) cameras and doorbells -- broken since the 1.3.8 bridge restructuring, not something 1.4.2 introduced. Motion/AI polling was never affected.",
+    "releaseNotes": "v1.4.5 (hotfix) -- Fixed a hub reboot leaving a source's event connection silently dead indefinitely, with Connection Status still showing \"connected\" and the polling fallback never kicking in either. The app's own tracking of which sources had a running connection survived the reboot (Hubitat persists app state), but the underlying network connection itself does not -- so the app wrongly believed a connection still existed and never reconnected. Confirmed via real-world testing: after a reboot, everything went completely silent until the event subscription was manually stopped and restarted. Now automatically clears that stale tracking on every hub restart, so a fresh connection is always established. v1.4.4 (hotfix) -- Fixed a separate connection issue where the event connection could report \"connected\" while actually dead (a half-open TCP connection with no proper disconnect signal), silently dropping motion/AI events for days.",
     "documentationLink": "https://github.com/jdthomas24/Hubitat-Apps-Drivers/tree/main/Reolink%20Integration",
     "communityLink": "https://github.com/jdthomas24/Hubitat-Apps-Drivers/tree/main/Reolink%20Integration",
     "author": "jdthomas24",
-    "version": "1.4.4",
+    "version": "1.4.5",
     "minimumHEVersion": "2.3.0",
     "dateReleased": "2026-08-14",
     "category": "Integrations",
