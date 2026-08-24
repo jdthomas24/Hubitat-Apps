@@ -1,6 +1,6 @@
 /**
  * Reolink Camera (Component Driver)
- * Version: 1.4.3
+ * Version: 1.4.4
  *
  * Thin device: no HTTP of its own. Delegates everything to the parent app via
  * parent.componentX(this, ...), using data values sourceId/channel to
@@ -16,10 +16,7 @@
  * only, no change needed here.
  * v1.3.9 -- batteryMode can be backfilled by the app's scheduler if ever
  * left unset; no change needed in this file for that.
- * v1.3.8 -- Added PIR enable/disable (pirOn/pirOff, pirEnabled,
- * pirStatusNote) -- manual only, no auto-revert. Added lastUpdateSource
- * attribute (event/poll) to show which path produced the current state.
- * v1.3.6 -- No functional change (app-side only).
+ * Full history prior to 1.3.9 is in GitHub commit history.
  */
 metadata {
     definition(name: "Reolink Camera", namespace: "jdthomas24", author: "Jason", component: true) {
