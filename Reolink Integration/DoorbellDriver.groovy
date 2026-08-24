@@ -1,6 +1,6 @@
 /**
  * Reolink Doorbell (Component Driver)
- * Version: 1.4.3
+ * Version: 1.4.4
  *
  * Same delegation pattern as Reolink Camera, plus a "visitor" (button press)
  * event so Rule Machine can trigger straight off "pushed 1" for a doorbell
@@ -21,10 +21,7 @@
  * part). Added receiveBatteryInfo() with the confirmed nested
  * Battery.batteryPercent field, and receiveBatteryMode() (called once at
  * device creation).
- * v1.3.8 -- No functional change (app-side: event-driven updates, PIR,
- * login/action fixes, all camera-only). Added lastUpdateSource attribute
- * (event/poll), same as the camera driver.
- * v1.3.6 -- No functional change (app-side only).
+ * Full history prior to 1.3.9 is in GitHub commit history.
  */
 metadata {
     definition(name: "Reolink Doorbell", namespace: "jdthomas24", author: "Jason", component: true) {
