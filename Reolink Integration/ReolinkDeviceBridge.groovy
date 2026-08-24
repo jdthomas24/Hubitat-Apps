@@ -1,6 +1,6 @@
 /**
  * Reolink Device Bridge (Internal Parent Driver)
- * Version: 1.4.3
+ * Version: 1.4.4
  *
  * NOT user-facing. Created and managed automatically by the Reolink
  * Integration parent app -- ONE instance per SOURCE (Hub/NVR or standalone).
@@ -14,6 +14,16 @@
  * every componentX() method below is a one-line passthrough up to this
  * bridge's own parent (the app).
  *
+ * v1.4.4 -- HOTFIX: a real production connection sat reporting
+ * connectionStatus "connected" for over a week with zero actual events
+ * delivered -- a half-open TCP connection (the remote side, or something in
+ * between, went away without ever sending a close/error, so socketStatus()
+ * never fired). sendKeepalive() previously fired blind, never checking
+ * whether anything had actually come back. Now tracks the timestamp of the
+ * last genuinely received message (parse(), on ANY inbound data) and forces
+ * a reconnect if nothing's arrived in 90s despite regular keepalives,
+ * instead of waiting indefinitely on a socket error that may never come.
+ * See sendKeepalive()'s comment for the full design.
  * v1.4.2 -- No functional change to this driver (version kept in sync with
  * the app); the paragraph() hotfix was in the Camera/Doorbell driver files.
  * v1.4.1 -- No functional change (app-side batteryMode self-heal only).
@@ -28,6 +38,7 @@
  * parent?.logNormal()/logFull(); genuine failures (socket errors, give-up-
  * after-20-resync, decrypt failure, unrecognized message type) stay
  * unconditional log.warn.
+ * Full history prior to 1.3.8 is in GitHub commit history.
  *
  * UNCONFIRMED: translateToLegacyShape()'s status/AItype -> aiState/mdState
  * mapping (in ParentApp.groovy). Sleep-status pushes (cmd_id=145) are
@@ -282,9 +293,40 @@ def sendSubscribe() {
  * cadence, throttled to once per CONNECTION rather than once per channel,
  * so it doesn't reproduce the old per-camera poll-spam problem event mode
  * was built to avoid.
+ *
+ * v1.4.4 FIX: a real production connection sat reporting connectionStatus
+ * "connected" for over a week with zero actual events delivered -- a
+ * classic half-open TCP connection (the remote side, or something in
+ * between like a router's NAT mapping, went away without ever sending a
+ * close/error, so socketStatus() never fired and nothing here ever noticed).
+ * sendKeepalive() previously fired blind: it sent a packet and rescheduled
+ * itself unconditionally, never checking whether anything had actually come
+ * back. Now checks state.lastRawReceiveTime (set unconditionally at the top
+ * of parse(), on ANY inbound data, genuine or garbled -- see that method) --
+ * if nothing has been received in longer than STALE_CONNECTION_THRESHOLD_SEC
+ * (3 missed 25s keepalive cycles, ~75-90s), this forces a reconnect through
+ * the existing scheduleReconnect() path ourselves, instead of waiting
+ * indefinitely on a socket-level error that may simply never come.
  */
+@Field static final int STALE_CONNECTION_THRESHOLD_SEC = 90
+
 def sendKeepalive() {
     if (state.stage != "SUBSCRIBED") return
+
+    def lastRecv = (state.lastRawReceiveTime ?: 0) as Long
+    def secSinceRecv = (now() - lastRecv) / 1000
+    if (lastRecv > 0 && secSinceRecv > STALE_CONNECTION_THRESHOLD_SEC) {
+        log.warn "Reolink Device Bridge (source ${state.sourceId}): connection stale -- nothing received in " +
+            "${secSinceRecv.toInteger()}s despite regular keepalives (connectionStatus said 'connected'), " +
+            "forcing reconnect"
+        sendEvent(name: "connectionStatus", value: "reconnecting")
+        parent?.componentEventConnectionStatus(this, state.sourceId, "reconnecting")
+        try { interfaces.rawSocket.close() } catch (e) { /* best effort, we're reconnecting regardless */ }
+        state.stage = null
+        scheduleReconnect()
+        return
+    }
+
     try {
         byte[] header = buildHeader1464(93, 0, HOST_CH_ID, nextMessId(), 0)
         sendRaw(header)
@@ -352,6 +394,9 @@ private Map findAllChannelElements(String xml, String elementName) {
 
 def parse(String message) {
     if (!message) return
+    // v1.4.4: timestamp every inbound message, genuine or garbled --
+    // see sendKeepalive()'s staleness check below for why this exists.
+    state.lastRawReceiveTime = now()
     // Tracks which message number within THIS TCP read is currently being
     // processed, and how many resync attempts have been made for this read
     // -- see processBuffer() below.
