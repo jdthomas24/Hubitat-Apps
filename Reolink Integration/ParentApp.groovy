@@ -1,6 +1,6 @@
 /**
  * Reolink Integration (Parent App)
- * Version: 1.4.3
+ * Version: 1.4.4
  *
  * Architecture: a "source" is anything answering the Reolink HTTP/JSON API
  * (standalone camera, PoE NVR, or Home Hub), each with its own IP + creds. A
@@ -18,12 +18,28 @@
  * Device-specific findings/limitations/setup gotchas live in the README and
  * in-app Tips page, not duplicated here. TODO markers mark spots needing
  * exact command/param names verified against firmware (field names can
- * drift by version). Full history prior to 1.3.6 is in GitHub commit history.
+ * drift by version). Full history prior to 1.3.8 is in GitHub commit history.
  *
  * BREAKING CHANGE (v1.3.8): every camera/doorbell became a child of a new
  * per-source "Reolink Device Bridge" instead of a child of this app directly
  * -- existing installs had to delete/recreate devices (and repoint
  * dashboards/rules) via re-discovery under each source.
+ *
+ * v1.4.4 -- HOTFIX (app-side: version bump only): the actual fix for a
+ * connection that reports "connected" indefinitely while silently dead
+ * (half-open TCP) lives entirely in ReolinkDeviceBridge.groovy -- see that
+ * file's header. No app-side logic changed.
+ *
+ * v1.4.3 -- HOTFIX (StandaloneDevices.groovy only): a standalone source's
+ * bridge has the "Reolink Standalone Devices" group device as its real
+ * Hubitat parent, not this app directly -- so every componentX() command a
+ * device sends upward (Take Snapshot, Refresh, PTZ, spotlight, etc.) threw
+ * MissingMethodException inside the bridge, before ever reaching the app.
+ * Only logNormal()/logFull() had ever been forwarded (the v1.4.1 fix below);
+ * the rest were missing since the v1.3.8 restructuring. Fixed by adding the
+ * full componentX() passthrough set to that file, mirroring the bridge's
+ * own forwarding to the app. Reported against a standalone doorbell whose
+ * snapshotUrl never populated.
  *
  * v1.4.2 -- HOTFIX: Camera/Doorbell driver preferences used bare
  * paragraph("text") calls, which is App-DSL-only and doesn't compile on a
@@ -73,62 +89,23 @@
  *     Different failure modes, same conclusion: battery-class devices need
  *     a Home Hub or NVR.
  *
- * v1.3.9 -- real-world use behind a 23-channel NVR:
- *  1. The discovery-time battery probe (guessIsBattery()) was marking a
- *     whole source "unreachable" on the EXPECTED failure of a wired camera
- *     (~half of all cameras) -- doReolinkApiCall() now takes a `quiet` flag
- *     so a probe failure logs at Full tier only, no source-health impact.
- *  2. Check Battery could succeed but the attribute never updated --
- *     receiveBatteryInfo() was reading batteryPercent flat instead of
- *     nested under Battery.batteryPercent (the confirmed reolink_aio
- *     field). Now checks nested first.
- *  3. Bridge keepalive (25s) now logs a Full-tier heartbeat so a quiet-but-
- *     healthy event connection doesn't look identical to a silently stuck
- *     one, throttled to once per connection.
- *  4. Reverted Login's "action: 0" field (added 1.3.8, never confirmed for
- *     Login specifically) after a real rspCode:-7 login rejection --
- *     disproven as the cause (recurred without the field too) but reverted
- *     anyway since unconfirmed; every other command's action:0 is
- *     unaffected and separately confirmed.
- *  5. ensureSourceBridge() could throw a raw DuplicateDNIException and
- *     crash the whole app page if an orphaned device shared its bridge's
- *     DNI -- now caught, logs the DNI to search/delete, returns null
- *     gracefully.
- *  6. Added explicit uninstalled() walking removeSource() for every source
- *     instead of relying solely on Hubitat's automatic cascade-delete --
- *     likely root cause of the orphaned-bridge DNI collision in #5, since
- *     the 1.3.8 bridge restructuring made the device tree 2-3 levels deep.
+ * v1.3.9 -- real-world use behind a 23-channel NVR: fixed the discovery-time
+ * battery probe marking a whole source falsely "unreachable" on the expected
+ * failure of a wired camera; fixed Check Battery succeeding but the
+ * attribute never updating (nested vs. flat field read); added a Full-tier
+ * keepalive heartbeat log; reverted an unconfirmed Login field after a real
+ * rspCode:-7 rejection; fixed ensureSourceBridge() crashing the whole app
+ * page on an orphaned-device DNI collision; added explicit uninstalled()
+ * teardown instead of relying solely on Hubitat's cascade-delete.
  *
- * v1.3.8:
- *  1. Real-time event-driven updates -- persistent per-source connection,
- *     falls back to polling automatically on drop/failure, resumes event
- *     mode silently on reconnect. Per-source toggle, defaults on.
- *  2. PIR enable/disable for cameras (pirOn/pirOff, pirEnabled attribute),
- *     doorbells unaffected.
- *  3. Fixed a login bug where "new token acquired" logged even without a
- *     usable Token.name (masking real auth failures) -- success now only
- *     logs on a real token; failure logs the raw response.
- *  4. Fixed Login missing the "action" field every other command sends.
- *  5. Magic-header resync logging stays at debug tier (confirmed benign,
- *     self-recovering Hub-side noise via soak testing); still warns after
- *     20 failed resync attempts or a genuinely unrecognized message type.
- *  6. Bridge device previously logged directly via log.info/log.debug,
- *     bypassing the app's Log level entirely -- now routed through
- *     logNormal()/logFull() like the rest of the app.
- *  7. Standalone (non-Hub) cameras/doorbells now nest under a shared
- *     "Reolink Standalone Devices" entry instead of each bridge appearing
- *     separately -- matching how NVR/Hub channels already group. Each
- *     standalone camera still holds its own independent event connection
- *     (rawSocket is one-connection-per-driver-instance); only the nesting
- *     changed.
+ * v1.3.8 -- real-time event-driven updates (persistent per-source
+ * connection, polling fallback, per-source toggle); PIR enable/disable for
+ * cameras; fixed a login bug masking real auth failures; fixed Login missing
+ * the "action" field every other command sends; bridge logging routed
+ * through the app's Log level instead of bypassing it; standalone sources
+ * nested under a shared "Reolink Standalone Devices" group device.
  *
- * v1.3.6 -- discoverPage() fixes: unchecking an existing single-channel
- * device to remove it never actually fired (only checking-on did) -- now
- * fires either direction. Multi-channel apply-toggle relabeled for clarity;
- * each row now says Existing/New Device. Danger-zone wording clarified.
- * Hub/NVR channel type detection now uses the channel's own name (API
- * returns no model field), fixing a mislabeled doorbell. Added a note about
- * removing devices from this page, not Hubitat's Devices page.
+ * Full history prior to 1.3.8 is in GitHub commit history.
  */
 
 import groovy.transform.Field
@@ -147,7 +124,7 @@ definition(
     oauth: true // required for createAccessToken()/local endpoint access used by the snapshot relay
 )
 
-@Field static final String APP_VERSION = "1.4.3"
+@Field static final String APP_VERSION = "1.4.4"
 
 @Field static final List LOG_LEVELS = ["Errors Only", "Normal", "Full"]
 
