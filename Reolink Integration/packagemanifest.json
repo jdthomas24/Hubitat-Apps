@@ -1,10 +1,10 @@
 {
     "packageName": "Reolink Integration",
-    "releaseNotes": "v1.4.2 (hotfix) -- Fixed a fatal error updating the Camera and Doorbell drivers through HPM (\"No signature of method: Script1.paragraph()\"), which blocked the 1.4.1 update entirely. v1.4.1 -- Fixed battery percentage getting permanently stuck on some devices, never auto-updating. Self-heals on its own, or tap Done in the app once after updating to speed it up. Fixed standalone (non-Hub) camera/doorbell event connections silently failing to even start due to a logging bug. Added a new chargingStatus attribute showing whether a battery device is actively charging. Updated Tips page with confirmed findings on standalone battery-device support.",
+    "releaseNotes": "1.4.3 (hotfix) -- Fixed Take Snapshot, Refresh, PTZ, spotlight, night vision, siren, PIR, and other manual commands silently doing nothing on standalone (non-Hub/NVR) cameras and doorbells -- broken since the 1.3.8 bridge restructuring, not something 1.4.2 introduced. Motion/AI polling was never affected; only commands you trigger yourself (or via automation) were impacted. v1.4.2 (hotfix) -- Fixed a fatal error updating the Camera and Doorbell drivers through HPM (\"No signature of method: Script1.paragraph()\"), which blocked the 1.4.1 update entirely.",
     "documentationLink": "https://github.com/jdthomas24/Hubitat-Apps-Drivers/tree/main/Reolink%20Integration",
     "communityLink": "https://github.com/jdthomas24/Hubitat-Apps-Drivers/tree/main/Reolink%20Integration",
     "author": "jdthomas24",
-    "version": "1.4.2",
+    "version": "1.4.3",
     "minimumHEVersion": "2.3.0",
     "dateReleased": "2026-08-14",
     "category": "Integrations",
