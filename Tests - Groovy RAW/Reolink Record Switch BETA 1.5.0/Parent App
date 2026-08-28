@@ -1,6 +1,6 @@
 /**
  * Reolink Integration (Parent App)
- * Version: 1.5.0-beta9
+ * Version: 1.5.0-beta10
  *
  * Architecture: a "source" is anything answering the Reolink HTTP/JSON API
  * (standalone camera, PoE NVR, or Home Hub), each with its own IP + creds. A
@@ -25,6 +25,38 @@
  * -- existing installs had to delete/recreate devices (and repoint
  * dashboards/rules) via re-discovery under each source.
  *
+ * v1.5.0-beta10 -- UNCONFIRMED, private beta (not on HPM), app+bridge only.
+ * Replaced the beta1-beta9 cache-and-restore recording toggle entirely.
+ * Real-world use surfaced two problems with that design: (1) a battery
+ * doorbell channel got forced into the same all-1s/all-0s pattern as every
+ * wired channel, with no way to exempt it; (2) the "off" restore only ever
+ * replayed whatever schedule was cached the FIRST time the switch was ever
+ * used -- any custom schedule set later (e.g. a day/night pattern for a
+ * Present mode) was silently discarded on the next mode cycle, since the
+ * cache was never refreshed after that first run. Root cause of #2:
+ * setChannelRecording() only populated state.recScheduleCache when the
+ * cache had no entry yet for that channel, then reused that same entry
+ * forever afterward -- reload of the app/bridge did not help, since the
+ * cache lives in app state, not the device tree.
+ * Replaced with a preset model: named, per-channel 168-character schedule
+ * strings (168 = 24 hours x 7 days, one digit per hour, 1/0) defined on a
+ * new in-app Recording Presets page, loaded on demand via loadPreset(name).
+ * A channel with no string saved for a given preset is skipped entirely --
+ * its existing schedule is left untouched, which incidentally also solves
+ * problem #1 above without needing a separate per-device exclude flag: just
+ * leave the doorbell's row blank in every preset.
+ * The master NVR-level record enable/disable (host-level SetRecV20 with no
+ * channel) is now a separate action (componentSetRecordingEnabled(),
+ * enableRecording()/disableRecording() on the bridge) instead of being
+ * bundled into the same call as the schedule write, since the two are
+ * conceptually and mechanically independent (see beta7/beta8 notes below
+ * for how that was discovered).
+ * componentSetSourceRecording(), setChannelRecording(),
+ * applyContinuousSchedule(), applyRecSchedule(), and state.recScheduleCache
+ * are removed as dead code. componentCheckRecordingSchedule() (read-only
+ * diagnostic) and fetchRecSchedule()/deepCopyRec() (still used by the new
+ * preset-write path) are unchanged.
+ *
  * v1.5.0-beta9 -- UNCONFIRMED, private beta (not on HPM), app+bridge only.
  * Real-hardware testing (2026-08-23) against 6 WiFi floodlight channels
  * showed intermittent, seemingly random per-channel misses -- suspected
@@ -32,7 +64,8 @@
  * likely faster than the NVR actually finishes applying each channel's
  * change internally before the HTTP response returns. Added a 300ms pause
  * (REC_CHANNEL_SETTLE_MS) after each per-channel write in
- * componentSetSourceRecording()'s loop.
+ * componentSetSourceRecording()'s loop. (This settle-delay pattern is
+ * preserved in beta10's new preset-write loop.)
  *
  * v1.5.0-beta8 -- UNCONFIRMED, private beta (not on HPM), app+bridge only.
  * CONFIRMED (2026-08-23): beta7's host-level SetRecV20 enable field is the
@@ -54,7 +87,8 @@
  * Switch capability's on()/off() in favor of explicit recordOn()/
  * recordOff() commands, so automations built against this feature won't
  * need renaming if similar toggles for other Reolink settings are added
- * later.
+ * later. (recordOn()/recordOff() are themselves replaced in beta10 -- see
+ * above.)
  *
  * v1.5.0-beta7 -- UNCONFIRMED, private beta (not on HPM), app+bridge only.
  * Read the actual reolink_aio library source (the Python library behind
@@ -75,11 +109,9 @@
  * current recording schedule" at all -- the channel's schedule was already
  * cached from beta3/beta4 testing days earlier, so that whole test round
  * silently ran against OLD cached data instead of exercising beta5's fix.
- * runMigrations() now clears state.recScheduleCache on every version
- * transition, so each beta test starts from a real, freshly-fetched
- * schedule rather than whatever an earlier beta happened to cache. No
- * other logic changed -- this is purely about making the NEXT test round
- * a valid one.
+ * runMigrations() cleared state.recScheduleCache on every version
+ * transition as a result -- moot as of beta10, since that cache no longer
+ * exists.
  *
  * v1.5.0-beta5 -- UNCONFIRMED, private beta (not on HPM), app+bridge only.
  * beta4's full read-modify-write did NOT fix the "succeeds but nothing
@@ -87,27 +119,26 @@
  * guess was the trigger-table key name itself (hardcoded "TIMING"). Now
  * sets every key already present in the device's OWN fetched schedule
  * table to all-1s, instead of assuming a specific key name -- see
- * applyContinuousSchedule()'s comment for the full reasoning. Also added
- * raw-schedule logging (Normal tier) at cache time, so if this round still
- * doesn't work, the actual table structure/key names are visible without
- * another guess-and-check cycle.
+ * applyPresetToChannel()'s comment (formerly applyContinuousSchedule()) for
+ * the full reasoning. Also added raw-schedule logging (Normal tier) at
+ * cache time, so if this round still doesn't work, the actual table
+ * structure/key names are visible without another guess-and-check cycle.
  *
  * v1.5.0-beta4 -- UNCONFIRMED, private beta (not on HPM), app+bridge only.
  * Real-world testing against an RLN16-410 confirmed beta3's GetRecV20
  * detection working (7/7 OK both directions, correct API chosen every
  * time) -- but SetRecV20 returning rspCode 200 "succeeded" was NOT actually
  * changing anything: the Reolink app's schedule grid never updated and no
- * new recording started in NVR playback. Cause: applyContinuousSchedule()
- * was building a fresh, minimal Rec object from scratch, which the NVR
- * apparently accepts and silently ignores rather than rejects -- a known
- * pattern for embedded HTTP APIs like this one, where Set calls expect
- * something closer to a complete object than a partial patch. Fixed via
- * proper read-modify-write: the FULL schedule already fetched and cached
- * (before the very first "on") is now deep-cloned, only table.TIMING and
- * enable are flipped inside that clone, and the whole thing is sent back --
- * every other field rides along unchanged, exactly as the NVR reported it.
- * Also resolves the previously-flagged channel-field-nesting ambiguity for
- * free, since whatever shape the device's own response used is preserved.
+ * new recording started in NVR playback. Cause: the write was building a
+ * fresh, minimal Rec object from scratch, which the NVR apparently accepts
+ * and silently ignores rather than rejects -- a known pattern for embedded
+ * HTTP APIs like this one, where Set calls expect something closer to a
+ * complete object than a partial patch. Fixed via proper read-modify-write:
+ * the FULL schedule fetched fresh via GetRecV20/GetRec is deep-cloned, only
+ * the relevant table field(s) are flipped inside that clone, and the whole
+ * thing is sent back -- every other field rides along unchanged, exactly as
+ * the NVR reported it. This read-modify-write approach carries forward into
+ * beta10's preset writes unchanged.
  *
  * v1.5.0-beta3 -- UNCONFIRMED, private beta (not on HPM), app+bridge only.
  * Real-world testing against an RLN16-410 (7 channels) showed the beta2
@@ -116,22 +147,17 @@
  * failure classic's own "model 52X only" documentation predicts. Detection
  * now tries GetRecV20 directly and only falls back to classic GetRec if V20
  * itself returns no usable value, instead of trusting a GetAbility field
- * that didn't reflect this hardware's real behavior. No change to the
- * cache-and-restore design otherwise; the cache now also records which API
- * generation worked per channel, so "off" restores through the same one.
+ * that didn't reflect this hardware's real behavior.
  *
  * v1.5.0-beta2 -- UNCONFIRMED. Added a per-channel success/failure summary (e.g. "6/6 OK" or "5/6 OK, failed:
- * ch3") pushed to the bridge's new lastRecordingResult attribute after every
- * componentSetSourceRecording() call, so results are visible on the device
- * page instead of requiring a log dive.
+ * ch3") pushed to the bridge's lastRecordingResult attribute after every
+ * recording-related call, so results are visible on the device page instead
+ * of requiring a log dive.
  *
- * v1.5.0-beta1 -- UNCONFIRMED. Added a continuous-recording toggle (componentSetSourceRecording(), Switch
- * capability on Reolink Device Bridge). Built from the Reolink Camera HTTP
- * API User Guide v7 (GetRec/SetRec, section 3.6) but not yet tested against
- * real hardware -- see that method's comment for the full design (cache-and-
- * restore per channel, GetRecV20 vs classic GetRec detection) and open
- * questions (a documented field-nesting ambiguity between the API guide's
- * field table and its JSON examples).
+ * v1.5.0-beta1 -- UNCONFIRMED. Added a continuous-recording toggle. Built
+ * from the Reolink Camera HTTP API User Guide v7 (GetRec/SetRec, section
+ * 3.6) but not yet tested against real hardware at the time -- see the
+ * beta4/beta7 notes above for what changed once it was.
  *
  * v1.4.2 -- HOTFIX: Camera/Doorbell driver preferences used bare
  * paragraph("text") calls, which is App-DSL-only and doesn't compile on a
@@ -255,7 +281,7 @@ definition(
     oauth: true // required for createAccessToken()/local endpoint access used by the snapshot relay
 )
 
-@Field static final String APP_VERSION = "1.5.0-beta9"
+@Field static final String APP_VERSION = "1.5.0-beta10"
 
 @Field static final List LOG_LEVELS = ["Errors Only", "Normal", "Full"]
 
@@ -273,14 +299,21 @@ definition(
 @Field static final Integer BAICHUAN_PORT = 9000
 
 // v1.5.0-beta9: pause between per-channel recording-schedule writes in
-// componentSetSourceRecording() -- see that method's comment for why. Not
-// user-configurable; adjust here if 300ms proves too short/long in practice.
+// componentLoadPreset()'s loop (formerly componentSetSourceRecording()) --
+// see that beta's header note for why. Not user-configurable; adjust here
+// if 300ms proves too short/long in practice.
 @Field static final int REC_CHANNEL_SETTLE_MS = 300
+
+// A recording preset's per-channel schedule string is exactly 168
+// characters: 24 hours x 7 days, one digit per hour (Sunday 12am first),
+// 1 = record, 0 = don't. Used to validate presetsPage() input.
+@Field static final int REC_SCHEDULE_LENGTH = 168
 
 preferences {
     page(name: "mainPage")
     page(name: "addSourcePage")
     page(name: "discoverPage")
+    page(name: "presetsPage")
     page(name: "tipsPage")
 }
 
@@ -515,6 +548,23 @@ def tipsPage() {
                 "the existing battery attribute; no extra plumbing is needed here."
         }
         section {
+            paragraph pillHeader("Recording presets (NVR/Hub master switch + per-channel schedules)")
+            paragraph "Two independent controls exist for recording, and it's worth keeping them separate in " +
+                "your head: <b>enableRecording</b>/<b>disableRecording</b> is the NVR's master switch (applies " +
+                "to EVERY channel at once -- there's no way to target one channel with this call, that's a " +
+                "hardware/API limitation, not a bug here). <b>loadPreset(name)</b> writes a named, per-channel " +
+                "schedule (168-char string, one digit per hour of the week, 1/0) defined on the Recording " +
+                "Presets page for that source."
+            paragraph "In practice: turn the master switch on once and leave it on, then use presets to " +
+                "control what actually gets recorded per channel. A channel left blank in a given preset is " +
+                "skipped -- its existing schedule is untouched -- which is the recommended way to keep a " +
+                "battery-class channel (e.g. a WiFi doorbell) from being forced into a continuous pattern " +
+                "meant for wired channels."
+            paragraph "Every preset write is a fresh read-modify-write against whatever the channel's own " +
+                "current schedule actually is right now -- nothing is cached or \"restored\" from an earlier " +
+                "point in time, so there's no stale-snapshot trap to worry about."
+        }
+        section {
             paragraph pillHeader("Snapshot tiles on dashboards")
             paragraph "Snapshot URLs point at a local relay endpoint on this app, not directly at the camera. " +
                 "The camera itself is only ever contacted on its own snapshot interval (device preference, " +
@@ -568,7 +618,10 @@ def tipsPage() {
         }
         section {
             paragraph pillHeader("Confidence level on newer commands")
-            paragraph "<b>Confirmed working</b> against real hardware: PtzCtrl -- move, and ToPos (preset recall)."
+            paragraph "<b>Confirmed working</b> against real hardware: PtzCtrl -- move, and ToPos (preset recall)." +
+                " SetRecV20 host-level enable/disable and per-channel schedule writes (GetRecV20/SetRecV20) are " +
+                "also confirmed working against a real RLN16-410 as of v1.5.0-beta8/beta9, though the preset " +
+                "workflow built on top of them (v1.5.0-beta10) is not yet independently retested end-to-end."
             paragraph "<b>Built but not yet tested</b> against this setup's actual firmware: SetPtzPreset " +
                 "(save), SetWhiteLed (spotlight), SetIrLights (night vision), AudioAlarmPlay (siren), " +
                 "GetBatteryInfo (battery %), PtzCheck/GetPtzCheckState (calibration), SetPirInfo (PIR on/off)."
@@ -756,12 +809,129 @@ def discoverPage(params) {
                         "creates it, toggled off removes it), no separate apply step needed."
                 }
             }
+            if (src.isHub) {
+                section {
+                    href name: "presetsFromDiscover", title: "Recording Presets",
+                        description: "Define per-channel schedule strings for automations (Away/Present, etc.)",
+                        page: "presetsPage", params: [sourceId: sourceId]
+                }
+            }
             section {
                 paragraph pillHeader("Danger zone")
                 input "confirmRemoveSource", "bool",
                     title: "Remove this ENTIRE source and ALL ${childrenForSource(sourceId as Integer).size()} of its device(s) -- unrelated to the toggles above",
                     defaultValue: false, submitOnChange: true
             }
+        }
+    }
+}
+
+/**
+ * v1.5.0-beta10: define named, per-channel recording schedule presets for a
+ * source. Each preset is a Map of channel-number-string -> 168-char
+ * schedule string, stored in state.recPresets[sourceId][presetName]. A
+ * channel with no entry is left alone when the preset is loaded -- see
+ * componentLoadPreset() below. Presets are edited a whole preset at a time
+ * (every channel's field is on the page together, one "Save changes"
+ * toggle per preset) rather than saving field-by-field, since Hubitat's
+ * dynamicPage only submits/redraws on a submitOnChange input.
+ */
+def presetsPage(params) {
+    def sourceId = params?.sourceId ?: state.currentPresetsSourceId
+    state.currentPresetsSourceId = sourceId
+    def src = getSource(sourceId)
+    def channels = childrenForSource(sourceId as Integer)
+
+    if (newPresetName) {
+        def presetsAll = state.recPresets ?: [:]
+        def bySource = presetsAll[sourceId.toString()] ?: [:]
+        if (!bySource.containsKey(newPresetName)) {
+            bySource[newPresetName] = [:]
+            presetsAll[sourceId.toString()] = bySource
+            state.recPresets = presetsAll
+            logNormal "Reolink source ${sourceId}: created preset '${newPresetName}'"
+        }
+        app.removeSetting("newPresetName")
+    }
+
+    def presets = (state.recPresets ?: [:])[sourceId.toString()] ?: [:]
+
+    // Handle any pending save/delete toggles for existing presets before
+    // rendering, same pattern as discoverPage()'s confirmCreate handling.
+    presets.keySet().toList().each { name ->
+        if (settings["savePreset_${name}"]) {
+            def updated = [:]
+            channels.each { ch ->
+                def channelNum = ch.getDataValue("channel")
+                def val = settings["preset_${sourceId}_${name}_${channelNum}"]
+                if (val) {
+                    if (val.length() == REC_SCHEDULE_LENGTH && val ==~ /[01]+/) {
+                        updated[channelNum] = val
+                    } else {
+                        log.warn "Reolink source ${sourceId}: preset '${name}' ch ${channelNum} schedule " +
+                            "invalid (need exactly ${REC_SCHEDULE_LENGTH} chars of 0/1, got ${val.length()}) -- not saved"
+                    }
+                }
+            }
+            def presetsAll = state.recPresets ?: [:]
+            def bySource = presetsAll[sourceId.toString()] ?: [:]
+            bySource[name] = updated
+            presetsAll[sourceId.toString()] = bySource
+            state.recPresets = presetsAll
+            app.updateSetting("savePreset_${name}", [type: "bool", value: false])
+            logNormal "Reolink source ${sourceId}: preset '${name}' saved (${updated.size()}/${channels.size()} channels set)"
+        }
+        if (settings["deletePreset_${name}"]) {
+            def presetsAll = state.recPresets ?: [:]
+            def bySource = presetsAll[sourceId.toString()] ?: [:]
+            bySource.remove(name)
+            presetsAll[sourceId.toString()] = bySource
+            state.recPresets = presetsAll
+            app.removeSetting("deletePreset_${name}")
+            logNormal "Reolink source ${sourceId}: preset '${name}' deleted"
+        }
+    }
+
+    // Re-fetch after any save/delete above so the page renders current data.
+    presets = (state.recPresets ?: [:])[sourceId.toString()] ?: [:]
+
+    dynamicPage(name: "presetsPage", title: "Recording Presets - ${src?.label ?: ''}") {
+        section {
+            paragraph pillHeader("What this does")
+            paragraph "Each preset is a named, per-channel recording schedule: a ${REC_SCHEDULE_LENGTH}-character " +
+                "string, one digit per hour of the week (Sunday 12am first), 1 = record, 0 = don't. Calling " +
+                "<b>loadPreset(name)</b> on this source's bridge device writes each channel's string here to " +
+                "the NVR. <b>A channel left blank is skipped entirely</b> -- its existing schedule is untouched, " +
+                "which is the recommended way to exclude a battery-class channel (e.g. a WiFi doorbell) from " +
+                "a preset meant for wired channels."
+            paragraph "Example: all-${REC_SCHEDULE_LENGTH.toString()[0]}s (${REC_SCHEDULE_LENGTH} ones) = " +
+                "continuous. A day/night pattern needs the actual ${REC_SCHEDULE_LENGTH}-char string built " +
+                "externally (e.g. a spreadsheet) and pasted in below."
+            paragraph "This is separate from the NVR's master recording switch (enableRecording()/" +
+                "disableRecording() on the bridge device) -- that switch applies to every channel at once and " +
+                "has no per-channel targeting at the API level. The usual pattern is: turn the master switch " +
+                "on once and leave it on, then use presets to control what each channel actually records."
+        }
+        section {
+            paragraph pillHeader("Add a preset")
+            input "newPresetName", "text", title: "New preset name (e.g. 'Away', 'Present')", submitOnChange: true
+        }
+        presets.each { name, chMap ->
+            section("Preset: ${name}") {
+                channels.each { ch ->
+                    def channelNum = ch.getDataValue("channel")
+                    def key = "preset_${sourceId}_${name}_${channelNum}"
+                    input key, "text", title: "${ch.label ?: ch.name} (ch ${channelNum})",
+                        defaultValue: chMap[channelNum] ?: ""
+                }
+                input "savePreset_${name}", "bool", title: "Save changes to '${name}'",
+                    defaultValue: false, submitOnChange: true
+                input "deletePreset_${name}", "bool", title: "Delete preset '${name}'",
+                    defaultValue: false, submitOnChange: true
+            }
+        }
+        section {
+            href name: "backToDiscoverFromPresets", title: "« Back", page: "discoverPage", params: [sourceId: sourceId]
         }
     }
 }
@@ -871,6 +1041,9 @@ def removeSource(id) {
     state.sources.removeAll { it.id == (id as Integer) }
     state.sourceUnreachable?.remove(id.toString())
     state.sourceConnMode?.remove(id.toString())
+    // v1.5.0-beta10: clean up any presets defined for this source too, so
+    // state doesn't accumulate dead entries forever.
+    state.recPresets?.remove(id.toString())
     logNormal "Removed source ${id}"
 }
 
@@ -1634,24 +1807,16 @@ private void runMigrations() {
             "instead of waiting out an old schedule"
     }
 
-    // v1.5.0-beta6: state.recScheduleCache (see componentSetSourceRecording())
-    // must NOT survive a version change during active beta testing -- each
-    // beta iteration has changed HOW the "on" write is built, but
-    // setChannelRecording() only re-fetches a channel's schedule when it has
-    // no cache entry yet, so a schedule cached under an OLDER beta's logic
-    // could silently mask whether a NEWER beta's fix actually works.
-    // Confirmed as a real gap on 2026-08-22: a beta5 test never logged
-    // "cached current recording schedule" at all, because the channel was
-    // already cached from beta3/beta4 testing days earlier -- meaning that
-    // whole test round ran against old cached data, not fresh. Clearing this
-    // on every version bump forces a real GetRecV20 (and the raw-schedule
-    // log line) on the very next "on," so every beta test starts from
-    // current, real data.
+    // v1.5.0-beta10: state.recScheduleCache (the old cache-and-restore
+    // design's stale-snapshot mechanism) is retired along with the code
+    // that used it -- clear any leftover entries from a prior beta so they
+    // don't linger in state forever doing nothing.
     if (state.recScheduleCache) {
         int clearedRec = state.recScheduleCache.size()
-        state.recScheduleCache = [:]
-        logNormal "Reolink Integration: cleared ${clearedRec} cached recording schedule(s) on upgrade " +
-            "(${fromVersion} -> ${APP_VERSION}) -- will re-fetch fresh on next use"
+        state.remove("recScheduleCache")
+        logNormal "Reolink Integration: cleared ${clearedRec} leftover cached recording schedule(s) from the " +
+            "old cache-and-restore design (${fromVersion} -> ${APP_VERSION}) -- recording schedules are now " +
+            "managed via named presets (see the Recording Presets page)"
     }
 
     logNormal "Reolink Integration: upgraded ${fromVersion} -> ${APP_VERSION}"
@@ -2180,46 +2345,50 @@ def componentSetSnapshotInterval(child, Integer seconds, String dni = null) {
 }
 
 // ============================================================================
-// v1.5.0-beta1 -- NVR/source continuous-recording toggle. UNCONFIRMED against
-// real hardware; built from the Reolink Camera HTTP API User Guide v7
-// (section 3.6, GetRec/SetRec/GetRecV20/SetRecV20) but not yet tested live.
-// Called by Reolink Device Bridge's on()/off() (Switch capability).
+// v1.5.0-beta10 -- NVR/source recording control. UNCONFIRMED end-to-end as a
+// preset workflow, though the underlying master-switch and read-modify-write
+// schedule mechanics were independently confirmed against a real RLN16-410
+// in beta8/beta9 (see the top-of-file version history). Called by Reolink
+// Device Bridge's enableRecording()/disableRecording()/loadPreset().
 // ============================================================================
 
 /**
- * Forces every channel of a source into continuous (24/7) recording, or
- * restores each channel's previously-recorded schedule. Recording has no
- * simple on/off flag -- Reolink represents it as a 7-day x 24-hour schedule
- * table per trigger type (TIMING/MD/AI_PEOPLE/AI_VEHICLE), so "on" means
- * writing TIMING to all-1s, and "off" means writing back whatever schedule
- * existed before "on" was first called (cached in state.recScheduleCache,
- * keyed by channel DNI, alongside which API generation worked for that
- * channel) -- NOT a guessed default, since guessing wrong would silently
- * change the user's normal recording setup. If a channel has no cached
- * schedule when "off" is called (this switch never turned it on), that
- * channel is skipped with a warning rather than risking an unwanted
- * overwrite.
- *
- * Two API generations exist -- GetRec/SetRec's own documentation says it
- * "supports model 52X only". CHANGED (2026-08-22): originally detected via
- * GetAbility's scheduleVersion.ver, but real-hardware testing against an
- * RLN16-410 showed that detection choosing classic GetRec, which then
- * failed outright on every one of 7 channels with rspCode -9 "not support"
- * -- exactly the failure the 52X-only caveat predicts. Detection now tries
- * GetRecV20 directly and only falls back to classic GetRec if V20 itself
- * returns no usable value, instead of trusting a GetAbility field that
- * doesn't reflect this hardware's actual behavior.
- *
- * RESOLVED (v1.5.0-beta4): the API guide's SetRec/SetRecV20 field table
- * lists "channel" as a top-level Rec field, but its own JSON example nests
- * "channel" inside "schedule" instead -- moot now that applyContinuousSchedule()
- * sends back the device's own previously-fetched schedule (read-modify-write),
- * which already carries whatever nesting shape this hardware itself uses.
+ * Master NVR-level record enable/disable ONLY -- no per-channel schedule
+ * writes at all. CONFIRMED (2026-08-23, beta8): this host-level SetRecV20
+ * call with no channel is genuinely the master switch -- turning it on
+ * starts recording on every channel, including one whose own per-channel
+ * schedule was OFF, and this is untargeted at the protocol level: there is
+ * no channel field on this specific call, so it always applies to every
+ * channel of the source at once. There is no way to target one channel with
+ * this call -- that's an API/hardware limitation, not something this app
+ * can work around. Per-channel targeting is achieved separately, via
+ * componentLoadPreset() below and each preset's per-channel schedule.
  */
-def componentSetSourceRecording(child, sourceId, Boolean continuous) {
+def componentSetRecordingEnabled(child, sourceId, Boolean enabled) {
+    def bridge = getSourceBridge(sourceId)
+    try {
+        def hostResult = reolinkApiCall(sourceId, "SetRecV20", [Rec: [enable: enabled ? 1 : 0]])
+        logNormal "Reolink source ${sourceId}: host-level SetRecV20 enable=${enabled ? 1 : 0} -- rspCode=${hostResult?.rspCode}"
+        bridge?.receiveRecordingEnabled(enabled)
+    } catch (e) {
+        logNormal "Reolink source ${sourceId}: host-level SetRecV20 failed -- ${e.message}"
+    }
+}
+
+/**
+ * Writes a named preset's per-channel schedule strings to the NVR. Unlike
+ * the old beta1-beta9 cache-and-restore design (see top-of-file beta10
+ * notes), this always does a FRESH read-modify-write per channel per call --
+ * no stale snapshot, no "restores whatever was cached the first time this
+ * ever ran" trap. A channel with no string saved for this preset is skipped
+ * (existing schedule left alone), which also serves as the mechanism for
+ * excluding a battery-class channel from a preset meant for wired channels
+ * -- just leave that channel's field blank on the Recording Presets page.
+ */
+def componentLoadPreset(child, sourceId, String presetName) {
     def bridge = getSourceBridge(sourceId)
     if (!bridge) {
-        log.warn "Reolink source ${sourceId}: no bridge device, cannot change recording mode"
+        log.warn "Reolink source ${sourceId}: no bridge device, cannot load preset"
         return
     }
     def channels = childrenForSource(sourceId as Integer)
@@ -2227,108 +2396,95 @@ def componentSetSourceRecording(child, sourceId, Boolean continuous) {
         log.warn "Reolink source ${sourceId}: no channel devices found, nothing to change"
         return
     }
+    def chMap = (state.recPresets ?: [:])[sourceId.toString()]?.get(presetName)
+    if (chMap == null) {
+        log.warn "Reolink source ${sourceId}: preset '${presetName}' not found -- check the Recording Presets page"
+        bridge.receiveRecordingResult("Preset '${presetName}' not found")
+        return
+    }
 
-    // v1.5.0-beta9: real-hardware testing (2026-08-23) showed intermittent,
-    // seemingly random per-channel misses when actually writing to the NVR
-    // -- calls were firing back-to-back with only ~100-150ms between them
-    // (visible in Full-tier logs), fast even for one wired device, let
-    // alone 6 WiFi floodlights that each have to individually renegotiate
-    // their own recording session with the NVR. Working theory: the NVR's
-    // HTTP response returns before it's actually finished applying the
-    // change internally, so the next write in line can land before the
-    // previous one settles -- a standard race condition with embedded
-    // devices under rapid sequential writes. A short pause after each
-    // channel's write (REC_CHANNEL_SETTLE_MS, defined near the top of this
-    // file with the other @Field constants) gives the NVR time to digest
-    // before the next one.
     int okCount = 0
     def failedChannels = []
+    def skipped = []
     channels.each { ch ->
         def channelNum = ch.getDataValue("channel") as Integer
-        try {
-            if (setChannelRecording(sourceId, ch.deviceNetworkId, channelNum, continuous)) {
-                okCount++
-            } else {
+        def bitstring = chMap[channelNum.toString()]
+        if (!bitstring) {
+            skipped << channelNum
+        } else {
+            try {
+                if (applyPresetToChannel(sourceId, channelNum, bitstring)) {
+                    okCount++
+                } else {
+                    failedChannels << channelNum
+                }
+            } catch (e) {
+                log.warn "Reolink source ${sourceId} ch ${channelNum}: preset apply failed -- ${e.message}"
                 failedChannels << channelNum
             }
-        } catch (e) {
-            log.warn "Reolink source ${sourceId} ch ${channelNum}: recording mode change failed -- ${e.message}"
-            failedChannels << channelNum
         }
+        // v1.5.0-beta9: settle delay between per-channel writes, carried
+        // forward from the old design -- see REC_CHANNEL_SETTLE_MS's
+        // declaration and beta9's header note for why.
         pauseExecution(REC_CHANNEL_SETTLE_MS)
     }
 
-    // v1.5.0-beta8 FIX: CHANGED ORDER -- this now fires AFTER the per-channel
-    // loop, not before. Real-hardware testing (2026-08-23) showed "on"
-    // (host-level fired first) actually starting recording on every
-    // channel, but "off" (host-level fired first, then per-channel restores)
-    // did NOT stop it -- recording kept running. Working theory: writing a
-    // per-channel schedule is itself treated by the NVR as "this channel
-    // wants to record," silently re-flipping the host-level enable flag
-    // back on as a side effect, undoing an enable=0 sent before it. Sending
-    // this LAST makes it the final word regardless of any such side effect.
-    // See componentSetSourceRecording()'s original v1.5.0-beta7 note below
-    // for why this call exists at all (reolink_aio's set_recording(channel=
-    // None, enable) treats it as a separate, NVR-host-level record master
-    // switch, distinct from any per-channel schedule.scheduleEnable).
-    try {
-        def hostResult = reolinkApiCall(sourceId, "SetRecV20", [Rec: [enable: continuous ? 1 : 0]])
-        logNormal "Reolink source ${sourceId}: host-level SetRecV20 enable=${continuous ? 1 : 0} -- rspCode=${hostResult?.rspCode}"
-    } catch (e) {
-        logNormal "Reolink source ${sourceId}: host-level SetRecV20 failed -- ${e.message}"
-    }
-
-    // v1.5.0-beta2: e.g. "6/6 OK" or "5/6 OK, failed: ch3" -- pushed to the
-    // bridge's lastRecordingResult attribute so it's visible on the device
-    // page without a log dive. Individual failure reasons still only show
-    // in the log (via the warnings above/in setChannelRecording()) -- this
-    // summary is just "did it work," not "why not."
-    def summary = failedChannels ?
-        "${okCount}/${channels.size()} OK, failed: ${failedChannels.collect { "ch${it}" }.join(', ')}" :
-        "${okCount}/${channels.size()} OK"
-    logNormal "Reolink source ${sourceId}: recording mode set to ${continuous ? 'continuous' : 'normal (restored)'} -- ${summary}"
-    bridge.receiveRecordingMode(continuous ? "continuous" : "normal")
+    def parts = ["${okCount}/${channels.size()} OK"]
+    if (failedChannels) parts << "failed: ${failedChannels.collect { "ch${it}" }.join(', ')}"
+    if (skipped) parts << "skipped (no data): ${skipped.collect { "ch${it}" }.join(', ')}"
+    def summary = parts.join(', ')
+    logNormal "Reolink source ${sourceId}: preset '${presetName}' loaded -- ${summary}"
+    bridge.receiveRecordingMode(presetName)
     bridge.receiveRecordingResult(summary)
 }
 
-/** True on apparent success. See componentSetSourceRecording() for the overall design. */
-private boolean setChannelRecording(sourceId, String dni, Integer channel, Boolean continuous) {
-    if (continuous) {
-        def cache = state.recScheduleCache ?: [:]
-        if (!cache.containsKey(dni)) {
-            def current = fetchRecSchedule(sourceId, channel)
-            if (current == null) {
-                log.warn "Reolink source ${sourceId} ch ${channel}: could not read current recording schedule " +
-                    "via GetRecV20 or classic GetRec, skipping (won't guess and overwrite what's already configured)"
-                return false
-            }
-            cache[dni] = current
-            state.recScheduleCache = cache
-            logNormal "Reolink source ${sourceId} ch ${channel}: cached current recording schedule " +
-                "(${current.isV20 ? 'V20' : 'classic'} API) before enabling continuous record -- raw: ${current.rec}"
-        }
-        // v1.5.0-beta4: pass the cached ORIGINAL schedule as the base to
-        // modify -- see applyContinuousSchedule()'s comment for why a
-        // fresh minimal object wasn't enough.
-        return applyContinuousSchedule(sourceId, channel, cache[dni].isV20 as boolean, cache[dni].rec as Map)
-    } else {
-        def saved = (state.recScheduleCache ?: [:])[dni]
-        if (saved == null) {
-            log.warn "Reolink source ${sourceId} ch ${channel}: no cached schedule to restore (continuous " +
-                "record was never turned on via this switch) -- skipping, left as-is"
-            return false
-        }
-        return applyRecSchedule(sourceId, channel, saved.isV20 as boolean, saved.rec as Map)
+/**
+ * Fresh read-modify-write of one channel's schedule table to the given
+ * 168-char bitstring. Same table-key approach the old design settled on in
+ * beta5 (real-hardware testing showed the actual trigger-table key name(s)
+ * can't be assumed to be "TIMING" -- every key the device's own response
+ * reports gets set instead) and beta7 (scheduleEnable is a TOP-LEVEL field
+ * on Rec, not nested inside schedule.enable). See fetchRecSchedule()/
+ * deepCopyRec() below, both unchanged from the old design and still doing
+ * the same job here.
+ */
+private boolean applyPresetToChannel(sourceId, Integer channel, String bitstring) {
+    def fetched = fetchRecSchedule(sourceId, channel)
+    if (fetched == null) {
+        log.warn "Reolink source ${sourceId} ch ${channel}: could not read current schedule via GetRecV20 or " +
+            "classic GetRec, skipping preset write for this channel"
+        return false
     }
+    def recParam = deepCopyRec(fetched.rec as Map)
+    if (fetched.isV20) {
+        recParam.channel = channel
+        recParam.scheduleEnable = 1
+        recParam.schedule = (recParam.schedule ?: [:]) as Map
+        recParam.schedule.channel = channel
+        recParam.schedule.table = (recParam.schedule.table ?: [:]) as Map
+        if (recParam.schedule.table) {
+            recParam.schedule.table.keySet().toList().each { key -> recParam.schedule.table[key] = bitstring }
+        } else {
+            recParam.schedule.table.TIMING = bitstring
+        }
+    } else {
+        recParam.channel = channel
+        recParam.enable = 1
+        recParam.table = bitstring
+    }
+    def cmd = fetched.isV20 ? "SetRecV20" : "SetRec"
+    def result = reolinkApiCall(sourceId, cmd, [Rec: recParam], channel as Integer)
+    return result?.rspCode == 200 || result?.rspCode == 0
 }
 
 /**
- * Reads the channel's CURRENT actual recording schedule. CHANGED
- * (2026-08-22): tries GetRecV20 first regardless of any GetAbility
- * capability flag, and only falls back to classic GetRec if V20 itself
- * returns no usable value -- see componentSetSourceRecording()'s header
- * comment for why. Returns [rec: Map, isV20: boolean] so the caller knows
- * which API generation actually worked, or null if both failed.
+ * Reads the channel's CURRENT actual recording schedule. Tries GetRecV20
+ * first regardless of any GetAbility capability flag, and only falls back
+ * to classic GetRec if V20 itself returns no usable value -- confirmed
+ * (2026-08-22) against a real RLN16-410 that GetAbility's own
+ * scheduleVersion.ver field doesn't reliably predict which generation this
+ * hardware actually needs. Returns [rec: Map, isV20: boolean] so the caller
+ * knows which API generation actually worked, or null if both failed.
  */
 private Map fetchRecSchedule(sourceId, channel) {
     def v20Result = reolinkApiCall(sourceId, "GetRecV20", [:], channel as Integer)
@@ -2341,21 +2497,21 @@ private Map fetchRecSchedule(sourceId, channel) {
 
 /**
  * Deep-clones a Map/List structure via a JSON round-trip -- Groovy Maps
- * assign by reference, and applyContinuousSchedule() below must NOT mutate
- * the cached original schedule in place, since that same cached copy is
- * what "off" restores from later. Cheap and reliable in this sandboxed
- * environment (JsonSlurper/JsonOutput are already used elsewhere in this
- * app for the same reason -- see reolinkRawPost()/parseReolinkResponse()).
+ * assign by reference, and applyPresetToChannel() above must NOT mutate the
+ * freshly-fetched schedule in place beyond what's intentional. Cheap and
+ * reliable in this sandboxed environment (JsonSlurper/JsonOutput are
+ * already used elsewhere in this app for the same reason -- see
+ * reolinkRawPost()/parseReolinkResponse()).
  */
 private Map deepCopyRec(Map source) {
     return new groovy.json.JsonSlurper().parseText(groovy.json.JsonOutput.toJson(source)) as Map
 }
 
 /**
- * v1.5.0-beta1 diagnostic: read-only sanity check, does NOT call SetRec/
- * SetRecV20 or touch the cache. Logs which API generation actually worked
- * (or that neither did) for this channel, so real hardware can be confirmed
- * BEFORE ever calling componentSetSourceRecording().
+ * Read-only sanity check, does NOT call SetRec/SetRecV20 or touch any
+ * preset data. Logs which API generation actually worked (or that neither
+ * did) for this channel -- useful for confirming a channel's schedule shape
+ * before defining a preset against it.
  */
 def componentCheckRecordingSchedule(child, String dni = null) {
     def c = resolveChild(child, dni)
@@ -2367,68 +2523,6 @@ def componentCheckRecordingSchedule(child, String dni = null) {
     } else {
         logNormal "Reolink source ${sourceId} ch ${channel}: ${result.isV20 ? 'GetRecV20' : 'GetRec (classic)'} succeeded -- raw Rec: ${result.rec}"
     }
-}
-
-/**
- * CHANGED (2026-08-22): real-hardware testing showed this call returning
- * rspCode 200 "succeeded" on every channel, yet producing NO actual change
- * on the NVR -- the Reolink app's schedule grid never updated, and no new
- * recording ever started in NVR playback. First fix attempt (full read-
- * modify-write instead of a minimal object) did NOT resolve it either --
- * still 7/7 "succeeded" with zero real effect on a second test round.
- *
- * CHANGED AGAIN (v1.5.0-beta7): found and fixed a real bug by reading the
- * actual reolink_aio library source (the Python library behind Home
- * Assistant's Reolink integration) -- its confirmed set_recording()
- * writes params["scheduleEnable"] = on_off as a TOP-LEVEL field on Rec,
- * sibling to "schedule", NOT nested inside schedule.enable. This code had
- * been setting recParam.schedule.enable, a field that doesn't exist
- * anywhere in the real object -- confirmed by the raw schedule dumps
- * captured in beta6 testing, which show scheduleEnable as a top-level key
- * alongside "schedule", never nested inside it. Fixed to match.
- *
- * Still a proper read-modify-write: baseRec is the FULL schedule this
- * channel's GetRecV20/GetRec already returned (captured and cached right
- * before this runs) -- deep-cloned so the cached original stays untouched
- * for "off" to restore from later. Every other field (overwrite, postRec,
- * preRec, saveDay) rides along unchanged, exactly as the NVR reported it.
- */
-private boolean applyContinuousSchedule(sourceId, channel, boolean isV20, Map baseRec) {
-    def allOnes = "1" * 168
-    def cmd = isV20 ? "SetRecV20" : "SetRec"
-    def recParam = deepCopyRec(baseRec)
-    if (isV20) {
-        recParam.channel = channel
-        recParam.scheduleEnable = 1
-        recParam.schedule = (recParam.schedule ?: [:]) as Map
-        recParam.schedule.channel = channel
-        recParam.schedule.table = (recParam.schedule.table ?: [:]) as Map
-        if (recParam.schedule.table) {
-            // Set every key the device's own response already had --
-            // whatever this firmware actually calls its trigger tables,
-            // rather than guessing "TIMING" is one of them.
-            recParam.schedule.table.keySet().toList().each { key ->
-                recParam.schedule.table[key] = allOnes
-            }
-        } else {
-            // No table keys came back at all (shouldn't normally happen) --
-            // fall back to the documented key name as a last resort.
-            recParam.schedule.table.TIMING = allOnes
-        }
-    } else {
-        recParam.channel = channel
-        recParam.enable = 1
-        recParam.table = allOnes
-    }
-    def result = reolinkApiCall(sourceId, cmd, [Rec: recParam], channel as Integer)
-    return result?.rspCode == 200 || result?.rspCode == 0
-}
-
-/** Writes back a previously-captured GetRec/GetRecV20 "Rec" map verbatim, restoring whatever schedule existed before continuous record was turned on. */
-private boolean applyRecSchedule(sourceId, channel, boolean isV20, Map recValue) {
-    def cmd = isV20 ? "SetRecV20" : "SetRec"
-    def result = reolinkApiCall(sourceId, cmd, [Rec: recValue], channel as Integer)
-    return result?.rspCode == 200 || result?.rspCode == 0
 }
 
 // ---------- Logging ----------
