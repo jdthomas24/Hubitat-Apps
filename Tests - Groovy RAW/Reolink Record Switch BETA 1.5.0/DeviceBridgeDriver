@@ -1,6 +1,6 @@
 /**
  * Reolink Device Bridge (Internal Parent Driver)
- * Version: 1.5.0-beta8
+ * Version: 1.5.0-beta10
  *
  * NOT user-facing. Created and managed automatically by the Reolink
  * Integration parent app -- ONE instance per SOURCE (Hub/NVR or standalone).
@@ -14,6 +14,19 @@
  * every componentX() method below is a one-line passthrough up to this
  * bridge's own parent (the app).
  *
+ * v1.5.0-beta10 -- UNCONFIRMED, private beta (not on HPM), app+bridge only.
+ * Replaced recordOn()/recordOff() (beta8) with three commands matching the
+ * app's new preset-based recording design (see ParentApp.groovy's beta10
+ * header note for the full story): enableRecording()/disableRecording()
+ * for the NVR's master record switch (untargeted, applies to every channel
+ * -- no per-channel version of this call exists at the API level), and
+ * loadPreset(name) to write a named, per-channel schedule defined on the
+ * app's Recording Presets page. recordingMode changed from a fixed
+ * normal/continuous enum to a plain string, since it now reflects whatever
+ * preset name was last loaded rather than one of two fixed states.
+ * lastRecordingResult is unchanged. Added recordingEnabled attribute to
+ * separately reflect the master switch's own state, since that's now a
+ * genuinely separate concept from "which preset is loaded."
  * v1.5.0-beta8 -- UNCONFIRMED, private beta (not on HPM), app+bridge only.
  * Jumped straight from beta2 -- beta3 through beta7 were app-only fixes
  * that didn't need this driver touched. Dropped the generic Switch
@@ -22,20 +35,21 @@
  * for other Reolink settings (email, push notifications) on this same
  * bridge device later -- shared on()/off() naming couldn't have
  * accommodated that without ambiguity. Dropped the "switch" attribute
- * along with it; recordingMode is the status indicator now.
+ * along with it; recordingMode is the status indicator now. (recordOn()/
+ * recordOff() themselves are replaced in beta10 -- see above.)
  * v1.5.0-beta2 -- UNCONFIRMED, private beta (not on HPM), app+bridge only --
  * same two files as beta1, no Camera/Doorbell changes needed. Added
  * lastRecordingResult attribute so a per-channel success/failure summary
  * (e.g. "6/6 OK" or "5/6 OK, failed: ch3") shows directly on this device
- * page instead of requiring a log dive to tell whether on()/off() actually
- * worked on every channel.
- * v1.5.0-beta1 -- UNCONFIRMED. Added Switch capability: on() forces every
- * channel of this source into continuous (24/7) recording, off() restores
+ * page instead of requiring a log dive to tell whether the recording
+ * command actually worked on every channel.
+ * v1.5.0-beta1 -- UNCONFIRMED. Added Switch capability: on() forced every
+ * channel of this source into continuous (24/7) recording, off() restored
  * each channel's previously-saved schedule. The actual GetRec/SetRec logic
- * lives app-side (see ParentApp.groovy's componentSetSourceRecording()) --
- * this driver just forwards the command and reflects the resulting
- * recordingMode attribute. Built from the Reolink Camera HTTP API User
- * Guide v7 (section 3.6) but not yet tested against real hardware.
+ * lives app-side (see ParentApp.groovy) -- this driver just forwards the
+ * command and reflects the resulting recordingMode attribute. Built from
+ * the Reolink Camera HTTP API User Guide v7 (section 3.6) but not yet
+ * tested against real hardware at the time.
  * v1.4.2 -- No functional change to this driver (version kept in sync with
  * the app); the paragraph() hotfix was in the Camera/Doorbell driver files.
  * v1.4.1 -- No functional change (app-side batteryMode self-heal only).
@@ -54,7 +68,9 @@
  * UNCONFIRMED: translateToLegacyShape()'s status/AItype -> aiState/mdState
  * mapping (in ParentApp.groovy). Sleep-status pushes (cmd_id=145) are
  * received/logged but not yet acted on. v1.5.0's recording-mode feature,
- * entirely.
+ * end-to-end as a preset workflow (the underlying master-switch and
+ * per-channel schedule write mechanics were independently confirmed
+ * against a real RLN16-410 in beta8/beta9).
  */
 import groovy.transform.Field
 import java.security.MessageDigest
@@ -67,16 +83,13 @@ metadata {
         capability "Actuator"
         command "startEventSubscription"
         command "stopEventSubscription"
-        // v1.5.0-beta8: was the Switch capability's on()/off() through
-        // beta7 -- switched to explicit named commands at the reporting
-        // user's request, anticipating similar toggles for other Reolink
-        // settings (email, push notifications) on this same bridge device
-        // later, which the shared on()/off() naming couldn't accommodate
-        // without ambiguity. recordOn/recordOff auto-display as "Record On"
-        // / "Record Off" on the Commands tab. See ParentApp.groovy's
-        // componentSetSourceRecording() for the real logic.
-        command "recordOn", [[name: "Forces continuous (24/7) recording on every channel of this source"]]
-        command "recordOff", [[name: "Restores each channel's recording schedule to what it was before Record On was last used"]]
+        // v1.5.0-beta10: replaced recordOn()/recordOff() with three
+        // commands matching the app's preset-based recording design -- see
+        // ParentApp.groovy's componentSetRecordingEnabled()/
+        // componentLoadPreset() for the real logic.
+        command "enableRecording", [[name: "Turns the NVR's master recording switch ON -- applies to every channel of this source, no per-channel targeting is possible at the API level"]]
+        command "disableRecording", [[name: "Turns the NVR's master recording switch OFF -- applies to every channel of this source, no per-channel targeting is possible at the API level"]]
+        command "loadPreset", [[name: "presetName", type: "STRING", description: "Name of a per-channel schedule preset defined on this source's Recording Presets page in the app"]]
         // configureConnection() is NOT declared as a UI command -- it's
         // always called programmatically by the app (ensureSourceBridge(),
         // unconditionally, every time it runs), so a manual "Configure
@@ -84,10 +97,19 @@ metadata {
         // method itself below is unchanged and still fully callable from
         // the app.
         attribute "connectionStatus", "enum", ["disconnected", "connecting", "connected", "reconnecting"]
-        attribute "recordingMode", "enum", ["unknown", "normal", "continuous"]
+        // v1.5.0-beta10: was a fixed unknown/normal/continuous enum through
+        // beta9 -- now reflects whichever preset name was last loaded via
+        // loadPreset(), which can be any user-defined string, so this is a
+        // plain string attribute instead of a closed enum.
+        attribute "recordingMode", "string"
+        // v1.5.0-beta10: separately reflects the master record switch's own
+        // on/off state (enableRecording()/disableRecording()), independent
+        // of which preset is loaded -- the two are genuinely separate
+        // concepts now (see ParentApp.groovy's beta10 header note).
+        attribute "recordingEnabled", "enum", ["enabled", "disabled"]
         // v1.5.0-beta2: per-channel success/failure summary from the last
-        // recordOn()/recordOff() call, e.g. "6/6 OK" or "5/6 OK, failed:
-        // ch3" -- visible on this device page without a log dive.
+        // loadPreset() call, e.g. "6/6 OK" or "5/6 OK, failed: ch3, skipped
+        // (no data): ch7" -- visible on this device page without a log dive.
         attribute "lastRecordingResult", "string"
     }
     preferences {
@@ -158,7 +180,7 @@ def componentSetSiren(child, Boolean on, String dni = null) { parent?.componentS
 def componentSetPir(child, Boolean on, String dni = null) { parent?.componentSetPir(child, on, dni) }
 def componentCheckBattery(child, String dni = null) { parent?.componentCheckBattery(child, dni) }
 def componentCheckAbilities(child, String dni = null) { parent?.componentCheckAbilities(child, dni) }
-/** v1.5.0-beta1 diagnostic passthrough -- see ParentApp.groovy's componentCheckRecordingSchedule(). */
+/** Diagnostic passthrough -- see ParentApp.groovy's componentCheckRecordingSchedule(). */
 def componentCheckRecordingSchedule(child, String dni = null) { parent?.componentCheckRecordingSchedule(child, dni) }
 def componentCalibratePtz(child, String dni = null) { parent?.componentCalibratePtz(child, dni) }
 def componentCheckPtzCalibrationStatus(child, String dni = null) { parent?.componentCheckPtzCalibrationStatus(child, dni) }
@@ -166,25 +188,35 @@ def componentSetPollInterval(child, Integer seconds, String dni = null) { parent
 def componentSetSnapshotInterval(child, Integer seconds, String dni = null) { parent?.componentSetSnapshotInterval(child, seconds, dni) }
 
 // ============================================================================
-// v1.5.0-beta8: continuous-recording toggle for every channel of this
-// source. UNCONFIRMED, see the header note and ParentApp.groovy's
-// componentSetSourceRecording() for the real logic; this driver only
-// forwards the command and reflects the result.
+// v1.5.0-beta10: recording control for this source -- master switch plus
+// named per-channel presets. UNCONFIRMED as a preset workflow end-to-end;
+// see the header note and ParentApp.groovy's componentSetRecordingEnabled()/
+// componentLoadPreset() for the real logic. This driver only forwards each
+// command and reflects the result.
 // ============================================================================
-def recordOn() {
-    parent?.componentSetSourceRecording(this, state.sourceId, true)
+def enableRecording() {
+    parent?.componentSetRecordingEnabled(this, state.sourceId, true)
 }
 
-def recordOff() {
-    parent?.componentSetSourceRecording(this, state.sourceId, false)
+def disableRecording() {
+    parent?.componentSetRecordingEnabled(this, state.sourceId, false)
 }
 
-/** Called by the app once the continuous-record request has been applied (or restored) across every channel of this source. */
+def loadPreset(String presetName) {
+    parent?.componentLoadPreset(this, state.sourceId, presetName)
+}
+
+/** Called by the app once the master record switch has been set. */
+def receiveRecordingEnabled(Boolean enabled) {
+    sendEvent(name: "recordingEnabled", value: enabled ? "enabled" : "disabled")
+}
+
+/** Called by the app once a named preset has been applied across every channel of this source. */
 def receiveRecordingMode(String mode) {
     sendEvent(name: "recordingMode", value: mode)
 }
 
-/** v1.5.0-beta2: per-channel success/failure summary from the app, e.g. "6/6 OK" or "5/6 OK, failed: ch3". */
+/** Per-channel success/failure/skipped summary from the app, e.g. "6/6 OK" or "5/6 OK, failed: ch3, skipped (no data): ch7". */
 def receiveRecordingResult(String summary) {
     sendEvent(name: "lastRecordingResult", value: summary)
 }
