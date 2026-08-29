@@ -1,6 +1,6 @@
 /**
  * Reolink Integration (Parent App)
- * Version: 1.5.0-beta11
+ * Version: 1.5.0-beta12
  *
  * Architecture: a "source" is anything answering the Reolink HTTP/JSON API
  * (standalone camera, PoE NVR, or Home Hub), each with its own IP + creds. A
@@ -25,8 +25,37 @@
  * -- existing installs had to delete/recreate devices (and repoint
  * dashboards/rules) via re-discovery under each source.
  *
- * v1.5.0-beta11 -- UNCONFIRMED, private beta (not on HPM), app+bridge+2
- * driver files. Added two OPT-IN virtual devices (both off by default,
+ * v1.5.0-beta12 -- UNCONFIRMED, private beta (not on HPM), app+bridge only.
+ * SUPERSEDES beta11's approach entirely -- no separate driver files, no
+ * opt-in toggles, no child devices to create/remove. Switch and
+ * PushableButton capabilities are added directly to the bridge device
+ * itself (ReolinkDeviceBridge.groovy), since exactly one bridge already
+ * exists per source -- so on()/off() (Switch) and push(btn) (PushableButton)
+ * are simply new ways to trigger the SAME componentSetRecordingEnabled()/
+ * componentLoadPreset() calls that enableRecording()/disableRecording()/
+ * loadPreset() already used, available in Rule Machine's simple pickers
+ * without Custom Action, with zero new devices in the tree.
+ * Preset button numbers solve the numbering-fragility problem beta11's
+ * design note flagged for a bridge-level (rather than per-preset-device)
+ * approach: each preset is assigned a button number ONCE, the first time
+ * it's seen (via getOrAssignButtonNumber(), backfilling automatically for
+ * presets that already existed before this feature), from a counter that
+ * only ever increments and is never reset or reused -- retireButtonNumber()
+ * removes a deleted preset's entry from the active mapping but the
+ * counter itself is untouched, so that number can never be handed to a
+ * different preset later. A rule built around a specific button number
+ * either keeps firing the SAME preset for as long as that preset exists
+ * (renames don't affect it -- the number isn't tied to the name string,
+ * just to the preset's identity), or, if that preset is later deleted,
+ * the number goes permanently dead and pushing it does nothing (logged,
+ * harmless) rather than ever firing a different preset that happened to
+ * receive the same number. Assigned numbers are shown next to each
+ * preset on the Recording Presets page, and the bridge's numberOfButtons
+ * attribute is kept at the highest number ever assigned for that source.
+ *
+ * v1.5.0-beta11 -- SUPERSEDED by beta12 above (kept here for history only
+ * -- this design was never actually deployed to the reporting user).
+ * UNCONFIRMED, private beta (not on HPM), app+bridge+2 driver files. Added two OPT-IN virtual devices (both off by default,
  * toggled per-source on the Recording Presets page), so the master switch
  * and individual presets can be driven from Rule Machine's simple pickers
  * instead of always going through Custom Action:
@@ -318,7 +347,7 @@ definition(
     oauth: true // required for createAccessToken()/local endpoint access used by the snapshot relay
 )
 
-@Field static final String APP_VERSION = "1.5.0-beta11"
+@Field static final String APP_VERSION = "1.5.0-beta12"
 
 @Field static final List LOG_LEVELS = ["Errors Only", "Normal", "Full"]
 
@@ -925,6 +954,10 @@ def presetsPage(params) {
             presetsAll[sourceId.toString()] = bySource
             state.recPresets = presetsAll
             app.removeSetting("deletePreset_${name}")
+            // v1.5.0-beta12: retire (don't reassign) this preset's button
+            // number -- see getOrAssignButtonNumber()/retireButtonNumber()'s
+            // comments for why the number must never come back into use.
+            retireButtonNumber(sourceId, name)
             logNormal "Reolink source ${sourceId}: preset '${name}' deleted"
         }
     }
@@ -932,33 +965,31 @@ def presetsPage(params) {
     // Re-fetch after any save/delete above so the page renders current data.
     presets = (state.recPresets ?: [:])[sourceId.toString()] ?: [:]
 
-    // v1.5.0-beta11: optional virtual devices, kept in sync on every page
-    // load/postback (idempotent -- create/remove only acts on an actual
-    // mismatch between the toggle and what currently exists) so a preset
-    // save/delete above, or a toggle flip below, takes effect immediately
-    // without a separate "apply" step.
-    def wantRecordControlSwitch = settings["createRecordControlSwitch_${sourceId}"] ?: false
-    def wantPresetButtons = settings["createPresetButtons_${sourceId}"] ?: false
-    syncRecordControlSwitch(sourceId, wantRecordControlSwitch)
-    syncPresetButtons(sourceId, wantPresetButtons)
+    // v1.5.0-beta12: every ACTIVE preset gets a permanent button number if
+    // it doesn't have one yet -- idempotent, so this also backfills numbers
+    // for presets created before this feature existed, on the next time
+    // this page happens to render. The bridge's numberOfButtons attribute
+    // is kept at the highest number ever assigned (see
+    // getOrAssignButtonNumber()'s comment for why it never shrinks).
+    presets.keySet().each { name -> getOrAssignButtonNumber(sourceId, name) }
+    def bridgeForButtons = getSourceBridge(sourceId)
+    def highestButton = (state.recNextButtonNumber ?: [:])[sourceId.toString()] as Integer ?: 0
+    bridgeForButtons?.receiveNumberOfButtons(highestButton)
 
     dynamicPage(name: "presetsPage", title: "Recording Presets - ${src?.label ?: ''}") {
         section {
-            paragraph pillHeader("Virtual devices (optional)")
-            paragraph "Both OFF by default. Turning one on creates a real Hubitat device nested under this " +
-                "source's bridge, so it can be used directly in Rule Machine's simple pickers instead of " +
-                "always going through Custom Action."
-            input "createRecordControlSwitch_${sourceId}", "bool",
-                title: "Create virtual Record Control switch (master on/off, mirrors enableRecording()/disableRecording())",
-                defaultValue: false, submitOnChange: true
-            input "createPresetButtons_${sourceId}", "bool",
-                title: "Create virtual buttons for presets (one push-button device per preset, mirrors loadPreset())",
-                defaultValue: false, submitOnChange: true
-            if (wantPresetButtons) {
-                paragraph "<span style='color:#5F5E5A;font-size:12px;'>ℹ️ Button devices are created/renamed/" +
-                    "removed automatically to match whatever presets exist below -- add or delete a preset and " +
-                    "its button follows, no separate step needed.</span>"
-            }
+            paragraph pillHeader("Rule Machine shortcuts")
+            paragraph "This source's bridge device (\"Reolink Device Bridge (${src?.label ?: ''})\") also " +
+                "exposes standard Switch and Button capabilities now, so both of these are available in Rule " +
+                "Machine's simple pickers -- no Custom Action needed:"
+            paragraph "&nbsp;&nbsp;• <b>Turn the bridge switch on/off</b> \u2192 same as enableRecording()/" +
+                "disableRecording() (the NVR's master record switch)."
+            paragraph "&nbsp;&nbsp;• <b>Push the bridge's button N</b> \u2192 loads whichever preset is shown " +
+                "as \"Button N\" below."
+            paragraph "Each preset's button number is assigned once, permanently, and is never reused even " +
+                "if that preset is later deleted -- so a rule built around a button number stays pointed at " +
+                "the SAME preset for as long as it exists, and just does nothing (rather than firing a " +
+                "different preset) if that preset is ever removed."
         }
         section {
             paragraph pillHeader("What this does")
@@ -981,7 +1012,8 @@ def presetsPage(params) {
             input "newPresetName", "text", title: "New preset name (e.g. 'Away', 'Present')", submitOnChange: true
         }
         presets.each { name, chMap ->
-            section("Preset: ${name}") {
+            def btnNum = (state.recPresetButtonNumbers ?: [:])[sourceId.toString()]?.get(name)
+            section("Preset: ${name}${btnNum ? " (Button ${btnNum})" : ""}") {
                 channels.each { ch ->
                     def channelNum = ch.getDataValue("channel")
                     def key = "preset_${sourceId}_${name}_${channelNum}"
@@ -1108,6 +1140,9 @@ def removeSource(id) {
     // v1.5.0-beta10: clean up any presets defined for this source too, so
     // state doesn't accumulate dead entries forever.
     state.recPresets?.remove(id.toString())
+    // v1.5.0-beta12: same cleanup for button-number bookkeeping.
+    state.recPresetButtonNumbers?.remove(id.toString())
+    state.recNextButtonNumber?.remove(id.toString())
     logNormal "Removed source ${id}"
 }
 
@@ -2434,14 +2469,6 @@ def componentSetRecordingEnabled(child, sourceId, Boolean enabled) {
         def hostResult = reolinkApiCall(sourceId, "SetRecV20", [Rec: [enable: enabled ? 1 : 0]])
         logNormal "Reolink source ${sourceId}: host-level SetRecV20 enable=${enabled ? 1 : 0} -- rspCode=${hostResult?.rspCode}"
         bridge?.receiveRecordingEnabled(enabled)
-        // v1.5.0-beta11: when this was triggered by something OTHER than
-        // the bridge itself (i.e. a virtual Record Control switch device),
-        // also update that device's own state -- otherwise its switch
-        // attribute would never reflect the real result and would just
-        // show whatever Hubitat's optimistic UI guessed on tap.
-        if (child != null && child != bridge) {
-            try { child.receiveRecordingEnabled(enabled) } catch (e) { /* child doesn't implement this, ignore */ }
-        }
     } catch (e) {
         logNormal "Reolink source ${sourceId}: host-level SetRecV20 failed -- ${e.message}"
     }
@@ -2598,85 +2625,73 @@ def componentCheckRecordingSchedule(child, String dni = null) {
 }
 
 // ============================================================================
-// v1.5.0-beta11 -- optional virtual devices (Record Control switch, preset
-// buttons), created/removed as children of the source's bridge, same
-// nesting pattern as Camera/Doorbell. Both are opt-in (see presetsPage()'s
-// two toggles) and both syncs below are idempotent -- safe to call on
-// every page load/postback, only actually creates or removes a device when
-// there's a real mismatch against the current toggle/preset state.
+// v1.5.0-beta12 -- persistent per-preset button numbering and push dispatch
+// for the bridge's own PushableButton capability (see
+// ReolinkDeviceBridge.groovy's push()). No child devices involved -- the
+// bridge itself is what Rule Machine points at.
 // ============================================================================
 
-private String recordControlDni(sourceId) {
-    "reolink-recctl-${sourceId}"
+/**
+ * Returns this preset's permanently-assigned button number, assigning one
+ * from the per-source monotonic counter if it doesn't have one yet.
+ * Idempotent -- safe to call every time the Recording Presets page renders,
+ * which is also how a preset created before this feature existed gets
+ * backfilled with a number the first time the page happens to load after
+ * upgrading, with no special migration step required.
+ * The counter (state.recNextButtonNumber) only ever increments -- see
+ * retireButtonNumber() below for why a deleted preset's number must never
+ * be handed back out to a different preset later.
+ */
+private Integer getOrAssignButtonNumber(sourceId, String presetName) {
+    def key = sourceId.toString()
+    def mapAll = state.recPresetButtonNumbers ?: [:]
+    def bySource = mapAll[key] ?: [:]
+    if (bySource.containsKey(presetName)) return bySource[presetName] as Integer
+    def counters = state.recNextButtonNumber ?: [:]
+    def next = ((counters[key] ?: 0) as Integer) + 1
+    counters[key] = next
+    state.recNextButtonNumber = counters
+    bySource[presetName] = next
+    mapAll[key] = bySource
+    state.recPresetButtonNumbers = mapAll
+    return next
 }
 
 /**
- * Preset names are free text but a DNI can't contain arbitrary characters
- * -- non-alphanumeric characters are collapsed to underscores. Two preset
- * names differing only in punctuation/spacing could theoretically collide;
- * not handled specially, since presets are expected to have short, plain
- * names ("Away", "Present") in practice.
+ * Removes a deleted preset's entry from the ACTIVE button-number mapping --
+ * deliberately does NOT touch state.recNextButtonNumber (the counter), so
+ * that number can never be assigned to a different preset later. A rule
+ * built around that number simply stops doing anything (componentBridge
+ * ButtonPushed() below finds no active preset for it and logs a no-op)
+ * instead of ever silently firing whatever preset happens to occupy that
+ * number next -- that's the entire point of this design over a plain
+ * positional numbering scheme.
  */
-private String presetButtonDni(sourceId, String presetName) {
-    "reolink-presetbtn-${sourceId}-${presetName.replaceAll(/[^A-Za-z0-9]/, '_')}"
-}
-
-/** Creates or removes the single per-source virtual Record Control switch to match the toggle on the Recording Presets page. */
-def syncRecordControlSwitch(sourceId, Boolean want) {
-    def bridge = getSourceBridge(sourceId)
-    if (!bridge) return
-    def dni = recordControlDni(sourceId)
-    def existing = bridge.getChildDevice(dni)
-    if (want && !existing) {
-        def src = getSource(sourceId)
-        def label = "Record Control (${src?.label ?: sourceId})"
-        def created = bridge.createRecordControlDevice(dni, label)
-        if (created) logNormal "Reolink source ${sourceId}: virtual Record Control switch created"
-    } else if (!want && existing) {
-        bridge.removeChannelDevice(dni)
-        logNormal "Reolink source ${sourceId}: virtual Record Control switch removed"
-    }
+private void retireButtonNumber(sourceId, String presetName) {
+    def mapAll = state.recPresetButtonNumbers ?: [:]
+    def key = sourceId.toString()
+    def bySource = mapAll[key] ?: [:]
+    bySource.remove(presetName)
+    mapAll[key] = bySource
+    state.recPresetButtonNumbers = mapAll
 }
 
 /**
- * Reconciles the set of per-source preset-button devices against
- * state.recPresets: creates a button for any preset that doesn't have one
- * yet, removes a button whose preset was deleted. Called with want=false
- * (toggle off) removes every existing preset-button device for this
- * source outright, regardless of what presets currently exist.
+ * Called by the bridge when its own push(btn) command fires (Rule Machine's
+ * "button pushed" trigger, or a manual push from the device page). Looks up
+ * which preset -- if any -- currently holds this button number and loads
+ * it; a number with no active preset (retired via a deletion, or simply
+ * never assigned) logs a no-op warning rather than guessing.
  */
-def syncPresetButtons(sourceId, Boolean want) {
-    def bridge = getSourceBridge(sourceId)
-    if (!bridge) return
-    def prefix = "reolink-presetbtn-${sourceId}-"
-    def existingButtons = bridge.getChildDevices()?.findAll { it.deviceNetworkId?.startsWith(prefix) } ?: []
-
-    if (!want) {
-        if (existingButtons) {
-            existingButtons.each { bridge.removeChannelDevice(it.deviceNetworkId) }
-            logNormal "Reolink source ${sourceId}: ${existingButtons.size()} virtual preset button(s) removed"
-        }
+def componentBridgeButtonPushed(child, sourceId, Integer btn) {
+    def bySource = (state.recPresetButtonNumbers ?: [:])[sourceId.toString()] ?: [:]
+    def presetName = bySource.find { name, num -> num == btn }?.key
+    if (!presetName) {
+        log.warn "Reolink source ${sourceId}: button ${btn} pushed but no active preset is currently assigned " +
+            "to it (may belong to a deleted preset) -- ignoring"
         return
     }
-
-    def presets = (state.recPresets ?: [:])[sourceId.toString()] ?: [:]
-    def src = getSource(sourceId)
-    def wantedDnis = presets.keySet().collect { presetButtonDni(sourceId, it) }
-
-    existingButtons.each { dev ->
-        if (!(dev.deviceNetworkId in wantedDnis)) {
-            bridge.removeChannelDevice(dev.deviceNetworkId)
-            logNormal "Reolink source ${sourceId}: removed preset button for a deleted/renamed preset (${dev.deviceNetworkId})"
-        }
-    }
-    presets.keySet().each { name ->
-        def dni = presetButtonDni(sourceId, name)
-        if (!bridge.getChildDevice(dni)) {
-            def label = "${name} Preset (${src?.label ?: sourceId})"
-            def created = bridge.createPresetButtonDevice(dni, label, name)
-            if (created) logNormal "Reolink source ${sourceId}: virtual preset button created for '${name}'"
-        }
-    }
+    componentLoadPreset(child, sourceId, presetName)
 }
 
 // ---------- Logging ----------
