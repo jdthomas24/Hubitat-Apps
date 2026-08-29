@@ -17,8 +17,11 @@
  * v1.5.0 BETA (in progress, shared privately with one reporting user, not
  * on HPM) -- NVR recording control, mirroring ParentApp.groovy's own
  * consolidated note (see that file for the full hardware-confirmed
- * details). Current design as of beta17 (beta17 itself was app-only -- a
- * new "Never record" preset picker choice -- no bridge code changed):
+ * details). Current design as of beta17. beta17 was mostly app-only (a new
+ * "Never record" preset picker choice), but one bridge fix was folded in
+ * before release (never shipped separately, so not its own version): a
+ * second push() bug, distinct from beta16's fix, found in the same round
+ * of beta15 logs -- see push()'s own comment below for the full story.
  *  - capability "Switch" (on()/off()) is the NVR's master record
  *    enable/disable -- untargeted at the API level (applies to every
  *    channel of this source at once; there is no per-channel version of
@@ -297,10 +300,21 @@ def off() {
  * owns this button number via the app's persistent numbering (see
  * ParentApp.groovy's beta12 header note) and loads it. A number belonging
  * to a deleted preset is a harmless no-op, logged app-side.
+ *
+ * v1.5.0-beta17-fix: parameter type changed from Integer to BigDecimal --
+ * CONFIRMED via real Rule Machine testing (a "No signature of method:
+ * ...push() is applicable for argument types: (java.math.BigDecimal)"
+ * error) that Rule Machine hands a NUMBER-type command argument to push()
+ * as a BigDecimal, not an Integer, and Groovy does not coerce between them
+ * automatically in this context -- the standard PushableButton signature
+ * used across Hubitat's own drivers is BigDecimal for exactly this reason.
+ * Converted to Integer internally (via toInteger()) before use, since the
+ * app-side button-number lookup compares against Integer keys.
  */
-def push(Integer btn) {
-    sendEvent(name: "pushed", value: btn, isStateChange: true)
-    parent?.componentBridgeButtonPushed(this, state.sourceId, btn)
+def push(BigDecimal btn) {
+    Integer btnInt = btn.toInteger()
+    sendEvent(name: "pushed", value: btnInt, isStateChange: true)
+    parent?.componentBridgeButtonPushed(this, state.sourceId, btnInt)
 }
 
 /** Called by the app once the master record switch has been set. Updates both the standard "switch" attribute (Rule Machine, dashboards) and the custom "recordingEnabled" attribute (kept for continuity with beta10). */
