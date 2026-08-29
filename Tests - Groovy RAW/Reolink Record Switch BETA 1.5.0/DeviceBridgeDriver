@@ -1,6 +1,6 @@
 /**
  * Reolink Device Bridge (Internal Parent Driver)
- * Version: 1.5.0-beta15
+ * Version: 1.5.0-beta17
  *
  * NOT user-facing. Created and managed automatically by the Reolink
  * Integration parent app -- ONE instance per SOURCE (Hub/NVR or standalone).
@@ -17,18 +17,31 @@
  * v1.5.0 BETA (in progress, shared privately with one reporting user, not
  * on HPM) -- NVR recording control, mirroring ParentApp.groovy's own
  * consolidated note (see that file for the full hardware-confirmed
- * details). Current design as of beta15:
+ * details). Current design as of beta17 (beta17 itself was app-only -- a
+ * new "Never record" preset picker choice -- no bridge code changed):
  *  - capability "Switch" (on()/off()) is the NVR's master record
  *    enable/disable -- untargeted at the API level (applies to every
  *    channel of this source at once; there is no per-channel version of
- *    this call). A prominent Preferences-page note explains this, since a
- *    bare "On/Off" switch label alone doesn't convey what it does.
+ *    this call). A Preferences-page note explains this, since a bare
+ *    "On/Off" switch label alone doesn't convey what it does.
  *  - capability "PushableButton" (push(btn)), the "Preset to load"
  *    Preferences dropdown, and loadSelectedPreset() all load a named
  *    per-channel schedule preset defined on the app's Recording Presets
  *    page. Each preset's button number is assigned once, permanently, and
  *    is never reused even after that preset is deleted -- see
  *    ParentApp.groovy's note for why.
+ *  - CONFIRMED (2026-08-29, real Rule Machine testing): on()/off()/
+ *    loadSelectedPreset() must be declared as bare, argument-free
+ *    commands. A beta15 attempt to attach description text to them (via a
+ *    param entry with no "type") rendered fine as plain text on this
+ *    device's own Commands tab, but Rule Machine's Custom Action treats
+ *    that same entry as a real argument slot and passes whatever's typed
+ *    into it straight through -- MissingMethodException the moment
+ *    someone fills that field in, since all three take zero real
+ *    arguments. Reverted; that explanatory text now lives on the
+ *    Preferences-tab box only. push(btn) was never affected -- its
+ *    "type: NUMBER" argument is genuine and Rule Machine handles it
+ *    correctly.
  *  - receiveRecordingEnabled()/receiveRecordingMode()/receiveRecordingResult()
  *    keep this device's switch/recordingEnabled/recordingMode/
  *    lastRecordingResult attributes in sync with what the app actually did.
@@ -74,39 +87,39 @@ metadata {
         // off()/push() implementations are below, near loadSelectedPreset().
         capability "Switch"
         capability "PushableButton"
-        // v1.5.0-beta15: explicit command overrides for on()/off()/push(),
-        // layered on top of the capability declarations above -- Hubitat
-        // renders a command declared this way (with a description string
-        // in its param map) with that text shown directly on the COMMANDS
-        // tab, right above the button itself, instead of a bare unlabeled
-        // On/Off toggle. This is the same mechanism the old removed
-        // enableRecording()/disableRecording() commands used for their own
-        // description text -- proven to render where it's actually needed
-        // (Commands tab, next to the button someone clicks) rather than
-        // only on the separate Preferences tab, which the beta15 warning
-        // box lived on exclusively and which a Commands-tab-only visit
-        // would never see. The Preferences-tab box stays too, as
-        // reinforcement for anyone who does look there.
-        command "on", [[name: "NVR's MASTER recording switch -- applies to EVERY channel at once (hardware/API limitation, can't target one channel). Does NOT control which hours get recorded -- that's set by loading a preset instead. Turn on once and leave on."]]
-        command "off", [[name: "Same master switch, OFF -- still every channel at once."]]
+        // v1.5.0-beta16: REVERTED beta15's Commands-tab description text
+        // for on()/off()/loadSelectedPreset() -- confirmed by the
+        // reporting user's real Rule Machine testing that this breaks
+        // Custom Action. A command declared with a description-only param
+        // entry (no "type") renders fine as plain text above a no-arg
+        // button on the device's OWN Commands tab, but Rule Machine's
+        // Custom Action apparently treats that same entry as "this command
+        // takes an argument" and offers a text field for it -- whatever's
+        // typed there gets passed straight through as a real String
+        // argument. Since on()/off()/loadSelectedPreset() are genuinely
+        // zero-argument methods, that throws a MissingMethodException the
+        // instant someone fills in that field (confirmed: loadSelectedPreset
+        // called with "Away" -- a value that likely looked like a natural
+        // thing to type, given the description text read like a prompt).
+        // Not worth the risk to real automations for cosmetic Commands-tab
+        // text -- all three are back to bare, argument-free declarations.
+        // The Preferences-tab explanation box is now the only place this
+        // gets explained. push(btn) is UNCHANGED and not part of this bug:
+        // it has a genuine, required "type: NUMBER" argument that Rule
+        // Machine correctly treats as real, matching its actual
+        // def push(Integer btn) signature.
+        command "on"
+        command "off"
         command "push", [[name: "btn", type: "NUMBER", description: "Button number -- check the Preferences tab's \"Preset to load\" dropdown for which number is assigned to which preset."]]
         command "startEventSubscription"
         command "stopEventSubscription"
-        // v1.5.0-beta15: enableRecording()/disableRecording()/loadPreset()
-        // (the free-text version) removed -- they were pure duplicates of
-        // buttons already on this same page (On/Off for the first two,
-        // "Load Selected Preset" + the Preferences dropdown for the
-        // third), and having two ways to trigger the same thing side by
-        // side on the Commands tab was just confusing, not useful. The
-        // underlying app methods they called (componentSetRecordingEnabled(),
-        // componentLoadPreset()) are unchanged and unaffected -- on()/off()
-        // and loadSelectedPreset() still call them directly.
         // No-argument companion command -- loads whichever preset is
         // picked in the "Preset to load" dropdown on this device's own
         // Preferences tab, so a preset can be triggered by hand without
         // typing its name. See getAvailablePresetNames()/
-        // loadSelectedPreset() below.
-        command "loadSelectedPreset", [[name: "Loads whichever preset is picked in the Preferences tab's \"Preset to load\" dropdown."]]
+        // loadSelectedPreset() below. Bare declaration, no param array --
+        // see the beta16 note above for why.
+        command "loadSelectedPreset"
         // configureConnection() is NOT declared as a UI command -- it's
         // always called programmatically by the app (ensureSourceBridge(),
         // unconditionally, every time it runs), so a manual "Configure
