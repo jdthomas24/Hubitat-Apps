@@ -1,6 +1,6 @@
 /**
  * Reolink Device Bridge (Internal Parent Driver)
- * Version: 1.5.0-beta10
+ * Version: 1.5.0-beta11
  *
  * NOT user-facing. Created and managed automatically by the Reolink
  * Integration parent app -- ONE instance per SOURCE (Hub/NVR or standalone).
@@ -14,6 +14,18 @@
  * every componentX() method below is a one-line passthrough up to this
  * bridge's own parent (the app).
  *
+ * v1.5.0-beta11 -- UNCONFIRMED, private beta (not on HPM), app+bridge+2
+ * driver files. Added createRecordControlDevice()/createPresetButtonDevice()
+ * -- same try/catch-DuplicateDNIException pattern as createChannelDevice()
+ * above, one level down -- so the app can create the two new OPT-IN virtual
+ * device types (Reolink Record Control, Reolink Preset Button) as children
+ * of this bridge, same nesting as Camera/Doorbell. Removal reuses the
+ * existing generic removeChannelDevice(). Added two passthrough methods,
+ * componentRecordControlSet()/componentPresetButtonPushed(), so those new
+ * driver files can reach the app the same one-line way every other
+ * componentX() call here already does. See ParentApp.groovy's beta11
+ * header note for the full design (why one button device per preset
+ * rather than a numbered multi-button device, etc).
  * v1.5.0-beta10 -- UNCONFIRMED, private beta (not on HPM), app+bridge only.
  * Replaced recordOn()/recordOff() (beta8) with three commands matching the
  * app's new preset-based recording design (see ParentApp.groovy's beta10
@@ -163,6 +175,54 @@ def removeChannelDevice(String dni) {
     deleteChildDevice(dni)
 }
 
+/**
+ * v1.5.0-beta11: creates the single per-source virtual Record Control
+ * switch (Switch capability) as a child of this bridge. Same
+ * try/catch-DuplicateDNIException pattern as createChannelDevice() above --
+ * see that method's comment for why. Returns null (and logs) on failure
+ * instead of throwing, so a caller (ParentApp.groovy's
+ * syncRecordControlSwitch()) can handle a failed create gracefully.
+ */
+def createRecordControlDevice(String dni, String label) {
+    def child
+    try {
+        child = addChildDevice("jdthomas24", "Reolink Record Control", dni, [
+            name: label, label: label, isComponent: true
+        ])
+    } catch (com.hubitat.device.exception.DuplicateDNIException e) {
+        log.warn "Reolink Device Bridge (source ${state.sourceId}): a device with DNI '${dni}' already exists " +
+            "somewhere on this hub but isn't reachable as this source's Record Control device -- likely an " +
+            "orphan from an earlier partial removal. Search your full Devices list for Device Network Id " +
+            "'${dni}' and delete it, then toggle the Recording Presets page's switch off and back on. (${e.message})"
+        return null
+    }
+    return child
+}
+
+/**
+ * v1.5.0-beta11: creates one virtual preset-button device (PushableButton
+ * capability) as a child of this bridge, tagged with which preset it
+ * represents via the presetName data value -- that's what
+ * ParentApp.groovy's componentPresetButtonPushed() passthrough reads to
+ * know which preset to load when the button is pushed.
+ */
+def createPresetButtonDevice(String dni, String label, String presetName) {
+    def child
+    try {
+        child = addChildDevice("jdthomas24", "Reolink Preset Button", dni, [
+            name: label, label: label, isComponent: true
+        ])
+    } catch (com.hubitat.device.exception.DuplicateDNIException e) {
+        log.warn "Reolink Device Bridge (source ${state.sourceId}): a device with DNI '${dni}' already exists " +
+            "somewhere on this hub but isn't reachable as this preset's button device -- likely an orphan " +
+            "from an earlier partial removal. Search your full Devices list for Device Network Id '${dni}' " +
+            "and delete it, then let the presets page recreate it. (${e.message})"
+        return null
+    }
+    child.updateDataValue("presetName", presetName)
+    return child
+}
+
 // ============================================================================
 // componentX() passthrough -- Camera/Doorbell call parent?.componentX(...)
 // unchanged; since THIS bridge is now their real parent, each call lands
@@ -204,6 +264,24 @@ def disableRecording() {
 
 def loadPreset(String presetName) {
     parent?.componentLoadPreset(this, state.sourceId, presetName)
+}
+
+// v1.5.0-beta11: passthroughs for the two new virtual device types --
+// same one-line forwarding pattern as every componentX() call above,
+// just not prefixed "component" since these aren't called by
+// Camera/Doorbell, they're called by Reolink Record Control / Reolink
+// Preset Button, whose real parent is also this bridge.
+def componentRecordControlSet(child, Boolean enabled) {
+    parent?.componentSetRecordingEnabled(child, state.sourceId, enabled)
+}
+
+def componentPresetButtonPushed(child) {
+    def presetName = child?.getDataValue("presetName")
+    if (!presetName) {
+        log.warn "Reolink Device Bridge (source ${state.sourceId}): preset button pushed with no presetName data value set -- ignoring"
+        return
+    }
+    parent?.componentLoadPreset(child, state.sourceId, presetName)
 }
 
 /** Called by the app once the master record switch has been set. */
