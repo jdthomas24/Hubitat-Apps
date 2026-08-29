@@ -1,6 +1,6 @@
 /**
  * Reolink Device Bridge (Internal Parent Driver)
- * Version: 1.5.0-beta12
+ * Version: 1.5.0-beta14
  *
  * NOT user-facing. Created and managed automatically by the Reolink
  * Integration parent app -- ONE instance per SOURCE (Hub/NVR or standalone).
@@ -13,6 +13,16 @@
  * parent?.componentX(...) calls resolve to THIS device (their real parent);
  * every componentX() method below is a one-line passthrough up to this
  * bridge's own parent (the app).
+ *
+ * v1.5.0-beta14 -- UNCONFIRMED, private beta (not on HPM), app+bridge. Added
+ * a "Preset to load" dropdown to this device's own Preferences page,
+ * populated live from ParentApp.groovy's new componentGetPresetNames() --
+ * fixes loadPreset() only ever being a free-text Commands-tab box with no
+ * picker, since a command parameter's type is fixed forever at driver
+ * definition time and can't be dynamic the way a Preferences input can.
+ * New no-argument loadSelectedPreset() command applies whichever preset is
+ * currently picked there. loadPreset(presetName) itself is unchanged and
+ * still works exactly as before for Custom Action / free-text use.
  *
  * v1.5.0-beta12 -- UNCONFIRMED, private beta (not on HPM), app+bridge only.
  * SUPERSEDES beta11 (never actually deployed). No separate driver files --
@@ -133,6 +143,12 @@ metadata {
         command "enableRecording", [[name: "Turns the NVR's master recording switch ON -- applies to every channel of this source, no per-channel targeting is possible at the API level"]]
         command "disableRecording", [[name: "Turns the NVR's master recording switch OFF -- applies to every channel of this source, no per-channel targeting is possible at the API level"]]
         command "loadPreset", [[name: "presetName", type: "STRING", description: "Name of a per-channel schedule preset defined on this source's Recording Presets page in the app"]]
+        // v1.5.0-beta14: no-argument companion to loadPreset() above --
+        // loads whichever preset is picked in the "Preset to load" dropdown
+        // on this device's own Preferences tab, so a preset can be
+        // triggered by hand without typing its name. See
+        // getAvailablePresetNames()/loadSelectedPreset() below.
+        command "loadSelectedPreset"
         // configureConnection() is NOT declared as a UI command -- it's
         // always called programmatically by the app (ensureSourceBridge(),
         // unconditionally, every time it runs), so a manual "Configure
@@ -165,6 +181,15 @@ metadata {
                 "from the Reolink Integration app's Log level setting (Errors Only / Normal / Full) -- " +
                 "there is nothing to configure here. Genuine connection failures always log regardless " +
                 "of that setting."
+        // v1.5.0-beta14: Preferences pages are re-evaluated fresh every
+        // time they're opened (unlike a Commands-tab parameter, which is
+        // locked to a fixed type forever) -- so this can pull a LIVE list
+        // of whatever presets currently exist for this source, instead of
+        // loadPreset()'s free-text box that requires typing a name exactly
+        // right with no picker at all. Pick one here, then run the
+        // "Load Selected Preset" command (Commands tab) to apply it.
+        input name: "presetToLoad", type: "enum", title: "Preset to load (via 'Load Selected Preset' command)",
+            options: getAvailablePresetNames(), required: false
     }
 }
 
@@ -259,6 +284,37 @@ def disableRecording() {
 
 def loadPreset(String presetName) {
     parent?.componentLoadPreset(this, state.sourceId, presetName)
+}
+
+/**
+ * v1.5.0-beta14: companion to loadPreset() -- loads whichever preset name
+ * is currently picked in the "Preset to load" Preferences dropdown, so a
+ * preset can be triggered from this device's page without typing its name.
+ */
+def loadSelectedPreset() {
+    def name = settings?.presetToLoad
+    if (!name || name.startsWith("(no presets")) {
+        log.warn "Reolink Device Bridge (source ${state.sourceId}): no preset selected (or none exist yet) -- " +
+            "add one on the app's Recording Presets page, then pick it here under Preferences"
+        return
+    }
+    parent?.componentLoadPreset(this, state.sourceId, name)
+}
+
+/**
+ * Backs the "Preset to load" dropdown above -- asks the app for this
+ * source's current preset names every time the Preferences page is opened,
+ * so the list is always live rather than fixed at driver-install time. A
+ * failure (or zero presets defined yet) falls back to a single obviously-
+ * not-a-real-preset placeholder option rather than an empty/broken dropdown;
+ * loadSelectedPreset() above recognizes and rejects that placeholder.
+ */
+private List<String> getAvailablePresetNames() {
+    def names = []
+    try {
+        names = parent?.componentGetPresetNames(state.sourceId) ?: []
+    } catch (e) { /* fall through to placeholder below */ }
+    return names ?: ["(no presets defined yet -- add one on the Recording Presets page in the app)"]
 }
 
 /** Switch capability -- same call as enableRecording()/disableRecording(), reachable from Rule Machine's simple "Turn On/Off a Switch" picker. */
