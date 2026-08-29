@@ -87,9 +87,9 @@ metadata {
         // box lived on exclusively and which a Commands-tab-only visit
         // would never see. The Preferences-tab box stays too, as
         // reinforcement for anyone who does look there.
-        command "on", [[name: "This is the NVR's MASTER recording switch -- applies to EVERY channel of this source at once, no way to target one channel (hardware/API limitation, not a setting here). Does NOT control which hours get recorded -- that's set separately by loading a preset (Push button below, or the app's Recording Presets page). Turn on once and leave on."]]
-        command "off", [[name: "Turns the same NVR-wide master recording switch OFF -- still applies to every channel of this source at once."]]
-        command "push", [[name: "btn", type: "NUMBER", description: "Button number -- see this device's Preferences tab (\"Preset to load\" dropdown) to find which number is currently assigned to which preset."]]
+        command "on", [[name: "NVR's MASTER recording switch -- applies to EVERY channel at once (hardware/API limitation, can't target one channel). Does NOT control which hours get recorded -- that's set by loading a preset instead. Turn on once and leave on."]]
+        command "off", [[name: "Same master switch, OFF -- still every channel at once."]]
+        command "push", [[name: "btn", type: "NUMBER", description: "Button number -- check the Preferences tab's \"Preset to load\" dropdown for which number is assigned to which preset."]]
         command "startEventSubscription"
         command "stopEventSubscription"
         // v1.5.0-beta15: enableRecording()/disableRecording()/loadPreset()
@@ -106,7 +106,7 @@ metadata {
         // Preferences tab, so a preset can be triggered by hand without
         // typing its name. See getAvailablePresetNames()/
         // loadSelectedPreset() below.
-        command "loadSelectedPreset"
+        command "loadSelectedPreset", [[name: "Loads whichever preset is picked in the Preferences tab's \"Preset to load\" dropdown."]]
         // configureConnection() is NOT declared as a UI command -- it's
         // always called programmatically by the app (ensureSourceBridge(),
         // unconditionally, every time it runs), so a manual "Configure
@@ -142,13 +142,11 @@ metadata {
         input name: "onOffExplainer", type: "paragraph", element: "paragraph",
             title: "⚠️ What the On / Off switch above actually does",
             description: "<div style='border:2px solid #185FA5;border-radius:8px;background:#E6F1FB;" +
-                "padding:10px 14px;'><b style='color:#042C53;'>This is the NVR's MASTER recording switch " +
-                "-- it applies to EVERY channel of this source at once. There is no way to target one " +
-                "channel with it (a hardware/API limitation, not a setting here).</b><br><br>" +
-                "<span style='color:#0C447C;'>It does NOT control which hours get recorded -- that's a " +
-                "completely separate thing, set by loading a preset below (or via Rule Machine's button " +
-                "trigger / the app's Recording Presets page). Turn this switch on once and leave it on; " +
-                "presets are what actually decide what each channel records.</span></div>"
+                "padding:10px 14px;'><b style='color:#042C53;'>NVR's MASTER recording switch -- applies to " +
+                "EVERY channel at once, can't target one channel (hardware/API limitation).</b><br><br>" +
+                "<span style='color:#0C447C;'>Does NOT control which hours get recorded -- that's set by " +
+                "loading a preset instead (Push button, or the app's Recording Presets page). Turn on once " +
+                "and leave on.</span></div>"
         input name: "loggingInfo", type: "paragraph", element: "paragraph",
             title: "ℹ️ Logging",
             description: "Log verbosity for this bridge (and every other Reolink device) is controlled " +
