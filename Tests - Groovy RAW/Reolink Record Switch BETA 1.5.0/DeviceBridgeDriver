@@ -1,6 +1,6 @@
 /**
  * Reolink Device Bridge (Internal Parent Driver)
- * Version: 1.5.0-beta14
+ * Version: 1.5.0-beta15
  *
  * NOT user-facing. Created and managed automatically by the Reolink
  * Integration parent app -- ONE instance per SOURCE (Hub/NVR or standalone).
@@ -14,85 +14,29 @@
  * every componentX() method below is a one-line passthrough up to this
  * bridge's own parent (the app).
  *
- * v1.5.0-beta14 -- UNCONFIRMED, private beta (not on HPM), app+bridge. Added
- * a "Preset to load" dropdown to this device's own Preferences page,
- * populated live from ParentApp.groovy's new componentGetPresetNames() --
- * fixes loadPreset() only ever being a free-text Commands-tab box with no
- * picker, since a command parameter's type is fixed forever at driver
- * definition time and can't be dynamic the way a Preferences input can.
- * New no-argument loadSelectedPreset() command applies whichever preset is
- * currently picked there. loadPreset(presetName) itself is unchanged and
- * still works exactly as before for Custom Action / free-text use.
+ * v1.5.0 BETA (in progress, shared privately with one reporting user, not
+ * on HPM) -- NVR recording control, mirroring ParentApp.groovy's own
+ * consolidated note (see that file for the full hardware-confirmed
+ * details). Current design as of beta15:
+ *  - capability "Switch" (on()/off()) is the NVR's master record
+ *    enable/disable -- untargeted at the API level (applies to every
+ *    channel of this source at once; there is no per-channel version of
+ *    this call). A prominent Preferences-page note explains this, since a
+ *    bare "On/Off" switch label alone doesn't convey what it does.
+ *  - capability "PushableButton" (push(btn)), the "Preset to load"
+ *    Preferences dropdown, and loadSelectedPreset() all load a named
+ *    per-channel schedule preset defined on the app's Recording Presets
+ *    page. Each preset's button number is assigned once, permanently, and
+ *    is never reused even after that preset is deleted -- see
+ *    ParentApp.groovy's note for why.
+ *  - receiveRecordingEnabled()/receiveRecordingMode()/receiveRecordingResult()
+ *    keep this device's switch/recordingEnabled/recordingMode/
+ *    lastRecordingResult attributes in sync with what the app actually did.
+ *  - Two earlier designs (recordOn()/recordOff() with app-side cache-and-
+ *    restore; separate virtual child devices for the switch/buttons) were
+ *    built, tested, and fully replaced by the above -- not detailed here,
+ *    neither exists in the code anymore.
  *
- * v1.5.0-beta12 -- UNCONFIRMED, private beta (not on HPM), app+bridge only.
- * SUPERSEDES beta11 (never actually deployed). No separate driver files --
- * this device itself now declares Switch and PushableButton capabilities
- * directly, since exactly one bridge already exists per source. on()/off()
- * call componentSetRecordingEnabled() (same as enableRecording()/
- * disableRecording(), just reachable from Rule Machine's simple switch
- * picker now); push(btn) calls componentBridgeButtonPushed(), which looks
- * up which preset (if any) currently owns that button number -- see
- * ParentApp.groovy's beta12 header note for the full persistent-numbering
- * design (a button number is assigned to a preset once, permanently, and
- * is never reused even after that preset is deleted, so a Rule Machine
- * trigger built around a button number can't ever silently repoint at a
- * different preset). receiveRecordingEnabled() now also sets the standard
- * "switch" attribute, not just the custom "recordingEnabled" one, so both
- * stay in sync automatically. Added receiveNumberOfButtons(), called by
- * the app whenever a new preset gets a button number assigned. Removed
- * createRecordControlDevice()/createPresetButtonDevice() and the
- * componentRecordControlSet()/componentPresetButtonPushed() passthroughs --
- * no child devices are created for any of this anymore.
- * v1.5.0-beta11 -- SUPERSEDED by beta12 above (kept here for history only
- * -- this design was never actually deployed to the reporting user).
- * UNCONFIRMED, private beta (not on HPM), app+bridge+2
- * driver files. Added createRecordControlDevice()/createPresetButtonDevice()
- * -- same try/catch-DuplicateDNIException pattern as createChannelDevice()
- * above, one level down -- so the app can create the two new OPT-IN virtual
- * device types (Reolink Record Control, Reolink Preset Button) as children
- * of this bridge, same nesting as Camera/Doorbell. Removal reuses the
- * existing generic removeChannelDevice(). Added two passthrough methods,
- * componentRecordControlSet()/componentPresetButtonPushed(), so those new
- * driver files can reach the app the same one-line way every other
- * componentX() call here already does. See ParentApp.groovy's beta11
- * header note for the full design (why one button device per preset
- * rather than a numbered multi-button device, etc).
- * v1.5.0-beta10 -- UNCONFIRMED, private beta (not on HPM), app+bridge only.
- * Replaced recordOn()/recordOff() (beta8) with three commands matching the
- * app's new preset-based recording design (see ParentApp.groovy's beta10
- * header note for the full story): enableRecording()/disableRecording()
- * for the NVR's master record switch (untargeted, applies to every channel
- * -- no per-channel version of this call exists at the API level), and
- * loadPreset(name) to write a named, per-channel schedule defined on the
- * app's Recording Presets page. recordingMode changed from a fixed
- * normal/continuous enum to a plain string, since it now reflects whatever
- * preset name was last loaded rather than one of two fixed states.
- * lastRecordingResult is unchanged. Added recordingEnabled attribute to
- * separately reflect the master switch's own state, since that's now a
- * genuinely separate concept from "which preset is loaded."
- * v1.5.0-beta8 -- UNCONFIRMED, private beta (not on HPM), app+bridge only.
- * Jumped straight from beta2 -- beta3 through beta7 were app-only fixes
- * that didn't need this driver touched. Dropped the generic Switch
- * capability's on()/off() in favor of explicit recordOn()/recordOff()
- * commands, at the reporting user's request, anticipating similar toggles
- * for other Reolink settings (email, push notifications) on this same
- * bridge device later -- shared on()/off() naming couldn't have
- * accommodated that without ambiguity. Dropped the "switch" attribute
- * along with it; recordingMode is the status indicator now. (recordOn()/
- * recordOff() themselves are replaced in beta10 -- see above.)
- * v1.5.0-beta2 -- UNCONFIRMED, private beta (not on HPM), app+bridge only --
- * same two files as beta1, no Camera/Doorbell changes needed. Added
- * lastRecordingResult attribute so a per-channel success/failure summary
- * (e.g. "6/6 OK" or "5/6 OK, failed: ch3") shows directly on this device
- * page instead of requiring a log dive to tell whether the recording
- * command actually worked on every channel.
- * v1.5.0-beta1 -- UNCONFIRMED. Added Switch capability: on() forced every
- * channel of this source into continuous (24/7) recording, off() restored
- * each channel's previously-saved schedule. The actual GetRec/SetRec logic
- * lives app-side (see ParentApp.groovy) -- this driver just forwards the
- * command and reflects the resulting recordingMode attribute. Built from
- * the Reolink Camera HTTP API User Guide v7 (section 3.6) but not yet
- * tested against real hardware at the time.
  * v1.4.2 -- No functional change to this driver (version kept in sync with
  * the app); the paragraph() hotfix was in the Camera/Doorbell driver files.
  * v1.4.1 -- No functional change (app-side batteryMode self-heal only).
@@ -124,30 +68,28 @@ import javax.crypto.spec.IvParameterSpec
 metadata {
     definition(name: "Reolink Device Bridge", namespace: "jdthomas24", author: "Jason", component: true) {
         capability "Actuator"
-        // v1.5.0-beta12: Switch and PushableButton, declared directly on
-        // this device instead of a separate child device -- see the
-        // header note above and ParentApp.groovy's beta12 note for the
-        // full design. on()/off()/push() implementations are below, near
-        // enableRecording()/disableRecording()/loadPreset().
+        // Switch and PushableButton, declared directly on this device
+        // instead of a separate child device -- see the header note above
+        // and ParentApp.groovy's beta12 note for the full design. on()/
+        // off()/push() implementations are below, near loadSelectedPreset().
         capability "Switch"
         capability "PushableButton"
         command "startEventSubscription"
         command "stopEventSubscription"
-        // recordOn/recordOff -> replaced beta10 by these three, matching
-        // the app's preset-based recording design -- see
-        // ParentApp.groovy's componentSetRecordingEnabled()/
-        // componentLoadPreset() for the real logic. Kept alongside the
-        // new Switch/PushableButton capabilities above (both paths reach
-        // the same underlying calls) so Custom Action still works exactly
-        // as it did in beta10 for anyone already using it that way.
-        command "enableRecording", [[name: "Turns the NVR's master recording switch ON -- applies to every channel of this source, no per-channel targeting is possible at the API level"]]
-        command "disableRecording", [[name: "Turns the NVR's master recording switch OFF -- applies to every channel of this source, no per-channel targeting is possible at the API level"]]
-        command "loadPreset", [[name: "presetName", type: "STRING", description: "Name of a per-channel schedule preset defined on this source's Recording Presets page in the app"]]
-        // v1.5.0-beta14: no-argument companion to loadPreset() above --
-        // loads whichever preset is picked in the "Preset to load" dropdown
-        // on this device's own Preferences tab, so a preset can be
-        // triggered by hand without typing its name. See
-        // getAvailablePresetNames()/loadSelectedPreset() below.
+        // v1.5.0-beta15: enableRecording()/disableRecording()/loadPreset()
+        // (the free-text version) removed -- they were pure duplicates of
+        // buttons already on this same page (On/Off for the first two,
+        // "Load Selected Preset" + the Preferences dropdown for the
+        // third), and having two ways to trigger the same thing side by
+        // side on the Commands tab was just confusing, not useful. The
+        // underlying app methods they called (componentSetRecordingEnabled(),
+        // componentLoadPreset()) are unchanged and unaffected -- on()/off()
+        // and loadSelectedPreset() still call them directly.
+        // v1.5.0-beta14: no-argument companion command -- loads whichever
+        // preset is picked in the "Preset to load" dropdown on this
+        // device's own Preferences tab, so a preset can be triggered by
+        // hand without typing its name. See getAvailablePresetNames()/
+        // loadSelectedPreset() below.
         command "loadSelectedPreset"
         // configureConnection() is NOT declared as a UI command -- it's
         // always called programmatically by the app (ensureSourceBridge(),
@@ -158,36 +100,52 @@ metadata {
         attribute "connectionStatus", "enum", ["disconnected", "connecting", "connected", "reconnecting"]
         // v1.5.0-beta10: was a fixed unknown/normal/continuous enum through
         // beta9 -- now reflects whichever preset name was last loaded via
-        // loadPreset(), which can be any user-defined string, so this is a
-        // plain string attribute instead of a closed enum.
+        // loadPreset()/loadSelectedPreset(), which can be any user-defined
+        // string, so this is a plain string attribute instead of a closed
+        // enum.
         attribute "recordingMode", "string"
-        // v1.5.0-beta10: separately reflects the master record switch's own
-        // on/off state (enableRecording()/disableRecording()), independent
-        // of which preset is loaded -- the two are genuinely separate
-        // concepts now (see ParentApp.groovy's beta10 header note). Kept
-        // alongside the standard "switch" attribute (from the Switch
-        // capability added in beta12) -- both are updated together by
+        // Separately reflects the master record switch's own on/off state,
+        // independent of which preset is loaded -- the two are genuinely
+        // separate concepts (see ParentApp.groovy's beta10 header note).
+        // Kept alongside the standard "switch" attribute (from the Switch
+        // capability) -- both are updated together by
         // receiveRecordingEnabled() below, so either can be used.
         attribute "recordingEnabled", "enum", ["enabled", "disabled"]
         // v1.5.0-beta2: per-channel success/failure summary from the last
-        // loadPreset() call, e.g. "6/6 OK" or "5/6 OK, failed: ch3, skipped
+        // preset load, e.g. "6/6 OK" or "5/6 OK, failed: ch3, skipped
         // (no data): ch7" -- visible on this device page without a log dive.
         attribute "lastRecordingResult", "string"
     }
     preferences {
+        // v1.5.0-beta15: FIRST item on this page, deliberately, and styled
+        // to stand out -- a bare "On/Off" switch label conveys nothing
+        // about what it actually does, and this replaces the previous
+        // enableRecording()/disableRecording() named commands (removed
+        // this round as pure duplicates of On/Off) as how that gets
+        // explained instead.
+        input name: "onOffExplainer", type: "paragraph", element: "paragraph",
+            title: "⚠️ What the On / Off switch above actually does",
+            description: "<div style='border:2px solid #185FA5;border-radius:8px;background:#E6F1FB;" +
+                "padding:10px 14px;'><b style='color:#042C53;'>This is the NVR's MASTER recording switch " +
+                "-- it applies to EVERY channel of this source at once. There is no way to target one " +
+                "channel with it (a hardware/API limitation, not a setting here).</b><br><br>" +
+                "<span style='color:#0C447C;'>It does NOT control which hours get recorded -- that's a " +
+                "completely separate thing, set by loading a preset below (or via Rule Machine's button " +
+                "trigger / the app's Recording Presets page). Turn this switch on once and leave it on; " +
+                "presets are what actually decide what each channel records.</span></div>"
         input name: "loggingInfo", type: "paragraph", element: "paragraph",
             title: "ℹ️ Logging",
             description: "Log verbosity for this bridge (and every other Reolink device) is controlled " +
                 "from the Reolink Integration app's Log level setting (Errors Only / Normal / Full) -- " +
                 "there is nothing to configure here. Genuine connection failures always log regardless " +
                 "of that setting."
-        // v1.5.0-beta14: Preferences pages are re-evaluated fresh every
-        // time they're opened (unlike a Commands-tab parameter, which is
-        // locked to a fixed type forever) -- so this can pull a LIVE list
-        // of whatever presets currently exist for this source, instead of
-        // loadPreset()'s free-text box that requires typing a name exactly
-        // right with no picker at all. Pick one here, then run the
-        // "Load Selected Preset" command (Commands tab) to apply it.
+        // Preferences pages are re-evaluated fresh every time they're
+        // opened (unlike a Commands-tab parameter, which is locked to a
+        // fixed type forever) -- so this can pull a LIVE list of whatever
+        // presets currently exist for this source, instead of requiring a
+        // name typed exactly right with no picker at all. Pick one here,
+        // then run the "Load Selected Preset" command (Commands tab) to
+        // apply it.
         input name: "presetToLoad", type: "enum", title: "Preset to load (via 'Load Selected Preset' command)",
             options: getAvailablePresetNames(), required: false
     }
@@ -259,37 +217,18 @@ def componentSetPollInterval(child, Integer seconds, String dni = null) { parent
 def componentSetSnapshotInterval(child, Integer seconds, String dni = null) { parent?.componentSetSnapshotInterval(child, seconds, dni) }
 
 // ============================================================================
-// v1.5.0-beta10: recording control for this source -- master switch plus
-// named per-channel presets. UNCONFIRMED as a preset workflow end-to-end;
-// see the header note and ParentApp.groovy's componentSetRecordingEnabled()/
-// componentLoadPreset() for the real logic. This driver only forwards each
-// command and reflects the result.
+// v1.5.0 BETA: recording control for this source, reachable via the
+// standard Switch/PushableButton capabilities plus the "Preset to load"
+// Preferences dropdown -- see ParentApp.groovy's componentSetRecordingEnabled()/
+// componentLoadPreset()/componentBridgeButtonPushed() for the real logic.
+// This driver only forwards each command and reflects the result.
 // ============================================================================
-// ============================================================================
-// v1.5.0-beta12: recording control for this source -- reachable two ways
-// now. enableRecording()/disableRecording()/loadPreset() (Custom Action,
-// unchanged since beta10) and on()/off()/push() (Switch/PushableButton,
-// Rule Machine's simple pickers, new in beta12) both call the exact same
-// app-side logic -- see ParentApp.groovy's componentSetRecordingEnabled()/
-// componentLoadPreset()/componentBridgeButtonPushed(). This driver only
-// forwards each command and reflects the result.
-// ============================================================================
-def enableRecording() {
-    parent?.componentSetRecordingEnabled(this, state.sourceId, true)
-}
-
-def disableRecording() {
-    parent?.componentSetRecordingEnabled(this, state.sourceId, false)
-}
-
-def loadPreset(String presetName) {
-    parent?.componentLoadPreset(this, state.sourceId, presetName)
-}
 
 /**
- * v1.5.0-beta14: companion to loadPreset() -- loads whichever preset name
- * is currently picked in the "Preset to load" Preferences dropdown, so a
- * preset can be triggered from this device's page without typing its name.
+ * Companion to the "Preset to load" Preferences dropdown -- loads whichever
+ * preset name is currently picked there, so a preset can be triggered from
+ * this device's own page without needing Rule Machine's Custom Action or
+ * typing a name by hand.
  */
 def loadSelectedPreset() {
     def name = settings?.presetToLoad
@@ -317,7 +256,7 @@ private List<String> getAvailablePresetNames() {
     return names ?: ["(no presets defined yet -- add one on the Recording Presets page in the app)"]
 }
 
-/** Switch capability -- same call as enableRecording()/disableRecording(), reachable from Rule Machine's simple "Turn On/Off a Switch" picker. */
+/** Switch capability -- the NVR's master record enable/disable. See the Preferences-page note above (rendered near the top of that page) for what this actually does; a bare On/Off label alone doesn't convey it. */
 def on() {
     parent?.componentSetRecordingEnabled(this, state.sourceId, true)
 }
