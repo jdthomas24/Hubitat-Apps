@@ -35,7 +35,14 @@
  *    manage") means "leave whatever schedule is already there alone," NOT
  *    "actively silence this channel," and there was no way to explicitly
  *    write an all-zero schedule without dropping into Advanced mode and
- *    hand-typing "0"*168. buildNeverBitstring() covers it now.
+ *    hand-typing "0"*168. buildNeverBitstring() covers it now. Also folded
+ *    in before release (never shipped separately): a second, DIFFERENT
+ *    push() bug caught in the same round of beta15 logs -- see
+ *    ReolinkDeviceBridge.groovy's push() comment. Not the same issue
+ *    beta16 fixed (that was Custom Action's argument-field problem on
+ *    zero-argument commands); this was push(Integer btn) rejecting the
+ *    BigDecimal Rule Machine actually sends for a NUMBER-type command
+ *    argument. Fixed by accepting BigDecimal and converting internally.
  *  - beta16 (bridge-only fix): CONFIRMED via real Rule Machine testing
  *    that a bridge command declared with description-only metadata (no
  *    real argument) renders fine on that device's own Commands tab, but
