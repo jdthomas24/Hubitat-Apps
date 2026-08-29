@@ -1,6 +1,6 @@
 /**
  * Reolink Integration (Parent App)
- * Version: 1.5.0-beta17
+ * Version: 1.5.0-beta18
  *
  * Architecture: a "source" is anything answering the Reolink HTTP/JSON API
  * (standalone camera, PoE NVR, or Home Hub), each with its own IP + creds. A
@@ -28,8 +28,16 @@
  * v1.5.0 BETA (in progress, shared privately with one reporting user, not
  * on HPM) -- NVR recording control: a master record on/off switch, plus
  * named per-channel schedule presets loaded on demand. Current design as
- * of beta17 (this section is periodically condensed as the design
+ * of beta18 (this section is periodically condensed as the design
  * settles, same practice as the trimmed pre-1.3.8 history below):
+ *  - beta18 (bridge-only, no app change): revisited beta16's blanket
+ *    removal of Commands-tab description text from on()/off()/
+ *    loadSelectedPreset() -- see ReolinkDeviceBridge.groovy's beta18 note.
+ *    Restored it for on()/off() (never actually confirmed to crash, no
+ *    real temptation to type a stray value into an optional field for a
+ *    plain switch); loadSelectedPreset() stays bare, since ITS OWN
+ *    description text is what's confirmed to have caused the real crash
+ *    by inviting exactly the wrong input.
  *  - beta17: added a fourth simple-picker choice, REC_MODE_NEVER ("Never
  *    record") -- a real gap the reporting user found: REC_MODE_OFF ("Don't
  *    manage") means "leave whatever schedule is already there alone," NOT
@@ -229,7 +237,7 @@ definition(
     oauth: true // required for createAccessToken()/local endpoint access used by the snapshot relay
 )
 
-@Field static final String APP_VERSION = "1.5.0-beta17"
+@Field static final String APP_VERSION = "1.5.0-beta18"
 
 @Field static final List LOG_LEVELS = ["Errors Only", "Normal", "Full"]
 
