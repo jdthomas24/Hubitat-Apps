@@ -74,6 +74,22 @@ metadata {
         // off()/push() implementations are below, near loadSelectedPreset().
         capability "Switch"
         capability "PushableButton"
+        // v1.5.0-beta15: explicit command overrides for on()/off()/push(),
+        // layered on top of the capability declarations above -- Hubitat
+        // renders a command declared this way (with a description string
+        // in its param map) with that text shown directly on the COMMANDS
+        // tab, right above the button itself, instead of a bare unlabeled
+        // On/Off toggle. This is the same mechanism the old removed
+        // enableRecording()/disableRecording() commands used for their own
+        // description text -- proven to render where it's actually needed
+        // (Commands tab, next to the button someone clicks) rather than
+        // only on the separate Preferences tab, which the beta15 warning
+        // box lived on exclusively and which a Commands-tab-only visit
+        // would never see. The Preferences-tab box stays too, as
+        // reinforcement for anyone who does look there.
+        command "on", [[name: "This is the NVR's MASTER recording switch -- applies to EVERY channel of this source at once, no way to target one channel (hardware/API limitation, not a setting here). Does NOT control which hours get recorded -- that's set separately by loading a preset (Push button below, or the app's Recording Presets page). Turn on once and leave on."]]
+        command "off", [[name: "Turns the same NVR-wide master recording switch OFF -- still applies to every channel of this source at once."]]
+        command "push", [[name: "btn", type: "NUMBER", description: "Button number -- see this device's Preferences tab (\"Preset to load\" dropdown) to find which number is currently assigned to which preset."]]
         command "startEventSubscription"
         command "stopEventSubscription"
         // v1.5.0-beta15: enableRecording()/disableRecording()/loadPreset()
@@ -85,10 +101,10 @@ metadata {
         // underlying app methods they called (componentSetRecordingEnabled(),
         // componentLoadPreset()) are unchanged and unaffected -- on()/off()
         // and loadSelectedPreset() still call them directly.
-        // v1.5.0-beta14: no-argument companion command -- loads whichever
-        // preset is picked in the "Preset to load" dropdown on this
-        // device's own Preferences tab, so a preset can be triggered by
-        // hand without typing its name. See getAvailablePresetNames()/
+        // No-argument companion command -- loads whichever preset is
+        // picked in the "Preset to load" dropdown on this device's own
+        // Preferences tab, so a preset can be triggered by hand without
+        // typing its name. See getAvailablePresetNames()/
         // loadSelectedPreset() below.
         command "loadSelectedPreset"
         // configureConnection() is NOT declared as a UI command -- it's
