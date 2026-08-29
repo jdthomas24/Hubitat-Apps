@@ -768,28 +768,28 @@ def discoverPage(params) {
                 def channelListHidden = settings["hideChannelList_${sourceId}"] ?: false
 
                 if (!channelListHidden) {
+                    // v1.5.0-beta15: a full-width paragraph after each
+                    // toggle (the old colored badge) forces the next item
+                    // to a new row, which is what was preventing the
+                    // two-per-row width:6 layout below from packing --
+                    // colored emoji baked directly into the toggle's own
+                    // title text sidesteps that entirely (no separate
+                    // element, so nothing to force a row break) while still
+                    // giving a real color cue, since emoji render as actual
+                    // color regardless of whether Hubitat treats a title as
+                    // plain text or HTML.
+                    paragraph "<span style='color:#5F5E5A;font-size:12px;'>ℹ️ \uD83D\uDFE2 marks a channel " +
+                        "that already has a device (toggle off + apply to remove it); \uD83C\uDD95 marks one " +
+                        "that doesn't have a device yet (toggle on + apply to create it).</span>"
                     lastDiscovery.each { ch ->
                         def dni = childDni(sourceId, ch.channel)
                         def bridgeForList = getSourceBridge(sourceId)
                         def exists = bridgeForList?.getChildDevice(dni) != null
                         def doorbellTag = ch.deviceType == "doorbell" ? " (Doorbell)" : ""
+                        def statusTag = exists ? " \uD83D\uDFE2" : " \uD83C\uDD95"
                         input "create_${sourceId}_${ch.channel}", "bool",
-                            title: "Ch ${ch.channel}: ${ch.name}${doorbellTag}",
-                            defaultValue: exists, submitOnChange: true
-                        if (exists) {
-                            paragraph "<div style='margin:-8px 0 0 32px;border-left:3px solid #378ADD;" +
-                                "padding-left:10px;'><span style='display:inline-block;background:#B5D4F4;color:#042C53;" +
-                                "font-weight:500;font-size:11px;letter-spacing:0.3px;padding:2px 10px;" +
-                                "border-radius:20px;margin-right:6px;'>EXISTING DEVICE</span>" +
-                                "<span style='color:#5F5E5A;font-size:13px;'>Toggle off + apply to remove it</span></div>"
-                        } else {
-                            paragraph "<div style='margin:-8px 0 0 32px;border-left:3px solid #639922;" +
-                                "padding-left:10px;'><span style='display:inline-block;background:#C0DD97;color:#173404;" +
-                                "font-weight:500;font-size:11px;letter-spacing:0.3px;padding:2px 10px;" +
-                                "border-radius:20px;margin-right:6px;'>NEW DEVICE</span>" +
-                                "<span style='color:#5F5E5A;font-size:13px;'>Toggle on + apply to create it</span></div>"
-                        }
-                        paragraph "<div style='height:1px;background:#e0e0e0;margin:12px 0 12px 32px;'></div>"
+                            title: "Ch ${ch.channel}: ${ch.name}${doorbellTag}${statusTag}",
+                            defaultValue: exists, submitOnChange: true, width: 6
                     }
 
                     if (channelCount > 1) {
