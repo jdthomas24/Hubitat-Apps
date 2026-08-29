@@ -25,6 +25,32 @@
  * -- existing installs had to delete/recreate devices (and repoint
  * dashboards/rules) via re-discovery under each source.
  *
+ * v1.5.0-beta13 -- UNCONFIRMED, private beta (not on HPM), app only (no
+ * bridge changes needed). Replaced the raw 168-character schedule text
+ * field with a plain-language picker for the vast majority of cases: per
+ * channel, per preset, a simple choice of "Don't manage / Continuous
+ * (24/7) / Time range each day," with the range option offering two
+ * ordinary hour pickers (e.g. 6:00 PM to 6:00 AM) instead of any character
+ * counting. The 168-char string still exists underneath -- buildContinuousBitstring()
+ * and buildRangeBitstring() generate it from the simple picker's choice --
+ * but nothing about it is ever shown to someone using the default mode.
+ * "Don't manage" is the default for every channel and behaves exactly like
+ * leaving the old text field blank always did: that channel's schedule is
+ * left completely alone, so someone who wants Reolink's own app in full
+ * control of a channel (or all of them) never has to touch this page at
+ * all beyond leaving everything on its default.
+ * A per-source "Advanced" toggle (OFF by default, with an on-page warning)
+ * reveals the original raw-string field for anyone who wants a schedule
+ * the simple picker can't express (different hours on different days,
+ * etc.) -- this is a straight revert to the beta10-beta12 text field, not
+ * a new mechanism, so nothing about how a saved preset is actually loaded
+ * or applied changed at all; only how it's authored on this page did.
+ * Friendly picker selections are stored separately from the underlying
+ * bitstring (state.recPresetSimpleConfig, alongside state.recPresets) so
+ * the picker can redisplay someone's actual choice ("6:00 PM to 6:00 AM")
+ * next time they open the page, rather than trying to reverse-engineer a
+ * plain-English range back out of an arbitrary 168-char string.
+ *
  * v1.5.0-beta12 -- UNCONFIRMED, private beta (not on HPM), app+bridge only.
  * SUPERSEDES beta11's approach entirely -- no separate driver files, no
  * opt-in toggles, no child devices to create/remove. Switch and
@@ -347,7 +373,7 @@ definition(
     oauth: true // required for createAccessToken()/local endpoint access used by the snapshot relay
 )
 
-@Field static final String APP_VERSION = "1.5.0-beta12"
+@Field static final String APP_VERSION = "1.5.0-beta13"
 
 @Field static final List LOG_LEVELS = ["Errors Only", "Normal", "Full"]
 
@@ -374,6 +400,48 @@ definition(
 // characters: 24 hours x 7 days, one digit per hour (Sunday 12am first),
 // 1 = record, 0 = don't. Used to validate presetsPage() input.
 @Field static final int REC_SCHEDULE_LENGTH = 168
+
+// v1.5.0-beta13: plain-language hour labels for the simple time-range
+// picker (index 0 = 12:00 AM ... index 23 = 11:00 PM) -- REC_HOUR_LABELS[h]
+// is what's shown in the dropdown, indexOf(label) converts a selection
+// back to an hour number for buildRangeBitstring().
+@Field static final List<String> REC_HOUR_LABELS = [
+    "12:00 AM", "1:00 AM", "2:00 AM", "3:00 AM", "4:00 AM", "5:00 AM",
+    "6:00 AM", "7:00 AM", "8:00 AM", "9:00 AM", "10:00 AM", "11:00 AM",
+    "12:00 PM", "1:00 PM", "2:00 PM", "3:00 PM", "4:00 PM", "5:00 PM",
+    "6:00 PM", "7:00 PM", "8:00 PM", "9:00 PM", "10:00 PM", "11:00 PM"
+]
+
+// v1.5.0-beta13: the three choices in the simple per-channel picker.
+// Used as both the enum option text AND the internal mode marker, so
+// there's no separate mapping to keep in sync.
+@Field static final String REC_MODE_OFF = "Don't manage (leave to Reolink app)"
+@Field static final String REC_MODE_CONTINUOUS = "Continuous (24/7)"
+@Field static final String REC_MODE_RANGE = "Time range each day"
+
+/** All-1s, 168 characters -- the simple picker's "Continuous" choice. */
+private String buildContinuousBitstring() {
+    return "1" * REC_SCHEDULE_LENGTH
+}
+
+/**
+ * Builds a 168-char schedule string for "record from startHour to endHour,
+ * every day the same way." Handles an overnight window (e.g. 18 to 6)
+ * automatically -- the active hours simply wrap past midnight. Equal
+ * start/end is treated as an empty (all-zero) window rather than either
+ * "all day" or a single instant, since there's no unambiguous way to read
+ * "6 PM to 6 PM" otherwise; the picker's UI text calls this out.
+ */
+private String buildRangeBitstring(int startHour, int endHour) {
+    if (startHour == endHour) return "0" * REC_SCHEDULE_LENGTH
+    def dayBits = (0..23).collect { h ->
+        boolean active = (startHour < endHour) ?
+            (h >= startHour && h < endHour) :
+            (h >= startHour || h < endHour)
+        return active ? "1" : "0"
+    }.join()
+    return dayBits * 7
+}
 
 preferences {
     page(name: "mainPage")
@@ -922,21 +990,45 @@ def presetsPage(params) {
 
     def presets = (state.recPresets ?: [:])[sourceId.toString()] ?: [:]
 
+    // v1.5.0-beta13: per-source, off by default -- reveals the original
+    // raw 168-char text field instead of the simple picker below. Read
+    // before the save-handling loop since saving branches on it.
+    def advancedMode = settings["advancedScheduleEditing_${sourceId}"] ?: false
+
     // Handle any pending save/delete toggles for existing presets before
     // rendering, same pattern as discoverPage()'s confirmCreate handling.
     presets.keySet().toList().each { name ->
         if (settings["savePreset_${name}"]) {
             def updated = [:]
+            def simpleUpdated = [:]
             channels.each { ch ->
                 def channelNum = ch.getDataValue("channel")
-                def val = settings["preset_${sourceId}_${name}_${channelNum}"]
-                if (val) {
-                    if (val.length() == REC_SCHEDULE_LENGTH && val ==~ /[01]+/) {
-                        updated[channelNum] = val
-                    } else {
-                        log.warn "Reolink source ${sourceId}: preset '${name}' ch ${channelNum} schedule " +
-                            "invalid (need exactly ${REC_SCHEDULE_LENGTH} chars of 0/1, got ${val.length()}) -- not saved"
+                if (advancedMode) {
+                    def val = settings["preset_${sourceId}_${name}_${channelNum}"]
+                    if (val) {
+                        if (val.length() == REC_SCHEDULE_LENGTH && val ==~ /[01]+/) {
+                            updated[channelNum] = val
+                        } else {
+                            log.warn "Reolink source ${sourceId}: preset '${name}' ch ${channelNum} schedule " +
+                                "invalid (need exactly ${REC_SCHEDULE_LENGTH} chars of 0/1, got ${val.length()}) -- not saved"
+                        }
                     }
+                } else {
+                    def mode = settings["presetMode_${sourceId}_${name}_${channelNum}"] ?: REC_MODE_OFF
+                    if (mode == REC_MODE_CONTINUOUS) {
+                        updated[channelNum] = buildContinuousBitstring()
+                        simpleUpdated[channelNum] = [mode: REC_MODE_CONTINUOUS]
+                    } else if (mode == REC_MODE_RANGE) {
+                        def startLabel = settings["presetStart_${sourceId}_${name}_${channelNum}"] ?: REC_HOUR_LABELS[18]
+                        def endLabel = settings["presetEnd_${sourceId}_${name}_${channelNum}"] ?: REC_HOUR_LABELS[6]
+                        def startHour = REC_HOUR_LABELS.indexOf(startLabel)
+                        def endHour = REC_HOUR_LABELS.indexOf(endLabel)
+                        updated[channelNum] = buildRangeBitstring(startHour, endHour)
+                        simpleUpdated[channelNum] = [mode: REC_MODE_RANGE, start: startHour, end: endHour]
+                    }
+                    // REC_MODE_OFF -- leave this channel out of `updated`
+                    // entirely, same as an old blank text field: skipped,
+                    // existing schedule untouched.
                 }
             }
             def presetsAll = state.recPresets ?: [:]
@@ -944,6 +1036,20 @@ def presetsPage(params) {
             bySource[name] = updated
             presetsAll[sourceId.toString()] = bySource
             state.recPresets = presetsAll
+
+            if (!advancedMode) {
+                // v1.5.0-beta13: remember the friendly picker choice
+                // itself (not just the bitstring it generated) so the page
+                // can show "6:00 PM to 6:00 AM" again next time, instead
+                // of trying to reverse-engineer a plain-English range back
+                // out of an arbitrary 168-char string.
+                def simpleAll = state.recPresetSimpleConfig ?: [:]
+                def simpleBySource = simpleAll[sourceId.toString()] ?: [:]
+                simpleBySource[name] = simpleUpdated
+                simpleAll[sourceId.toString()] = simpleBySource
+                state.recPresetSimpleConfig = simpleAll
+            }
+
             app.updateSetting("savePreset_${name}", [type: "bool", value: false])
             logNormal "Reolink source ${sourceId}: preset '${name}' saved (${updated.size()}/${channels.size()} channels set)"
         }
@@ -953,6 +1059,11 @@ def presetsPage(params) {
             bySource.remove(name)
             presetsAll[sourceId.toString()] = bySource
             state.recPresets = presetsAll
+            def simpleAll = state.recPresetSimpleConfig ?: [:]
+            def simpleBySource = simpleAll[sourceId.toString()] ?: [:]
+            simpleBySource.remove(name)
+            simpleAll[sourceId.toString()] = simpleBySource
+            state.recPresetSimpleConfig = simpleAll
             app.removeSetting("deletePreset_${name}")
             // v1.5.0-beta12: retire (don't reassign) this preset's button
             // number -- see getOrAssignButtonNumber()/retireButtonNumber()'s
@@ -993,19 +1104,31 @@ def presetsPage(params) {
         }
         section {
             paragraph pillHeader("What this does")
-            paragraph "Each preset is a named, per-channel recording schedule: a ${REC_SCHEDULE_LENGTH}-character " +
-                "string, one digit per hour of the week (Sunday 12am first), 1 = record, 0 = don't. Calling " +
-                "<b>loadPreset(name)</b> on this source's bridge device writes each channel's string here to " +
-                "the NVR. <b>A channel left blank is skipped entirely</b> -- its existing schedule is untouched, " +
-                "which is the recommended way to exclude a battery-class channel (e.g. a WiFi doorbell) from " +
-                "a preset meant for wired channels."
-            paragraph "Example: all-${REC_SCHEDULE_LENGTH.toString()[0]}s (${REC_SCHEDULE_LENGTH} ones) = " +
-                "continuous. A day/night pattern needs the actual ${REC_SCHEDULE_LENGTH}-char string built " +
-                "externally (e.g. a spreadsheet) and pasted in below."
+            paragraph "Each preset controls what a source's channels record, per channel: leave a channel " +
+                "alone (Reolink's own app stays in control of it), set it to continuous, or give it a daily " +
+                "time window (e.g. 6:00 PM to 6:00 AM every night). Calling <b>loadPreset(name)</b> on this " +
+                "source's bridge device applies whatever you've set here to the real NVR."
+            paragraph "<b>\"Don't manage\" is the default for every channel</b> -- a channel you never touch " +
+                "stays completely untouched by this preset, which is the recommended way to exclude a " +
+                "battery-class channel (e.g. a WiFi doorbell) from a preset meant for wired channels, or to " +
+                "just let Reolink's own app handle a channel entirely."
             paragraph "This is separate from the NVR's master recording switch (enableRecording()/" +
-                "disableRecording() on the bridge device) -- that switch applies to every channel at once and " +
-                "has no per-channel targeting at the API level. The usual pattern is: turn the master switch " +
-                "on once and leave it on, then use presets to control what each channel actually records."
+                "disableRecording(), or the bridge's own on/off switch) -- that switch applies to every " +
+                "channel at once and has no per-channel targeting at the API level. The usual pattern is: " +
+                "turn the master switch on once and leave it on, then use presets to control what each " +
+                "channel actually records."
+            input "advancedScheduleEditing_${sourceId}", "bool",
+                title: "Advanced: edit raw per-hour schedule strings directly (power users only)",
+                defaultValue: false, submitOnChange: true
+            if (advancedMode) {
+                paragraph "<span style='display:inline-block;background:#FFF3E0;color:#E65100;font-weight:700;" +
+                    "padding:2px 10px;border-radius:10px;font-size:11px;margin-right:6px;'>WARNING</span>" +
+                    "You're editing raw 168-character schedule strings (one digit per hour of the week, " +
+                    "Sunday 12am first, 1=record/0=don't) instead of the simple picker. Almost nobody needs " +
+                    "this -- it exists only for a schedule the simple picker can't express, like different " +
+                    "hours on different days. A malformed string is rejected on save (exact length, only 0/1 " +
+                    "characters), but a well-formed WRONG string will be written to your NVR exactly as typed."
+            }
         }
         section {
             paragraph pillHeader("Add a preset")
@@ -1014,11 +1137,37 @@ def presetsPage(params) {
         presets.each { name, chMap ->
             def btnNum = (state.recPresetButtonNumbers ?: [:])[sourceId.toString()]?.get(name)
             section("Preset: ${name}${btnNum ? " (Button ${btnNum})" : ""}") {
-                channels.each { ch ->
-                    def channelNum = ch.getDataValue("channel")
-                    def key = "preset_${sourceId}_${name}_${channelNum}"
-                    input key, "text", title: "${ch.label ?: ch.name} (ch ${channelNum})",
-                        defaultValue: chMap[channelNum] ?: ""
+                if (advancedMode) {
+                    channels.each { ch ->
+                        def channelNum = ch.getDataValue("channel")
+                        def key = "preset_${sourceId}_${name}_${channelNum}"
+                        input key, "text", title: "${ch.label ?: ch.name} (ch ${channelNum})",
+                            defaultValue: chMap[channelNum] ?: ""
+                    }
+                } else {
+                    def simpleForPreset = (state.recPresetSimpleConfig ?: [:])[sourceId.toString()]?.get(name) ?: [:]
+                    channels.each { ch ->
+                        def channelNum = ch.getDataValue("channel")
+                        def simpleCfg = simpleForPreset[channelNum]
+                        def modeKey = "presetMode_${sourceId}_${name}_${channelNum}"
+                        def currentMode = settings[modeKey] ?: simpleCfg?.mode ?: REC_MODE_OFF
+                        input modeKey, "enum", title: "${ch.label ?: ch.name} (ch ${channelNum})",
+                            options: [REC_MODE_OFF, REC_MODE_CONTINUOUS, REC_MODE_RANGE],
+                            defaultValue: simpleCfg?.mode ?: REC_MODE_OFF, submitOnChange: true
+                        if (currentMode == REC_MODE_RANGE) {
+                            def defaultStart = simpleCfg?.start != null ? REC_HOUR_LABELS[simpleCfg.start as Integer] : REC_HOUR_LABELS[18]
+                            def defaultEnd = simpleCfg?.end != null ? REC_HOUR_LABELS[simpleCfg.end as Integer] : REC_HOUR_LABELS[6]
+                            input "presetStart_${sourceId}_${name}_${channelNum}", "enum",
+                                title: "&nbsp;&nbsp;&nbsp;&nbsp;Start recording at",
+                                options: REC_HOUR_LABELS, defaultValue: defaultStart, submitOnChange: true
+                            input "presetEnd_${sourceId}_${name}_${channelNum}", "enum",
+                                title: "&nbsp;&nbsp;&nbsp;&nbsp;Stop recording at",
+                                options: REC_HOUR_LABELS, defaultValue: defaultEnd, submitOnChange: true
+                            paragraph "<span style='color:#5F5E5A;font-size:12px;margin-left:16px;'>ℹ️ Same " +
+                                "window every day. An end time earlier than the start time (e.g. 6:00 PM to " +
+                                "6:00 AM) is treated as overnight, wrapping past midnight.</span>"
+                        }
+                    }
                 }
                 input "savePreset_${name}", "bool", title: "Save changes to '${name}'",
                     defaultValue: false, submitOnChange: true
@@ -1143,6 +1292,8 @@ def removeSource(id) {
     // v1.5.0-beta12: same cleanup for button-number bookkeeping.
     state.recPresetButtonNumbers?.remove(id.toString())
     state.recNextButtonNumber?.remove(id.toString())
+    // v1.5.0-beta13: same cleanup for the simple picker's remembered choices.
+    state.recPresetSimpleConfig?.remove(id.toString())
     logNormal "Removed source ${id}"
 }
 
