@@ -720,13 +720,11 @@ def discoverPage(params) {
             }
             if (src.isHub) {
                 section {
-                    paragraph "<div style='border:2px solid #185FA5;border-radius:8px;background:#E6F1FB;" +
-                        "padding:10px 14px;'><div style='color:#042C53;font-weight:700;font-size:14px;'>" +
-                        "\uD83C\uDFA5 Recording Control</div><div style='color:#0C447C;font-size:12px;" +
-                        "margin-top:4px;'>Set what each channel records and when -- a completely separate " +
-                        "thing from adding/removing devices below. Most people only need to visit this once " +
-                        "or twice to define \"Away\"/\"Present\"-style presets, then trigger them from Rule " +
-                        "Machine going forward.</div></div>"
+                    paragraph pillHeader("Recording Control")
+                    paragraph "Set what each channel records and when -- a completely separate thing from " +
+                        "adding/removing devices below. Most people only need to visit this once or twice to " +
+                        "define \"Away\"/\"Present\"-style presets, then trigger them from Rule Machine going " +
+                        "forward."
                     href name: "presetsFromDiscover", title: "Recording Presets",
                         description: "Define what each channel records and when, and load it from Rule Machine",
                         page: "presetsPage", params: [sourceId: sourceId]
