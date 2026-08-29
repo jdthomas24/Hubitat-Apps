@@ -1,6 +1,6 @@
 /**
  * Reolink Integration (Parent App)
- * Version: 1.5.0-beta15
+ * Version: 1.5.0-beta17
  *
  * Architecture: a "source" is anything answering the Reolink HTTP/JSON API
  * (standalone camera, PoE NVR, or Home Hub), each with its own IP + creds. A
@@ -28,8 +28,22 @@
  * v1.5.0 BETA (in progress, shared privately with one reporting user, not
  * on HPM) -- NVR recording control: a master record on/off switch, plus
  * named per-channel schedule presets loaded on demand. Current design as
- * of beta15 (this section is periodically condensed as the design
+ * of beta17 (this section is periodically condensed as the design
  * settles, same practice as the trimmed pre-1.3.8 history below):
+ *  - beta17: added a fourth simple-picker choice, REC_MODE_NEVER ("Never
+ *    record") -- a real gap the reporting user found: REC_MODE_OFF ("Don't
+ *    manage") means "leave whatever schedule is already there alone," NOT
+ *    "actively silence this channel," and there was no way to explicitly
+ *    write an all-zero schedule without dropping into Advanced mode and
+ *    hand-typing "0"*168. buildNeverBitstring() covers it now.
+ *  - beta16 (bridge-only fix): CONFIRMED via real Rule Machine testing
+ *    that a bridge command declared with description-only metadata (no
+ *    real argument) renders fine on that device's own Commands tab, but
+ *    Rule Machine's Custom Action treats it as a real argument slot and
+ *    passes through whatever's typed -- broke on()/off()/loadSelectedPreset()
+ *    (all genuinely zero-argument) the moment a value was entered. See
+ *    ReolinkDeviceBridge.groovy's beta16 note for the full story; no
+ *    app-side logic changed.
  *  - componentSetRecordingEnabled() flips the NVR's master record switch
  *    (SetRecV20 with NO channel field) -- CONFIRMED against a real
  *    RLN16-410 that this call is genuinely untargeted at the API level:
@@ -208,7 +222,7 @@ definition(
     oauth: true // required for createAccessToken()/local endpoint access used by the snapshot relay
 )
 
-@Field static final String APP_VERSION = "1.5.0-beta15"
+@Field static final String APP_VERSION = "1.5.0-beta17"
 
 @Field static final List LOG_LEVELS = ["Errors Only", "Normal", "Full"]
 
@@ -247,16 +261,26 @@ definition(
     "6:00 PM", "7:00 PM", "8:00 PM", "9:00 PM", "10:00 PM", "11:00 PM"
 ]
 
-// v1.5.0-beta13: the three choices in the simple per-channel picker.
-// Used as both the enum option text AND the internal mode marker, so
-// there's no separate mapping to keep in sync.
+// v1.5.0-beta17: four choices in the simple per-channel picker (was three
+// through beta16 -- a reporting user found a real gap: "Don't manage"
+// means "leave the existing schedule alone," which is NOT the same thing
+// as "actively never record" -- there was no way to explicitly silence a
+// channel without dropping into Advanced mode and hand-typing an all-zero
+// string). Used as both the enum option text AND the internal mode marker,
+// so there's no separate mapping to keep in sync.
 @Field static final String REC_MODE_OFF = "Don't manage (leave to Reolink app)"
+@Field static final String REC_MODE_NEVER = "Never record"
 @Field static final String REC_MODE_CONTINUOUS = "Continuous (24/7)"
 @Field static final String REC_MODE_RANGE = "Time range each day"
 
 /** All-1s, 168 characters -- the simple picker's "Continuous" choice. */
 private String buildContinuousBitstring() {
     return "1" * REC_SCHEDULE_LENGTH
+}
+
+/** All-0s, 168 characters -- the simple picker's "Never record" choice. Distinct from REC_MODE_OFF: this actively writes a silent schedule, rather than leaving whatever schedule the channel already had untouched. */
+private String buildNeverBitstring() {
+    return "0" * REC_SCHEDULE_LENGTH
 }
 
 /**
@@ -878,6 +902,9 @@ def presetsPage(params) {
                     if (mode == REC_MODE_CONTINUOUS) {
                         updated[channelNum] = buildContinuousBitstring()
                         simpleUpdated[channelNum] = [mode: REC_MODE_CONTINUOUS]
+                    } else if (mode == REC_MODE_NEVER) {
+                        updated[channelNum] = buildNeverBitstring()
+                        simpleUpdated[channelNum] = [mode: REC_MODE_NEVER]
                     } else if (mode == REC_MODE_RANGE) {
                         def startLabel = settings["presetStart_${sourceId}_${name}_${channelNum}"] ?: REC_HOUR_LABELS[18]
                         def endLabel = settings["presetEnd_${sourceId}_${name}_${channelNum}"] ?: REC_HOUR_LABELS[6]
@@ -888,7 +915,10 @@ def presetsPage(params) {
                     }
                     // REC_MODE_OFF -- leave this channel out of `updated`
                     // entirely, same as an old blank text field: skipped,
-                    // existing schedule untouched.
+                    // existing schedule untouched. Distinct from
+                    // REC_MODE_NEVER above, which actively WRITES an
+                    // all-zero schedule instead of leaving whatever was
+                    // there alone -- see that mode's own comment.
                 }
             }
             def presetsAll = state.recPresets ?: [:]
@@ -965,14 +995,16 @@ def presetsPage(params) {
         section {
             paragraph pillHeader("What this does")
             paragraph "Each preset controls what a source's channels record, per channel: leave a channel " +
-                "alone (Reolink's own app stays in control of it), set it to continuous, or give it a daily " +
-                "time window (e.g. 6:00 PM to 6:00 AM every night). Loading a preset -- via the bridge " +
-                "device's \"Load Selected Preset\" command, its Push button, or Rule Machine -- applies " +
-                "whatever you've set here to the real NVR."
+                "alone (Reolink's own app stays in control of it), actively silence it, set it to continuous, " +
+                "or give it a daily time window (e.g. 6:00 PM to 6:00 AM every night). Loading a preset -- via " +
+                "the bridge device's \"Load Selected Preset\" command, its Push button, or Rule Machine -- " +
+                "applies whatever you've set here to the real NVR."
             paragraph "<b>\"Don't manage\" is the default for every channel</b> -- a channel you never touch " +
                 "stays completely untouched by this preset, which is the recommended way to exclude a " +
                 "battery-class channel (e.g. a WiFi doorbell) from a preset meant for wired channels, or to " +
-                "just let Reolink's own app handle a channel entirely."
+                "just let Reolink's own app handle a channel entirely. <b>\"Never record\" is different</b> -- " +
+                "it actively writes a silent (all-zero) schedule to that channel, rather than leaving whatever " +
+                "was already there alone."
             paragraph "This is separate from the NVR's master recording switch (the bridge device's own " +
                 "On/Off) -- that switch applies to every channel at once and has no per-channel targeting at " +
                 "the API level. The usual pattern is: turn the master switch on once and leave it on, then " +
@@ -1012,7 +1044,7 @@ def presetsPage(params) {
                         def modeKey = "presetMode_${sourceId}_${name}_${channelNum}"
                         def currentMode = settings[modeKey] ?: simpleCfg?.mode ?: REC_MODE_OFF
                         input modeKey, "enum", title: "${ch.label ?: ch.name} (ch ${channelNum})",
-                            options: [REC_MODE_OFF, REC_MODE_CONTINUOUS, REC_MODE_RANGE],
+                            options: [REC_MODE_OFF, REC_MODE_NEVER, REC_MODE_CONTINUOUS, REC_MODE_RANGE],
                             defaultValue: simpleCfg?.mode ?: REC_MODE_OFF, submitOnChange: true
                         if (currentMode == REC_MODE_RANGE) {
                             def defaultStart = simpleCfg?.start != null ? REC_HOUR_LABELS[simpleCfg.start as Integer] : REC_HOUR_LABELS[18]
