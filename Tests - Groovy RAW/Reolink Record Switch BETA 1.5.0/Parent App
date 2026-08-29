@@ -1,6 +1,6 @@
 /**
  * Reolink Integration (Parent App)
- * Version: 1.5.0-beta12
+ * Version: 1.5.0-beta14
  *
  * Architecture: a "source" is anything answering the Reolink HTTP/JSON API
  * (standalone camera, PoE NVR, or Home Hub), each with its own IP + creds. A
@@ -24,6 +24,13 @@
  * per-source "Reolink Device Bridge" instead of a child of this app directly
  * -- existing installs had to delete/recreate devices (and repoint
  * dashboards/rules) via re-discovery under each source.
+ *
+ * v1.5.0-beta14 -- UNCONFIRMED, private beta (not on HPM), app+bridge. Added
+ * componentGetPresetNames(), a read-only lookup the bridge's Preferences
+ * page uses to populate a live "Preset to load" dropdown (see
+ * ReolinkDeviceBridge.groovy's beta14 note) -- fixes the bridge's Commands
+ * tab only ever offering a free-text box for loadPreset(), which required
+ * typing a preset's name exactly right by hand with no picker at all.
  *
  * v1.5.0-beta13 -- UNCONFIRMED, private beta (not on HPM), app only (no
  * bridge changes needed). Replaced the raw 168-character schedule text
@@ -373,7 +380,7 @@ definition(
     oauth: true // required for createAccessToken()/local endpoint access used by the snapshot relay
 )
 
-@Field static final String APP_VERSION = "1.5.0-beta13"
+@Field static final String APP_VERSION = "1.5.0-beta14"
 
 @Field static final List LOG_LEVELS = ["Errors Only", "Normal", "Full"]
 
@@ -2635,6 +2642,18 @@ def componentSetRecordingEnabled(child, sourceId, Boolean enabled) {
  * excluding a battery-class channel from a preset meant for wired channels
  * -- just leave that channel's field blank on the Recording Presets page.
  */
+/**
+ * v1.5.0-beta14: read-only lookup used by the bridge's Preferences page to
+ * populate a live "Preset to load" dropdown -- see
+ * ReolinkDeviceBridge.groovy's getAvailablePresetNames(). Returns the
+ * current preset names for this source, sorted for a stable dropdown
+ * order across page loads.
+ */
+def componentGetPresetNames(sourceId) {
+    def presets = (state.recPresets ?: [:])[sourceId.toString()] ?: [:]
+    return presets.keySet().sort()
+}
+
 def componentLoadPreset(child, sourceId, String presetName) {
     def bridge = getSourceBridge(sourceId)
     if (!bridge) {
