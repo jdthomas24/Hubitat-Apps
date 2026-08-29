@@ -1,6 +1,6 @@
 /**
  * Reolink Integration (Parent App)
- * Version: 1.5.0-beta14
+ * Version: 1.5.0-beta15
  *
  * Architecture: a "source" is anything answering the Reolink HTTP/JSON API
  * (standalone camera, PoE NVR, or Home Hub), each with its own IP + creds. A
@@ -25,238 +25,66 @@
  * -- existing installs had to delete/recreate devices (and repoint
  * dashboards/rules) via re-discovery under each source.
  *
- * v1.5.0-beta14 -- UNCONFIRMED, private beta (not on HPM), app+bridge. Added
- * componentGetPresetNames(), a read-only lookup the bridge's Preferences
- * page uses to populate a live "Preset to load" dropdown (see
- * ReolinkDeviceBridge.groovy's beta14 note) -- fixes the bridge's Commands
- * tab only ever offering a free-text box for loadPreset(), which required
- * typing a preset's name exactly right by hand with no picker at all.
- *
- * v1.5.0-beta13 -- UNCONFIRMED, private beta (not on HPM), app only (no
- * bridge changes needed). Replaced the raw 168-character schedule text
- * field with a plain-language picker for the vast majority of cases: per
- * channel, per preset, a simple choice of "Don't manage / Continuous
- * (24/7) / Time range each day," with the range option offering two
- * ordinary hour pickers (e.g. 6:00 PM to 6:00 AM) instead of any character
- * counting. The 168-char string still exists underneath -- buildContinuousBitstring()
- * and buildRangeBitstring() generate it from the simple picker's choice --
- * but nothing about it is ever shown to someone using the default mode.
- * "Don't manage" is the default for every channel and behaves exactly like
- * leaving the old text field blank always did: that channel's schedule is
- * left completely alone, so someone who wants Reolink's own app in full
- * control of a channel (or all of them) never has to touch this page at
- * all beyond leaving everything on its default.
- * A per-source "Advanced" toggle (OFF by default, with an on-page warning)
- * reveals the original raw-string field for anyone who wants a schedule
- * the simple picker can't express (different hours on different days,
- * etc.) -- this is a straight revert to the beta10-beta12 text field, not
- * a new mechanism, so nothing about how a saved preset is actually loaded
- * or applied changed at all; only how it's authored on this page did.
- * Friendly picker selections are stored separately from the underlying
- * bitstring (state.recPresetSimpleConfig, alongside state.recPresets) so
- * the picker can redisplay someone's actual choice ("6:00 PM to 6:00 AM")
- * next time they open the page, rather than trying to reverse-engineer a
- * plain-English range back out of an arbitrary 168-char string.
- *
- * v1.5.0-beta12 -- UNCONFIRMED, private beta (not on HPM), app+bridge only.
- * SUPERSEDES beta11's approach entirely -- no separate driver files, no
- * opt-in toggles, no child devices to create/remove. Switch and
- * PushableButton capabilities are added directly to the bridge device
- * itself (ReolinkDeviceBridge.groovy), since exactly one bridge already
- * exists per source -- so on()/off() (Switch) and push(btn) (PushableButton)
- * are simply new ways to trigger the SAME componentSetRecordingEnabled()/
- * componentLoadPreset() calls that enableRecording()/disableRecording()/
- * loadPreset() already used, available in Rule Machine's simple pickers
- * without Custom Action, with zero new devices in the tree.
- * Preset button numbers solve the numbering-fragility problem beta11's
- * design note flagged for a bridge-level (rather than per-preset-device)
- * approach: each preset is assigned a button number ONCE, the first time
- * it's seen (via getOrAssignButtonNumber(), backfilling automatically for
- * presets that already existed before this feature), from a counter that
- * only ever increments and is never reset or reused -- retireButtonNumber()
- * removes a deleted preset's entry from the active mapping but the
- * counter itself is untouched, so that number can never be handed to a
- * different preset later. A rule built around a specific button number
- * either keeps firing the SAME preset for as long as that preset exists
- * (renames don't affect it -- the number isn't tied to the name string,
- * just to the preset's identity), or, if that preset is later deleted,
- * the number goes permanently dead and pushing it does nothing (logged,
- * harmless) rather than ever firing a different preset that happened to
- * receive the same number. Assigned numbers are shown next to each
- * preset on the Recording Presets page, and the bridge's numberOfButtons
- * attribute is kept at the highest number ever assigned for that source.
- *
- * v1.5.0-beta11 -- SUPERSEDED by beta12 above (kept here for history only
- * -- this design was never actually deployed to the reporting user).
- * UNCONFIRMED, private beta (not on HPM), app+bridge+2 driver files. Added two OPT-IN virtual devices (both off by default,
- * toggled per-source on the Recording Presets page), so the master switch
- * and individual presets can be driven from Rule Machine's simple pickers
- * instead of always going through Custom Action:
- *  1. "Reolink Record Control" -- a standard Switch-capability device
- *     proxying on()/off() into componentSetRecordingEnabled(), the same
- *     pattern a Hubitat Scene's own companion switch uses to proxy on/off
- *     into "run this scene." One per source, created/removed via the
- *     "Create virtual Record Control switch" toggle.
- *  2. "Reolink Preset Button" -- a PushableButton-capability device, ONE
- *     PER PRESET (not a single multi-button device), so a rule built
- *     around a specific preset is tied to that preset's NAME rather than
- *     its position in a list -- renaming/reordering/deleting other presets
- *     can't silently repoint a rule at the wrong one the way a numbered-
- *     button scheme would. Pushing button 1 calls componentLoadPreset()
- *     for that device's own presetName data value. Created/removed
- *     automatically to stay in sync with whatever presets currently exist,
- *     via the "Create virtual buttons for presets" toggle; syncPresetButtons()
- *     also runs after every preset save/delete so a renamed or removed
- *     preset's button device is created/updated/removed immediately rather
- *     than only on next toggle change.
- * Both device types are created as children of that source's bridge (same
- * nesting pattern as Camera/Doorbell), via two new bridge methods
- * (createRecordControlDevice()/createPresetButtonDevice()) and removed via
- * the existing generic removeChannelDevice(). componentSetRecordingEnabled()
- * now also updates the calling child device's own state (not just the
- * bridge's recordingEnabled attribute) when a virtual switch -- rather than
- * the bridge itself -- is what triggered it. componentLoadPreset() needed
- * no changes at all: it already ignored its child argument except as a
- * passthrough, so a preset button device can call it exactly the way the
- * bridge's own loadPreset() command always has.
- * Explicitly deferred (per the reporting user's own scope note): similar
- * on/off toggles for email/push notifications. Same shape as the master
- * record switch, but needs its own SetXXX API call confirmed against real
- * hardware first, and isn't part of this beta's actual test surface.
- *
- * v1.5.0-beta10 -- UNCONFIRMED, private beta (not on HPM), app+bridge only.
- * Replaced the beta1-beta9 cache-and-restore recording toggle entirely.
- * Real-world use surfaced two problems with that design: (1) a battery
- * doorbell channel got forced into the same all-1s/all-0s pattern as every
- * wired channel, with no way to exempt it; (2) the "off" restore only ever
- * replayed whatever schedule was cached the FIRST time the switch was ever
- * used -- any custom schedule set later (e.g. a day/night pattern for a
- * Present mode) was silently discarded on the next mode cycle, since the
- * cache was never refreshed after that first run. Root cause of #2:
- * setChannelRecording() only populated state.recScheduleCache when the
- * cache had no entry yet for that channel, then reused that same entry
- * forever afterward -- reload of the app/bridge did not help, since the
- * cache lives in app state, not the device tree.
- * Replaced with a preset model: named, per-channel 168-character schedule
- * strings (168 = 24 hours x 7 days, one digit per hour, 1/0) defined on a
- * new in-app Recording Presets page, loaded on demand via loadPreset(name).
- * A channel with no string saved for a given preset is skipped entirely --
- * its existing schedule is left untouched, which incidentally also solves
- * problem #1 above without needing a separate per-device exclude flag: just
- * leave the doorbell's row blank in every preset.
- * The master NVR-level record enable/disable (host-level SetRecV20 with no
- * channel) is now a separate action (componentSetRecordingEnabled(),
- * enableRecording()/disableRecording() on the bridge) instead of being
- * bundled into the same call as the schedule write, since the two are
- * conceptually and mechanically independent (see beta7/beta8 notes below
- * for how that was discovered).
- * componentSetSourceRecording(), setChannelRecording(),
- * applyContinuousSchedule(), applyRecSchedule(), and state.recScheduleCache
- * are removed as dead code. componentCheckRecordingSchedule() (read-only
- * diagnostic) and fetchRecSchedule()/deepCopyRec() (still used by the new
- * preset-write path) are unchanged.
- *
- * v1.5.0-beta9 -- UNCONFIRMED, private beta (not on HPM), app+bridge only.
- * Real-hardware testing (2026-08-23) against 6 WiFi floodlight channels
- * showed intermittent, seemingly random per-channel misses -- suspected
- * race condition: writes were firing back-to-back only ~100-150ms apart,
- * likely faster than the NVR actually finishes applying each channel's
- * change internally before the HTTP response returns. Added a 300ms pause
- * (REC_CHANNEL_SETTLE_MS) after each per-channel write in
- * componentSetSourceRecording()'s loop. (This settle-delay pattern is
- * preserved in beta10's new preset-write loop.)
- *
- * v1.5.0-beta8 -- UNCONFIRMED, private beta (not on HPM), app+bridge only.
- * CONFIRMED (2026-08-23): beta7's host-level SetRecV20 enable field is the
- * real master switch -- turning it on genuinely started recording on every
- * channel of a real RLN16-410, including one channel whose own
- * scheduleEnable was OFF, proving per-channel schedule fields don't gate
- * actual recording at all; only this host-level field does. Also confirmed:
- * the individual-camera "Enable Record" screen in the Reolink app does
- * nothing for NVR-side recording -- it's for onboard SD-card recording
- * only, which these cameras don't have.
- * However, turning host-level enable OFF did NOT stop recording. Root
- * cause: host-level enable was sent BEFORE the per-channel schedule
- * restores, so a per-channel schedule write likely re-flips the host-level
- * flag back on as a side effect, undoing the OFF that preceded it. Fixed by
- * sending the host-level call LAST, after every per-channel write, so it's
- * always the final word.
- * Also, per a reporting-user request anticipating future toggles (email,
- * push notifications) on the same bridge device: dropped the generic
- * Switch capability's on()/off() in favor of explicit recordOn()/
- * recordOff() commands, so automations built against this feature won't
- * need renaming if similar toggles for other Reolink settings are added
- * later. (recordOn()/recordOff() are themselves replaced in beta10 -- see
- * above.)
- *
- * v1.5.0-beta7 -- UNCONFIRMED, private beta (not on HPM), app+bridge only.
- * Read the actual reolink_aio library source (the Python library behind
- * Home Assistant's Reolink integration) for its confirmed set_recording()
- * implementation, and found two real issues: (1) this code had been setting
- * scheduleEnable nested inside schedule.enable, a field that doesn't exist
- * in the real object -- reolink_aio confirms it's a TOP-LEVEL field on Rec,
- * matching the raw schedule dumps captured in beta6 testing. Fixed. (2)
- * reolink_aio treats SetRecV20 with no channel at all ({"Rec": {"enable":
- * on_off}}) as a separate NVR-host-level record master switch, distinct
- * from any per-channel schedule -- added as an additional call alongside
- * the per-channel writes, since two real test rounds showed per-channel
- * fields already reporting "continuous" with zero actual effect, hinting
- * the real control might be this separate host-level switch instead.
- *
- * v1.5.0-beta6 -- UNCONFIRMED, private beta (not on HPM), app+bridge only.
- * FOUND (2026-08-22): a beta5 real-hardware test never logged "cached
- * current recording schedule" at all -- the channel's schedule was already
- * cached from beta3/beta4 testing days earlier, so that whole test round
- * silently ran against OLD cached data instead of exercising beta5's fix.
- * runMigrations() cleared state.recScheduleCache on every version
- * transition as a result -- moot as of beta10, since that cache no longer
- * exists.
- *
- * v1.5.0-beta5 -- UNCONFIRMED, private beta (not on HPM), app+bridge only.
- * beta4's full read-modify-write did NOT fix the "succeeds but nothing
- * changes" problem -- second real test round, same result. Remaining
- * guess was the trigger-table key name itself (hardcoded "TIMING"). Now
- * sets every key already present in the device's OWN fetched schedule
- * table to all-1s, instead of assuming a specific key name -- see
- * applyPresetToChannel()'s comment (formerly applyContinuousSchedule()) for
- * the full reasoning. Also added raw-schedule logging (Normal tier) at
- * cache time, so if this round still doesn't work, the actual table
- * structure/key names are visible without another guess-and-check cycle.
- *
- * v1.5.0-beta4 -- UNCONFIRMED, private beta (not on HPM), app+bridge only.
- * Real-world testing against an RLN16-410 confirmed beta3's GetRecV20
- * detection working (7/7 OK both directions, correct API chosen every
- * time) -- but SetRecV20 returning rspCode 200 "succeeded" was NOT actually
- * changing anything: the Reolink app's schedule grid never updated and no
- * new recording started in NVR playback. Cause: the write was building a
- * fresh, minimal Rec object from scratch, which the NVR apparently accepts
- * and silently ignores rather than rejects -- a known pattern for embedded
- * HTTP APIs like this one, where Set calls expect something closer to a
- * complete object than a partial patch. Fixed via proper read-modify-write:
- * the FULL schedule fetched fresh via GetRecV20/GetRec is deep-cloned, only
- * the relevant table field(s) are flipped inside that clone, and the whole
- * thing is sent back -- every other field rides along unchanged, exactly as
- * the NVR reported it. This read-modify-write approach carries forward into
- * beta10's preset writes unchanged.
- *
- * v1.5.0-beta3 -- UNCONFIRMED, private beta (not on HPM), app+bridge only.
- * Real-world testing against an RLN16-410 (7 channels) showed the beta2
- * GetAbility-based V20/classic detection choosing classic GetRec, which
- * then failed on every channel with rspCode -9 "not support" -- exactly the
- * failure classic's own "model 52X only" documentation predicts. Detection
- * now tries GetRecV20 directly and only falls back to classic GetRec if V20
- * itself returns no usable value, instead of trusting a GetAbility field
- * that didn't reflect this hardware's real behavior.
- *
- * v1.5.0-beta2 -- UNCONFIRMED. Added a per-channel success/failure summary (e.g. "6/6 OK" or "5/6 OK, failed:
- * ch3") pushed to the bridge's lastRecordingResult attribute after every
- * recording-related call, so results are visible on the device page instead
- * of requiring a log dive.
- *
- * v1.5.0-beta1 -- UNCONFIRMED. Added a continuous-recording toggle. Built
- * from the Reolink Camera HTTP API User Guide v7 (GetRec/SetRec, section
- * 3.6) but not yet tested against real hardware at the time -- see the
- * beta4/beta7 notes above for what changed once it was.
+ * v1.5.0 BETA (in progress, shared privately with one reporting user, not
+ * on HPM) -- NVR recording control: a master record on/off switch, plus
+ * named per-channel schedule presets loaded on demand. Current design as
+ * of beta15 (this section is periodically condensed as the design
+ * settles, same practice as the trimmed pre-1.3.8 history below):
+ *  - componentSetRecordingEnabled() flips the NVR's master record switch
+ *    (SetRecV20 with NO channel field) -- CONFIRMED against a real
+ *    RLN16-410 that this call is genuinely untargeted at the API level:
+ *    it always applies to every channel of the source at once, there is
+ *    no per-channel version of it. The per-camera "Enable Record" screen
+ *    in the Reolink app does nothing for NVR-side recording; it only
+ *    controls onboard SD-card recording, which these cameras don't have.
+ *  - componentLoadPreset() writes a named, per-channel 168-char hourly
+ *    schedule (defined on the in-app Recording Presets page) to the NVR,
+ *    one channel at a time, via a fresh read-modify-write (fetch the
+ *    channel's current full schedule, flip only the relevant field(s),
+ *    send the whole thing back) -- CONFIRMED a minimal/partial Rec object
+ *    is silently accepted (rspCode 200) but produces NO actual change, so
+ *    the full read-modify-write is required, not optional. A channel with
+ *    no string saved for a given preset is skipped entirely, which is how
+ *    a battery-class channel (e.g. a WiFi doorbell) stays excluded from a
+ *    preset meant for wired channels.
+ *  - Schedule API generation: GetRecV20 is tried first regardless of any
+ *    GetAbility capability flag, falling back to classic GetRec only if
+ *    V20 itself returns no usable value -- CONFIRMED GetAbility's own
+ *    scheduleVersion field doesn't reliably predict which generation a
+ *    given NVR actually needs. scheduleEnable is a TOP-LEVEL field on Rec
+ *    (sibling to "schedule"), NOT nested inside schedule.enable -- source:
+ *    reading reolink_aio's (Home Assistant's Reolink integration library)
+ *    actual set_recording() implementation, confirmed against real raw
+ *    schedule dumps. Every key already present in the device's OWN
+ *    returned schedule.table gets set, rather than assuming a specific key
+ *    name like "TIMING" -- real hardware showed this can't be assumed.
+ *  - Ordering: the master enable call must fire AFTER every per-channel
+ *    schedule write, not before -- CONFIRMED writing a per-channel
+ *    schedule silently re-flips the master enable flag back on as a side
+ *    effect, so sending master-enable=0 before per-channel writes gets
+ *    undone by them. A ~300ms pause between per-channel writes
+ *    (REC_CHANNEL_SETTLE_MS) is also required -- back-to-back writes
+ *    closer together than that produced intermittent per-channel misses
+ *    on real hardware (6 WiFi floodlight channels).
+ *  - Preset button numbers (componentBridgeButtonPushed(),
+ *    getOrAssignButtonNumber()/retireButtonNumber()) are assigned once per
+ *    preset, permanently, from a per-source counter that never resets or
+ *    reuses a retired number -- deliberately avoids a positional/numbered-
+ *    button scheme's fragility: a deleted preset's old Rule Machine
+ *    trigger just goes inert instead of ever silently firing whatever
+ *    different preset happens to reuse its old number.
+ *  - The Recording Presets page's default UI is a plain-language picker
+ *    (Continuous / a daily time range / don't manage) that generates the
+ *    168-char string automatically; an opt-in "Advanced" toggle reveals
+ *    the raw string field for a schedule the simple picker can't express.
+ *  - Two earlier designs were built, tested, and fully abandoned in favor
+ *    of the above: a cache-and-restore recording toggle (replayed a
+ *    schedule snapshot from the first time it was ever used, which went
+ *    stale the moment a real custom schedule was set later), and a set of
+ *    separate virtual child devices for the master switch/preset buttons
+ *    (replaced by adding Switch/PushableButton capabilities directly to
+ *    the bridge itself, since exactly one bridge already exists per
+ *    source). Neither exists in the code anymore; not detailed here.
  *
  * v1.4.2 -- HOTFIX: Camera/Doorbell driver preferences used bare
  * paragraph("text") calls, which is App-DSL-only and doesn't compile on a
@@ -380,7 +208,7 @@ definition(
     oauth: true // required for createAccessToken()/local endpoint access used by the snapshot relay
 )
 
-@Field static final String APP_VERSION = "1.5.0-beta14"
+@Field static final String APP_VERSION = "1.5.0-beta15"
 
 @Field static final List LOG_LEVELS = ["Errors Only", "Normal", "Full"]
 
@@ -691,16 +519,15 @@ def tipsPage() {
         section {
             paragraph pillHeader("Recording presets (NVR/Hub master switch + per-channel schedules)")
             paragraph "Two independent controls exist for recording, and it's worth keeping them separate in " +
-                "your head: <b>enableRecording</b>/<b>disableRecording</b> is the NVR's master switch (applies " +
-                "to EVERY channel at once -- there's no way to target one channel with this call, that's a " +
-                "hardware/API limitation, not a bug here). <b>loadPreset(name)</b> writes a named, per-channel " +
-                "schedule (168-char string, one digit per hour of the week, 1/0) defined on the Recording " +
-                "Presets page for that source."
+                "your head: the bridge device's own <b>On/Off switch</b> is the NVR's master switch (applies " +
+                "to EVERY channel at once -- there's no way to target one channel with it, that's a " +
+                "hardware/API limitation, not a bug here). Loading a <b>preset</b> writes a named, per-channel " +
+                "schedule defined on the Recording Presets page for that source."
             paragraph "In practice: turn the master switch on once and leave it on, then use presets to " +
-                "control what actually gets recorded per channel. A channel left blank in a given preset is " +
-                "skipped -- its existing schedule is untouched -- which is the recommended way to keep a " +
-                "battery-class channel (e.g. a WiFi doorbell) from being forced into a continuous pattern " +
-                "meant for wired channels."
+                "control what actually gets recorded per channel. A channel left as \"Don't manage\" in a " +
+                "given preset is skipped -- its existing schedule is untouched -- which is the recommended " +
+                "way to keep a battery-class channel (e.g. a WiFi doorbell) from being forced into a " +
+                "continuous pattern meant for wired channels."
             paragraph "Every preset write is a fresh read-modify-write against whatever the channel's own " +
                 "current schedule actually is right now -- nothing is cached or \"restored\" from an earlier " +
                 "point in time, so there's no stale-snapshot trap to worry about."
@@ -891,6 +718,20 @@ def discoverPage(params) {
                     defaultValue: true, submitOnChange: true
                 paragraph "<span style='color:${statusColor};font-weight:700;font-size:12px;'>Status: ${connStatus}</span>"
             }
+            if (src.isHub) {
+                section {
+                    paragraph "<div style='border:2px solid #185FA5;border-radius:8px;background:#E6F1FB;" +
+                        "padding:10px 14px;'><div style='color:#042C53;font-weight:700;font-size:14px;'>" +
+                        "\uD83C\uDFA5 Recording Control</div><div style='color:#0C447C;font-size:12px;" +
+                        "margin-top:4px;'>Set what each channel records and when -- a completely separate " +
+                        "thing from adding/removing devices below. Most people only need to visit this once " +
+                        "or twice to define \"Away\"/\"Present\"-style presets, then trigger them from Rule " +
+                        "Machine going forward.</div></div>"
+                    href name: "presetsFromDiscover", title: "Recording Presets",
+                        description: "Define what each channel records and when, and load it from Rule Machine",
+                        page: "presetsPage", params: [sourceId: sourceId]
+                }
+            }
             section {
                 // v1.3.6: explicit warning added after a real-world case where a
                 // device deleted from Hubitat's Devices page (instead of this
@@ -912,49 +753,63 @@ def discoverPage(params) {
                     paragraph "⚠️ ${state.lastDiscoveryError}"
                 }
 
-                lastDiscovery.each { ch ->
+                // v1.5.0-beta15: collapsible -- on a source with many
+                // channels, this list was the single biggest chunk of the
+                // page, pushing Recording Presets (moved above this
+                // section this same round) and everything else well below
+                // the fold. Collapsed by default only once a source
+                // already has at least one device (nothing to hide on a
+                // brand-new source with zero channels added yet).
+                def anyExisting = channelCount > 0 && lastDiscovery.any { ch ->
                     def dni = childDni(sourceId, ch.channel)
-                    def bridgeForList = getSourceBridge(sourceId)
-                    def exists = bridgeForList?.getChildDevice(dni) != null
-                    def doorbellTag = ch.deviceType == "doorbell" ? " (Doorbell)" : ""
-                    input "create_${sourceId}_${ch.channel}", "bool",
-                        title: "Ch ${ch.channel}: ${ch.name}${doorbellTag}",
-                        defaultValue: exists, submitOnChange: true
-                    if (exists) {
-                        paragraph "<div style='margin:-8px 0 0 32px;border-left:3px solid #378ADD;" +
-                            "padding-left:10px;'><span style='display:inline-block;background:#B5D4F4;color:#042C53;" +
-                            "font-weight:500;font-size:11px;letter-spacing:0.3px;padding:2px 10px;" +
-                            "border-radius:20px;margin-right:6px;'>EXISTING DEVICE</span>" +
-                            "<span style='color:#5F5E5A;font-size:13px;'>Toggle off + apply to remove it</span></div>"
-                    } else {
-                        paragraph "<div style='margin:-8px 0 0 32px;border-left:3px solid #639922;" +
-                            "padding-left:10px;'><span style='display:inline-block;background:#C0DD97;color:#173404;" +
-                            "font-weight:500;font-size:11px;letter-spacing:0.3px;padding:2px 10px;" +
-                            "border-radius:20px;margin-right:6px;'>NEW DEVICE</span>" +
-                            "<span style='color:#5F5E5A;font-size:13px;'>Toggle on + apply to create it</span></div>"
-                    }
-                    paragraph "<div style='height:1px;background:#e0e0e0;margin:12px 0 12px 32px;'></div>"
+                    getSourceBridge(sourceId)?.getChildDevice(dni) != null
                 }
+                input "hideChannelList_${sourceId}", "bool",
+                    title: "Collapse the channel list below (just adds/removes devices -- collapse once you're done)",
+                    defaultValue: anyExisting, submitOnChange: true
+                def channelListHidden = settings["hideChannelList_${sourceId}"] ?: false
 
-                if (channelCount > 1) {
-                    paragraph rawHtml: true, """
+                if (!channelListHidden) {
+                    lastDiscovery.each { ch ->
+                        def dni = childDni(sourceId, ch.channel)
+                        def bridgeForList = getSourceBridge(sourceId)
+                        def exists = bridgeForList?.getChildDevice(dni) != null
+                        def doorbellTag = ch.deviceType == "doorbell" ? " (Doorbell)" : ""
+                        input "create_${sourceId}_${ch.channel}", "bool",
+                            title: "Ch ${ch.channel}: ${ch.name}${doorbellTag}",
+                            defaultValue: exists, submitOnChange: true
+                        if (exists) {
+                            paragraph "<div style='margin:-8px 0 0 32px;border-left:3px solid #378ADD;" +
+                                "padding-left:10px;'><span style='display:inline-block;background:#B5D4F4;color:#042C53;" +
+                                "font-weight:500;font-size:11px;letter-spacing:0.3px;padding:2px 10px;" +
+                                "border-radius:20px;margin-right:6px;'>EXISTING DEVICE</span>" +
+                                "<span style='color:#5F5E5A;font-size:13px;'>Toggle off + apply to remove it</span></div>"
+                        } else {
+                            paragraph "<div style='margin:-8px 0 0 32px;border-left:3px solid #639922;" +
+                                "padding-left:10px;'><span style='display:inline-block;background:#C0DD97;color:#173404;" +
+                                "font-weight:500;font-size:11px;letter-spacing:0.3px;padding:2px 10px;" +
+                                "border-radius:20px;margin-right:6px;'>NEW DEVICE</span>" +
+                                "<span style='color:#5F5E5A;font-size:13px;'>Toggle on + apply to create it</span></div>"
+                        }
+                        paragraph "<div style='height:1px;background:#e0e0e0;margin:12px 0 12px 32px;'></div>"
+                    }
+
+                    if (channelCount > 1) {
+                        paragraph rawHtml: true, """
 <div style='border:2px solid #185FA5;border-radius:8px;background:#E6F1FB;padding:10px 14px;margin-top:14px;'>
   <div style='color:#042C53;font-weight:700;font-size:14px;'>Apply changes</div>
   <div style='color:#0C447C;font-size:12px;margin-top:2px;'>Creates every device toggled on above and removes every device toggled off. Toggling a device by itself does not apply anything until you toggle this.</div>
 </div>
 """
-                    input "confirmCreate", "bool", title: "Apply changes now",
-                        defaultValue: false, submitOnChange: true
-                } else if (channelCount == 1) {
-                    paragraph "Standalone source, one channel -- toggling it applies immediately (toggled on " +
-                        "creates it, toggled off removes it), no separate apply step needed."
-                }
-            }
-            if (src.isHub) {
-                section {
-                    href name: "presetsFromDiscover", title: "Recording Presets",
-                        description: "Define per-channel schedule strings for automations (Away/Present, etc.)",
-                        page: "presetsPage", params: [sourceId: sourceId]
+                        input "confirmCreate", "bool", title: "Apply changes now",
+                            defaultValue: false, submitOnChange: true
+                    } else if (channelCount == 1) {
+                        paragraph "Standalone source, one channel -- toggling it applies immediately (toggled on " +
+                            "creates it, toggled off removes it), no separate apply step needed."
+                    }
+                } else {
+                    paragraph "<span style='color:#5F5E5A;font-size:12px;'>Channel list collapsed -- ${channelCount} " +
+                        "channel(s) found. Toggle the box above to expand it.</span>"
                 }
             }
             section {
@@ -1100,8 +955,8 @@ def presetsPage(params) {
             paragraph "This source's bridge device (\"Reolink Device Bridge (${src?.label ?: ''})\") also " +
                 "exposes standard Switch and Button capabilities now, so both of these are available in Rule " +
                 "Machine's simple pickers -- no Custom Action needed:"
-            paragraph "&nbsp;&nbsp;• <b>Turn the bridge switch on/off</b> \u2192 same as enableRecording()/" +
-                "disableRecording() (the NVR's master record switch)."
+            paragraph "&nbsp;&nbsp;• <b>Turn the bridge switch on/off</b> \u2192 the NVR's master record " +
+                "switch."
             paragraph "&nbsp;&nbsp;• <b>Push the bridge's button N</b> \u2192 loads whichever preset is shown " +
                 "as \"Button N\" below."
             paragraph "Each preset's button number is assigned once, permanently, and is never reused even " +
@@ -1113,17 +968,17 @@ def presetsPage(params) {
             paragraph pillHeader("What this does")
             paragraph "Each preset controls what a source's channels record, per channel: leave a channel " +
                 "alone (Reolink's own app stays in control of it), set it to continuous, or give it a daily " +
-                "time window (e.g. 6:00 PM to 6:00 AM every night). Calling <b>loadPreset(name)</b> on this " +
-                "source's bridge device applies whatever you've set here to the real NVR."
+                "time window (e.g. 6:00 PM to 6:00 AM every night). Loading a preset -- via the bridge " +
+                "device's \"Load Selected Preset\" command, its Push button, or Rule Machine -- applies " +
+                "whatever you've set here to the real NVR."
             paragraph "<b>\"Don't manage\" is the default for every channel</b> -- a channel you never touch " +
                 "stays completely untouched by this preset, which is the recommended way to exclude a " +
                 "battery-class channel (e.g. a WiFi doorbell) from a preset meant for wired channels, or to " +
                 "just let Reolink's own app handle a channel entirely."
-            paragraph "This is separate from the NVR's master recording switch (enableRecording()/" +
-                "disableRecording(), or the bridge's own on/off switch) -- that switch applies to every " +
-                "channel at once and has no per-channel targeting at the API level. The usual pattern is: " +
-                "turn the master switch on once and leave it on, then use presets to control what each " +
-                "channel actually records."
+            paragraph "This is separate from the NVR's master recording switch (the bridge device's own " +
+                "On/Off) -- that switch applies to every channel at once and has no per-channel targeting at " +
+                "the API level. The usual pattern is: turn the master switch on once and leave it on, then " +
+                "use presets to control what each channel actually records."
             input "advancedScheduleEditing_${sourceId}", "bool",
                 title: "Advanced: edit raw per-hour schedule strings directly (power users only)",
                 defaultValue: false, submitOnChange: true
@@ -2602,11 +2457,10 @@ def componentSetSnapshotInterval(child, Integer seconds, String dni = null) {
 }
 
 // ============================================================================
-// v1.5.0-beta10 -- NVR/source recording control. UNCONFIRMED end-to-end as a
-// preset workflow, though the underlying master-switch and read-modify-write
-// schedule mechanics were independently confirmed against a real RLN16-410
-// in beta8/beta9 (see the top-of-file version history). Called by Reolink
-// Device Bridge's enableRecording()/disableRecording()/loadPreset().
+// v1.5.0 BETA -- NVR/source recording control. Master-switch and read-
+// modify-write schedule mechanics confirmed against a real RLN16-410 (see
+// the top-of-file version history). Called by the bridge device's on()/
+// off()/push()/loadSelectedPreset().
 // ============================================================================
 
 /**
