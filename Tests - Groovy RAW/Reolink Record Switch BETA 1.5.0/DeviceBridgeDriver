@@ -1,6 +1,6 @@
 /**
  * Reolink Device Bridge (Internal Parent Driver)
- * Version: 1.5.0-beta18
+ * Version: 1.5.0-beta19
  *
  * NOT user-facing. Created and managed automatically by the Reolink
  * Integration parent app -- ONE instance per SOURCE (Hub/NVR or standalone).
@@ -17,7 +17,7 @@
  * v1.5.0 BETA (in progress, shared privately with one reporting user, not
  * on HPM) -- NVR recording control, mirroring ParentApp.groovy's own
  * consolidated note (see that file for the full hardware-confirmed
- * details). Current design as of beta18. beta17 was mostly app-only (a new
+ * details). Current design as of beta19. beta17 was mostly app-only (a new
  * "Never record" preset picker choice), but one bridge fix was folded in
  * before release (never shipped separately, so not its own version): a
  * second push() bug, distinct from beta16's fix, found in the same round
@@ -27,6 +27,18 @@
  * declaration above. Restored it for on()/off() specifically;
  * loadSelectedPreset() stays bare, since that command's OWN description
  * text is what's confirmed to have caused the real crash.
+ * beta19 (bridge-only): reintroduced loadPreset(presetName) -- a real
+ * user-facing gap surfaced by his live rule-building, not a bug: Push
+ * requires cross-referencing which button number means which preset, and
+ * loadSelectedPreset() shares one Preferences dropdown across the whole
+ * device (so it can't hold "Away" for one branch and "Home" for another
+ * in the same rule set). loadPreset('Away') takes the name directly per
+ * call. Confirmed safe to bring back despite beta16's Custom Action
+ * lesson -- this declares a REAL typed STRING parameter (matching a
+ * method that genuinely takes one), the same shape as push()'s already-
+ * confirmed-working NUMBER parameter, not the description-only/zero-
+ * argument shape that actually broke loadSelectedPreset() under Custom
+ * Action.
  *  - capability "Switch" (on()/off()) is the NVR's master record
  *    enable/disable -- untargeted at the API level (applies to every
  *    channel of this source at once; there is no per-channel version of
@@ -126,6 +138,22 @@ metadata {
         command "push", [[name: "btn", type: "NUMBER", description: "Button number -- check the Preferences tab's \"Preset to load\" dropdown for which number is assigned to which preset."]]
         command "startEventSubscription"
         command "stopEventSubscription"
+        // v1.5.0-beta19: brought back a NAMED preset command, removed
+        // during beta15's "declutter Commands tab" pass on the (mistaken)
+        // assumption that loadSelectedPreset() + Push fully covered its
+        // use case. Real-world use surfaced a gap: loadSelectedPreset()
+        // reads a single SHARED Preferences dropdown, so it can't hold
+        // "Away" for one Rule Machine branch and "Home" for another in the
+        // same rule/automation set -- and Push's button-number mapping
+        // requires cross-referencing the Recording Presets page to know
+        // which number means what, whereas loadPreset('Away') is self-
+        // documenting right in the rule. Safe to reintroduce (NOT the same
+        // failure mode beta16 fixed): this declares a REAL, explicitly
+        // typed STRING parameter matching a method that genuinely accepts
+        // one -- same pattern as push()'s confirmed-working NUMBER
+        // parameter, not the description-only/zero-argument pattern that
+        // broke loadSelectedPreset() under Rule Machine's Custom Action.
+        command "loadPreset", [[name: "presetName", type: "STRING", description: "Name of a preset defined on this source's Recording Presets page in the app (e.g. 'Away', 'Home') -- use this for calling a SPECIFIC preset per rule/branch, since loadSelectedPreset() below shares one dropdown across the whole device."]]
         // No-argument companion command -- loads whichever preset is
         // picked in the "Preset to load" dropdown on this device's own
         // Preferences tab, so a preset can be triggered by hand without
@@ -266,6 +294,20 @@ def componentSetSnapshotInterval(child, Integer seconds, String dni = null) { pa
 // ============================================================================
 
 /**
+ * v1.5.0-beta19: named preset command, reintroduced after Push's number-
+ * lookup indirection and loadSelectedPreset()'s shared-dropdown design both
+ * proved awkward for a rule that needs to call different presets from
+ * different branches (e.g. Away vs. Home). Takes the preset name directly
+ * -- self-documenting in a rule, no cross-referencing a button-number
+ * table or keeping a shared dropdown in sync. componentLoadPreset() itself
+ * never changed; this is just restoring the driver-level command that
+ * calls it by name, same as every version through beta10-beta14 did.
+ */
+def loadPreset(String presetName) {
+    parent?.componentLoadPreset(this, state.sourceId, presetName)
+}
+
+/**
  * Companion to the "Preset to load" Preferences dropdown -- loads whichever
  * preset name is currently picked there, so a preset can be triggered from
  * this device's own page without needing Rule Machine's Custom Action or
@@ -342,6 +384,18 @@ def receiveRecordingMode(String mode) {
 /** Called by the app whenever a new preset is assigned a button number, so this device's numberOfButtons attribute (part of the PushableButton capability) reflects the highest number currently in use. */
 def receiveNumberOfButtons(Integer n) {
     sendEvent(name: "numberOfButtons", value: n)
+}
+
+/**
+ * v1.5.0-beta19: quick-reference summary of every preset defined for this
+ * source, plus its permanent button number (e.g. "Away (Button 1), Home
+ * (Button 2)") -- stored in state (not sendEvent) so it shows up in this
+ * device's own State Variables panel, next to Host/Aes Key Hex/etc.,
+ * without needing to open the app's Recording Presets page. Pushed fresh
+ * by the app every time that page renders, so it can't go stale.
+ */
+def receivePresetsSummary(String summary) {
+    state.availablePresets = summary
 }
 
 /** Per-channel success/failure/skipped summary from the app, e.g. "6/6 OK" or "5/6 OK, failed: ch3, skipped (no data): ch7". */
