@@ -1,10 +1,10 @@
 {
     "packageName": "Reolink Integration",
-    "releaseNotes": "v1.4.5 (hotfix) -- Fixed a hub reboot leaving a source's event connection silently dead indefinitely, with Connection Status still showing \"connected\" and the polling fallback never kicking in either. The app's own tracking of which sources had a running connection survived the reboot (Hubitat persists app state), but the underlying network connection itself does not -- so the app wrongly believed a connection still existed and never reconnected. Confirmed via real-world testing: after a reboot, everything went completely silent until the event subscription was manually stopped and restarted. Now automatically clears that stale tracking on every hub restart, so a fresh connection is always established. v1.4.4 (hotfix) -- Fixed a separate connection issue where the event connection could report \"connected\" while actually dead (a half-open TCP connection with no proper disconnect signal), silently dropping motion/AI events for days.",
+    "releaseNotes": "v1.4.6 (hotfix) -- Fixed a MissingMethodException on componentEventChannelUpdate() for every standalone (non-Hub/NVR) camera or doorbell's real-time event push. The standalone group device's passthrough layer never forwarded this specific method, added after the 1.4.3 fix that covered every other command, so any real motion, AI, or visitor event for a standalone source failed inside the bridge driver itself before ever reaching the app. Hub and NVR sources were never affected.",
     "documentationLink": "https://github.com/jdthomas24/Hubitat-Apps-Drivers/tree/main/Reolink%20Integration",
     "communityLink": "https://github.com/jdthomas24/Hubitat-Apps-Drivers/tree/main/Reolink%20Integration",
     "author": "jdthomas24",
-    "version": "1.4.5",
+    "version": "1.4.6",
     "minimumHEVersion": "2.3.0",
     "dateReleased": "2026-08-14",
     "category": "Integrations",
