@@ -1,6 +1,6 @@
 /**
  * Reolink Standalone Devices (Internal Group Driver)
- * Version: 1.4.5
+ * Version: 1.4.6
  *
  * NOT user-facing. Created and managed automatically by the Reolink
  * Integration parent app -- exactly ONE instance total, shared across every
@@ -17,6 +17,20 @@
  * every standalone camera/doorbell's bridge, instead of N separate unnested
  * bridges.
  *
+ * v1.4.6 -- HOTFIX: a standalone wired doorbell was throwing
+ * MissingMethodException on componentEventChannelUpdate() for every real-
+ * time event push. Same root cause as the v1.4.3 fix, just a different
+ * method: ReolinkDeviceBridge.groovy's own componentEventChannelUpdate()
+ * calls parent?.componentEventChannelUpdate(...), which for a standalone
+ * source resolves to THIS device -- and this driver never forwarded that
+ * one method, only the componentX() set that existed as of 1.4.3. That set
+ * predates componentEventChannelUpdate(), which was added to the app/bridge
+ * later for the real-time push path and never got mirrored here. Motion/AI
+ * polling was unaffected (push-based, doesn't route through this passthrough
+ * at all), but every real event push for a standalone source failed inside
+ * the bridge driver itself, before ever reaching the app. Fixed by adding
+ * the missing passthrough, mirroring the exact signature used everywhere
+ * else in this integration.
  * v1.4.3 -- HOTFIX: a standalone source's bridge has THIS device as its
  * real Hubitat parent (not the app directly) -- same root cause as the
  * v1.4.1 logNormal()/logFull() fix, but this time for every OTHER
@@ -119,3 +133,4 @@ def componentCalibratePtz(child, String dni = null) { parent?.componentCalibrate
 def componentCheckPtzCalibrationStatus(child, String dni = null) { parent?.componentCheckPtzCalibrationStatus(child, dni) }
 def componentSetPollInterval(child, Integer seconds, String dni = null) { parent?.componentSetPollInterval(child, seconds, dni) }
 def componentSetSnapshotInterval(child, Integer seconds, String dni = null) { parent?.componentSetSnapshotInterval(child, seconds, dni) }
+def componentEventChannelUpdate(child, sourceId, channelId, String status, String aiType) { parent?.componentEventChannelUpdate(child, sourceId, channelId, status, aiType) }
